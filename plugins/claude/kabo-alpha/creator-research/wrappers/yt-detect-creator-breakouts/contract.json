@@ -1,0 +1,17 @@
+{
+  "skill_id": "yt-detect-creator-breakouts",
+  "implementation": "implemented_v1_alpha",
+  "kind": "snapshot_analysis",
+  "connector_ids": ["scrapecreators-connector"],
+  "internal_skill_dependencies": [],
+  "runtime_service_ids": ["creator-snapshot-store"],
+  "source": "research/creator-skills/youtube-derived-skills/detect-creator-breakouts",
+  "entrypoint": "scripts/run_connector.py + scripts/snapshot_store.py",
+  "input_contract": "Niche plus optional platform, region/language and account-size preferences; runtime supplies creator universe and comparable snapshots.",
+  "output_contract": "Scope, coverage, ranked/excluded creators, confidence and a dated watch list with metric definitions.",
+  "gates": ["scrapecreators_connector", "immutable_raw_store", "append_only_snapshots", "comparable_t0_t1"],
+  "degraded_contract": "With only one snapshot, label output recent_strong_performance and never claim growth velocity.",
+  "required_secrets": ["SCRAPECREATORS_API_KEY"],
+  "python_requirements": "requirements/yt-detect-creator-breakouts.txt",
+  "required_system_binaries": ["python3"]
+}

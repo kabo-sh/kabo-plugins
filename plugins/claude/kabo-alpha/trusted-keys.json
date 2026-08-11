@@ -1,0 +1,9 @@
+{
+  "comment": "Initial trust anchor shipped with the plugin. Applies only to the default endpoint kabo.sh: on first contact the server keyset must verify against one of the keys here (continuity), rather than trusting whatever the network claims. Refresh this file when shipping a new plugin version after a rotation (fetch it from https://kabo.sh/api/public-key).",
+  "keys": [
+    {
+      "kid": "c07f58c9917cd646",
+      "public_key_pem": "-----BEGIN PUBLIC KEY-----\nMCowBQYDK2VwAyEA0GbBnyd0jqonKjGt4nmtWDtv0URjYdITAnrrNniKY9U=\n-----END PUBLIC KEY-----\n"
+    }
+  ]
+}

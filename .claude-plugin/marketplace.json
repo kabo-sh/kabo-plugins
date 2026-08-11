@@ -1,0 +1,20 @@
+{
+  "name": "kabo-plugins",
+  "owner": {
+    "name": "Kabo Platform"
+  },
+  "metadata": {
+    "description": "The official Kabo plugin marketplace: the Claude Code client for the creator-focused Skill distribution platform.",
+    "version": "0.11.2"
+  },
+  "plugins": [
+    {
+      "name": "kabo-alpha",
+      "source": "./plugins/claude/kabo-alpha",
+      "description": "The Kabo client plugin: skill search/download/verification, restricted subagent execution orchestration, dynamic routing guidance (injected after Ed25519 signature verification)",
+      "author": {
+        "name": "Kabo Platform"
+      }
+    }
+  ]
+}

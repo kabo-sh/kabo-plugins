@@ -1,0 +1,119 @@
+#!/usr/bin/env node
+// skill-unpack - writes a SkillPackage JSON to disk as a cache directory tree (CONTRACT §2.7 / §2.3 / §3.3).
+// Usage:
+//   skill-unpack <path to package.json|-> [dest-root]
+//     - when the first argument is "-", the SkillPackage JSON is read from stdin
+//     - dest-root defaults to <data root>/skill-cache (the data root is fixed at ~/.kabo, overridable with KABO_DATA_ROOT)
+// On-disk layout: <dest-root>/<id>/<version>/ containing every file + .meta.json
+//   .meta.json = {id, version, checksum, signature, downloaded_at, key_id?}
+// Note: this script only writes to disk and performs no verification; bin/skill-verify must pass before execution.
+
+import fs from 'node:fs';
+import path from 'node:path';
+import { cacheRoot } from '../scripts/lib/common.js';
+
+const USAGE = `Usage: skill-unpack <path to package.json|-> [dest-root]
+  Reads a SkillPackage JSON from a file or stdin(-) and writes it to <dest-root>/<id>/<version>/
+  dest-root defaults to ~/.kabo/skill-cache (overridable with KABO_DATA_ROOT)`;
+
+function die(msg) {
+  console.error(msg);
+  process.exit(1);
+}
+
+/** Path-traversal guard: reject absolute paths, backslashes, empty segments, and segments starting with ".".
+ *  Dotfile segments must be rejected (CONTRACT §3.3): the server's packaging and skill-verify's checksum
+ *  recomputation both exclude dotfiles, so if the unpacking side let them through, a dotfile inside a
+ *  package would become a smuggling channel around signature verification
+ *  (a MITM stuffs a .xxx file into a legitimately signed package and verify still passes). */
+function assertSafeRelPath(p) {
+  if (typeof p !== 'string' || p === '' || path.isAbsolute(p) || p.includes('\\')) {
+    die(`SkillPackage contains an illegal file path: ${JSON.stringify(p)}`);
+  }
+  for (const seg of p.split('/')) {
+    if (seg === '' || seg.startsWith('.')) {
+      die(`SkillPackage contains an illegal file path: ${JSON.stringify(p)}`);
+    }
+  }
+}
+
+async function readSource(src) {
+  if (src === '-') {
+    const chunks = [];
+    for await (const chunk of process.stdin) chunks.push(chunk);
+    return Buffer.concat(chunks).toString('utf8');
+  }
+  return fs.readFileSync(src, 'utf8');
+}
+
+async function main() {
+  const args = process.argv.slice(2);
+  if (args.length === 0 || args[0] === '--help' || args[0] === '-h') {
+    console.log(USAGE);
+    process.exit(args.length === 0 ? 1 : 0);
+  }
+  if (args.length > 2) die(`Too many arguments\n\n${USAGE}`);
+
+  let pkg;
+  try {
+    pkg = JSON.parse(await readSource(args[0]));
+  } catch (err) {
+    die(`Failed to read/parse the SkillPackage JSON: ${err.message}`);
+  }
+
+  // Basic shape validation (CONTRACT §3.3)
+  if (!pkg || typeof pkg.id !== 'string' || !pkg.id) die('SkillPackage is missing id');
+  if (typeof pkg.version !== 'string' || !pkg.version) die('SkillPackage is missing version');
+  if (!Array.isArray(pkg.files) || pkg.files.length === 0) die('SkillPackage is missing files');
+  if (typeof pkg.checksum !== 'string' || typeof pkg.signature !== 'string') {
+    die('SkillPackage is missing checksum/signature');
+  }
+  // id/version also become directory names, so they need the same traversal guard
+  assertSafeRelPath(pkg.id);
+  assertSafeRelPath(pkg.version);
+  if (pkg.id.includes('/') || pkg.version.includes('/')) die('id/version must not contain "/"');
+
+  // Validate every files entry before touching the destination directory - so a bad package cannot
+  // wipe an existing cache and then fail halfway through
+  for (const f of pkg.files) {
+    if (!f || typeof f.path !== 'string' || typeof f.content_base64 !== 'string') {
+      die('a files entry is missing path/content_base64');
+    }
+    assertSafeRelPath(f.path);
+  }
+
+  const destRoot = args[1] ? path.resolve(args[1]) : cacheRoot();
+  const dest = path.join(destRoot, pkg.id, pkg.version);
+
+  // Clear the old contents and rewrite wholesale, so the directory matches the package exactly
+  fs.rmSync(dest, { recursive: true, force: true });
+  fs.mkdirSync(dest, { recursive: true });
+
+  for (const f of pkg.files) {
+    const target = path.join(dest, f.path);
+    fs.mkdirSync(path.dirname(target), { recursive: true });
+    fs.writeFileSync(target, Buffer.from(f.content_base64, 'base64'));
+  }
+
+  const meta = {
+    id: pkg.id,
+    version: pkg.version,
+    checksum: pkg.checksum,
+    signature: pkg.signature,
+    downloaded_at: new Date().toISOString(),
+  };
+  // key_id is a **key selection hint** and is not signed: the checksum only covers files, so changing
+  // it at most makes skill-verify try a few more pinned keys and cannot change the verification
+  // outcome. It is passed through only to save a try during a key rotation.
+  if (typeof pkg.key_id === 'string' && pkg.key_id) meta.key_id = pkg.key_id;
+  fs.writeFileSync(path.join(dest, '.meta.json'), JSON.stringify(meta, null, 2) + '\n');
+
+  // Since 0.7.0 the client no longer records a skill_download event: the client has no reporting
+  // channel, and the server records it itself in the registry_skill_download tool handler (with
+  // skill_id/skill_version, which is more accurate).
+
+  console.log(`Written: ${pkg.id}@${pkg.version} -> ${dest} (${pkg.files.length} file(s) + .meta.json)`);
+  console.log('Reminder: skill-verify must pass before execution.');
+}
+
+main().catch((err) => die(`skill-unpack failed: ${err.message}`));

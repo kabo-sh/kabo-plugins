@@ -1,0 +1,49 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://creator-ai.local/schemas/creator-skill-run-manifest.v1.json",
+  "title": "Creator Skill Run Manifest V1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["run_id", "request_id", "skill_id", "plugin_version", "started_at", "status", "runtime", "dependencies", "artifacts"],
+  "properties": {
+    "run_id": {"type": "string"},
+    "request_id": {"type": "string"},
+    "skill_id": {"type": "string"},
+    "plugin_version": {"type": "string"},
+    "started_at": {"type": "string", "format": "date-time"},
+    "finished_at": {"type": ["string", "null"], "format": "date-time"},
+    "duration_seconds": {"type": ["number", "null"], "minimum": 0},
+    "status": {"type": "string"},
+    "runtime": {
+      "type": "object",
+      "required": ["agent", "environment"],
+      "properties": {
+        "agent": {"type": "string"},
+        "environment": {"type": "string"}
+      }
+    },
+    "dependencies": {
+      "type": "object",
+      "description": "Names and present/missing status only; never secret values.",
+      "properties": {
+        "secrets": {"type": "object", "additionalProperties": {"enum": ["present", "missing", "not_required"]}},
+        "binaries": {"type": "object", "additionalProperties": {"enum": ["present", "missing", "not_required"]}},
+        "data": {"type": "object", "additionalProperties": {"enum": ["present", "missing", "not_required"]}}
+      }
+    },
+    "provider_requests": {"type": "array", "items": {"type": "object"}},
+    "fallbacks": {"type": "array", "items": {"type": "string"}},
+    "artifacts": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["kind", "path_or_uri", "sha256"],
+        "properties": {
+          "kind": {"type": "string"},
+          "path_or_uri": {"type": "string"},
+          "sha256": {"type": ["string", "null"]}
+        }
+      }
+    }
+  }
+}

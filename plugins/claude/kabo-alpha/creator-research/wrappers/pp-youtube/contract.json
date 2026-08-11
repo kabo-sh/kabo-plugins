@@ -1,0 +1,18 @@
+{
+  "skill_id": "pp-youtube",
+  "implementation": "implemented_v1_alpha",
+  "kind": "local_cli_wrapper",
+  "connector_ids": ["youtube-pp-connector"],
+  "internal_skill_dependencies": [],
+  "runtime_service_ids": [],
+  "source": "research/creator-skills/sources/printing-press/library/media-and-entertainment/youtube",
+  "entrypoint": "scripts/run_connector.py",
+  "request_schema": "schemas/connector-request.schema.json",
+  "result_schema": "schemas/connector-result.schema.json",
+  "input_contract": "YouTube query/channel/video IDs, time window, region/language hints and requested public evidence types.",
+  "output_contract": "Normalized channel, video and comment rows with provider, retrieval time, source URL and missing-value status.",
+  "failure_policy": "Transcript LOGIN_REQUIRED, quota exhaustion, empty results and partial commands remain explicit; no silent native-web fallback.",
+  "required_secrets": ["YOUTUBE_API_KEY"],
+  "python_requirements": "requirements/pp-youtube.txt",
+  "required_system_binaries": ["youtube-pp-cli"]
+}

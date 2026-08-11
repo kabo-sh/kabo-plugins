@@ -1,0 +1,23 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://creator-ai.local/schemas/connector-result.v1.json",
+  "title": "Creator Connector Result V1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "request_id", "connector_id", "operation", "provider", "status", "summary", "evidence", "provider_requests", "limitations", "credential_values_recorded", "duration_ms"],
+  "properties": {
+    "schema_version": {"const": "1.0"},
+    "request_id": {"type": "string"},
+    "connector_id": {"type": "string"},
+    "operation": {"type": "string"},
+    "provider": {"type": "string"},
+    "status": {"enum": ["completed", "completed_partial", "blocked_setup", "feature_gated", "unsupported", "failed"]},
+    "summary": {"type": "string"},
+    "data": {},
+    "evidence": {"type": "array", "items": {"type": "object"}},
+    "provider_requests": {"type": "array", "items": {"type": "object"}},
+    "limitations": {"type": "array", "items": {"type": "string"}},
+    "credential_values_recorded": {"const": false},
+    "duration_ms": {"type": "number", "minimum": 0}
+  }
+}

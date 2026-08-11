@@ -1,0 +1,37 @@
+{
+  "name": "kabo-alpha",
+  "version": "0.11.2",
+  "description": "Kabo — client for the creator-focused Skill distribution platform. Search, download, and verify the platform's creator data analysis skills (audience profiling, content ideation, revenue analysis, and more) inside Claude Code and run them in a restricted subagent. Authorization takes a single /mcp within the session; no Kabo token is stored on your machine. The third-party provider keys that creator research skills need are configured by you and run on your own accounts and quota.",
+  "author": {
+    "name": "Kabo"
+  },
+  "defaultEnabled": false,
+  "userConfig": {
+    "youtube_api_key": {
+      "type": "string",
+      "title": "YouTube Data API key",
+      "description": "Used for YouTube public data retrieval (search, channels, videos, comments). Create one in the Google Cloud Console after enabling YouTube Data API v3. If left empty, the related skills report a missing dependency and stop; they will not substitute other data.",
+      "sensitive": true
+    },
+    "tubelab_api_key": {
+      "type": "string",
+      "title": "TubeLab API key",
+      "description": "Used for account-relative outlier detection and channel video research. If left empty, the related skills report a missing dependency and stop.",
+      "sensitive": true
+    },
+    "scrapecreators_api_key": {
+      "type": "string",
+      "sensitive": true,
+      "required": false,
+      "title": "ScrapeCreators API key",
+      "description": "Needed for Instagram Reels reverse engineering and creator breakout boards. Billed per credit, on your own account. Also requires the scrapecreators CLI installed locally (npm i -g @scrapecreators/cli)."
+    },
+    "gemini_api_key": {
+      "type": "string",
+      "sensitive": true,
+      "required": false,
+      "title": "Google Gemini API key",
+      "description": "Needed for video content analysis (hook/structure/CTA breakdown). Billed by usage, on your own account."
+    }
+  }
+}

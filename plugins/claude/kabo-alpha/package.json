@@ -1,0 +1,7 @@
+{
+  "name": "kabo-claude-plugin",
+  "version": "0.11.2",
+  "private": true,
+  "type": "module",
+  "description": "Kabo Claude Code plugin (client shell). This package.json exists only to declare ESM (type: module); the plugin has zero npm dependencies."
+}

@@ -1,0 +1,16 @@
+{
+  "skill_id": "yt-reverse-viral-reels",
+  "implementation": "implemented_v1_alpha",
+  "kind": "connector_plus_analysis",
+  "connector_ids": ["scrapecreators-connector"],
+  "internal_skill_dependencies": [],
+  "runtime_service_ids": [],
+  "source": "research/creator-skills/youtube-derived-skills/reverse-engineer-viral-reels",
+  "entrypoint": "scripts/run_connector.py",
+  "input_contract": "Niche, Instagram, region/language, time window, optional seed handles, creator policy, risk rules and credit ceiling.",
+  "output_contract": "Durable evidence set, cross-sample patterns, original briefs, must-differ constraints, confidence and approval status.",
+  "gates": ["scrapecreators_connector", "account_identity", "immutable_raw_store", "scope_and_credit_budget"],
+  "required_secrets": ["SCRAPECREATORS_API_KEY"],
+  "python_requirements": "requirements/yt-reverse-viral-reels.txt",
+  "required_system_binaries": ["python3", "curl", "jq", "ffmpeg", "ffprobe"]
+}

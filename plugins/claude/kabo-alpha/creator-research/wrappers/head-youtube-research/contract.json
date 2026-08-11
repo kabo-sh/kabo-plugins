@@ -1,0 +1,17 @@
+{
+  "skill_id": "head-youtube-research",
+  "implementation": "implemented_v1_alpha",
+  "kind": "python_adapter",
+  "connector_ids": ["tubelab-connector", "gemini-video-adapter"],
+  "internal_skill_dependencies": ["head-video-analyzer"],
+  "runtime_service_ids": [],
+  "source": "research/creator-skills/sources/head-of-content/.claude/skills/youtube-research",
+  "entrypoint": "scripts/run_connector.py",
+  "input_contract": "Niche, optional consistent channels, direct/adjacent terms, 1-365 day window, region/language hints and media-analysis approval.",
+  "output_contract": "Raw and normalized outliers, evidence status, up to three deep analyses and evidence-backed topic ideas with risk/unknown fields.",
+  "gates": ["model_capability_probe", "channel_niche_consistency", "media_send_scope", "budget", "patched_internal_analyzer"],
+  "build_adapter": "scripts/build_head_video_analyzer.py",
+  "required_secrets": ["TUBELAB_API_KEY", "GEMINI_API_KEY"],
+  "python_requirements": "requirements/head-youtube-research.txt",
+  "required_system_binaries": ["python3"]
+}

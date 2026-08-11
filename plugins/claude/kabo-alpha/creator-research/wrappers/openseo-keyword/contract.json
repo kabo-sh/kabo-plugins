@@ -1,0 +1,16 @@
+{
+  "skill_id": "openseo-keyword",
+  "implementation": "implemented_v1_alpha",
+  "kind": "remote_mcp_adapter",
+  "connector_ids": ["openseo-mcp"],
+  "internal_skill_dependencies": [],
+  "runtime_service_ids": [],
+  "source": "research/creator-skills/sources/open-seo/.agents/skills/keyword-research",
+  "entrypoint": "mcp_servers.openseo",
+  "input_contract": "Creator request with niche seeds, region, language, intent and optional GSC scope.",
+  "output_contract": "Normalized keyword rows, metrics, SERP evidence, question clusters and a downstream platform query package.",
+  "write_policy": "Read-only by default; saving keywords or changing a remote Project requires explicit confirmation.",
+  "required_config": [],
+  "required_auth": ["OpenSEO OAuth managed by the MCP host"],
+  "python_requirements": "requirements/openseo-keyword.txt"
+}

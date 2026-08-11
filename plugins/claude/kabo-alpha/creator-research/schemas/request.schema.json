@@ -1,0 +1,49 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://creator-ai.local/schemas/creator-skill-request.v1.json",
+  "title": "Creator Skill Request V1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["request_id", "user_request", "platform", "task", "data_scope"],
+  "properties": {
+    "request_id": {"type": "string", "minLength": 1},
+    "user_request": {"type": "string", "minLength": 1},
+    "platform": {"enum": ["youtube", "instagram", "cross_platform", "platform_neutral"]},
+    "task": {
+      "enum": [
+        "demand_research",
+        "popular_discovery",
+        "outlier_analysis",
+        "account_review",
+        "content_breakdown",
+        "comment_needs",
+        "breakout_detection",
+        "topic_generation",
+        "brief_generation"
+      ]
+    },
+    "target": {"type": "string"},
+    "niche": {"type": "string"},
+    "time_window": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "start": {"type": ["string", "null"], "format": "date-time"},
+        "end": {"type": ["string", "null"], "format": "date-time"},
+        "lookback_days": {"type": ["integer", "null"], "minimum": 1, "maximum": 365}
+      }
+    },
+    "region": {"type": ["string", "null"]},
+    "language": {"type": ["string", "null"]},
+    "data_scope": {"enum": ["public", "owner_authorized", "owner_export"]},
+    "budget": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "currency": {"type": "string"},
+        "maximum": {"type": "number", "minimum": 0}
+      }
+    },
+    "inputs": {"type": "object"}
+  }
+}

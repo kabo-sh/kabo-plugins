@@ -1,0 +1,211 @@
+#!/usr/bin/env node
+// skill-verify - integrity verification of the skill cache (CONTRACT §2.7 / §3.3).
+// Usage: skill-verify <skill-dir>
+// Steps:
+//   1. Read <skill-dir>/.meta.json ({id, version, checksum, signature, ...})
+//   2. Revocation check (kill-switch):
+//      a. a local <data root>/skill-cache/<id>.disabled marker hit means reject
+//      b. then query the public GET <endpoint>/api/sync live (no token needed) - a revocation the
+//         platform issued after SessionStart must take effect before this execution; if the network
+//         is unreachable, fall back to the result of a
+//   3. Recompute the checksum (algorithm verbatim identical to the server's, see computeChecksum in
+//      common.js) and compare it against .meta.json
+//   4. Verify the signature with the server's Ed25519 keyset (GET /api/public-key, pinned after TOFU in
+//      <data root>/public-keys.<bucket>.json; on a key rotation it refreshes once via a continuity proof)
+// Exit 0 on success; on any failed step print the reason and exit 1.
+//
+// Since 0.7.0 this script **needs no credentials at all**: it is a Bash subprocess and never has an
+// MCP connection, while the revocation list is the hard pre-execution gate - which is exactly why the
+// revocation endpoint was made public read-only.
+// On failure it no longer reports telemetry itself (there is no reporting channel); instead it prints
+// a machine-readable KABO_VERIFY_FAIL as the final stderr line, which the main agent relays on a
+// best-effort basis to telemetry_report_usage as the meta-guidance directs;
+// it also leaves a line in <data root>/pending-reports.jsonl for the next SessionStart to file (see common.js).
+
+import fs from 'node:fs';
+import path from 'node:path';
+import crypto from 'node:crypto';
+import {
+  isSafeName,
+  apiEndpoint, readJsonSilent, writeJsonSilent,
+  disabledMarkerPath, computeChecksum, ensureVerified, fetchJsonSilent,
+  appendPendingReport, compareSemver, PLUGIN_VERSION,
+} from '../scripts/lib/common.js';
+
+const USAGE = `Usage: skill-verify <skill-dir>
+  Verifies the checksum and Ed25519 signature of a skill already written to disk; exit 0 on success, exit 1 with a printed reason on failure`;
+
+/** Revocation query budget: this is the hot-path gate before every execution - better to come back empty-handed than to hold the user up */
+const REVOCATION_TIMEOUT_MS = 2500;
+
+/** Machine-readable field value: whitespace collapsed, missing values written as "-" (so the final line stays parseable by a single-line regex) */
+function token(value) {
+  if (typeof value !== 'string' || value === '') return '-';
+  return value.replace(/\s+/g, '_');
+}
+
+function fail(meta, reason, errorType) {
+  console.error(`Verification failed: ${reason}`);
+  // Leave a line locally for relay. The final stderr line is only read if the main agent happens to be
+  // watching, and skill-verify often runs inside a subprocess: the buffer lets the failures nobody
+  // witnessed still be filed in the next session.
+  // Best-effort - if it cannot be written, the exit semantics below are unaffected.
+  appendPendingReport({
+    skill_id: meta && meta.id,
+    skill_version: meta && meta.version,
+    error_type: errorType,
+  });
+  // Fixed format for the final stderr line, for the main agent to relay to telemetry_report_usage (CONTRACT §4)
+  console.error(
+    `KABO_VERIFY_FAIL error_type=${token(errorType)}` +
+    ` skill_id=${token(meta && meta.id)}` +
+    ` skill_version=${token(meta && meta.version)}`,
+  );
+  process.exit(1);
+}
+
+/** Recursively collect every file under dir (relative paths, posix separators).
+ *  Dotfiles are always skipped (CONTRACT §3.3: dotfiles neither go into a package nor take part in
+ *  verification, matching the server's registry.js; this also naturally excludes the on-disk metadata
+ *  .meta.json plus stray dotfiles such as .DS_Store and editor temp files). */
+function collectFiles(dir, base = '') {
+  const out = [];
+  for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+    const rel = base ? `${base}/${entry.name}` : entry.name;
+    if (entry.name.startsWith('.')) continue;
+    const full = path.join(dir, entry.name);
+    if (entry.isDirectory()) {
+      out.push(...collectFiles(full, rel));
+    } else if (entry.isFile()) {
+      out.push({ path: rel, content: fs.readFileSync(full) });
+    }
+  }
+  return out;
+}
+
+/**
+ * Live revocation query: GET <endpoint>/api/sync (public read-only, no arguments, no identity).
+ * @returns {Promise<boolean|null>} true = revoked, false = not revoked, null = endpoint unreachable
+ */
+async function isRevokedRemotely(skillId) {
+  const resp = await fetchJsonSilent(`${apiEndpoint()}/api/sync`, {}, REVOCATION_TIMEOUT_MS);
+  if (!resp || !Array.isArray(resp.revocations)) return null;
+  return resp.revocations.includes(skillId);
+}
+
+async function main() {
+  const args = process.argv.slice(2);
+  if (args.length === 0 || args[0] === '--help' || args[0] === '-h') {
+    console.log(USAGE);
+    process.exit(args.length === 0 ? 1 : 0);
+  }
+  if (args.length > 1) {
+    console.error(`Too many arguments\n\n${USAGE}`);
+    process.exit(1);
+  }
+
+  const dir = path.resolve(args[0]);
+  if (!fs.existsSync(dir) || !fs.statSync(dir).isDirectory()) {
+    fail(null, `directory does not exist: ${dir}`, 'dir_not_found');
+  }
+
+  const meta = readJsonSilent(path.join(dir, '.meta.json'));
+  if (!meta || typeof meta.checksum !== 'string' || typeof meta.signature !== 'string') {
+    fail(meta, `.meta.json is missing or incomplete: ${path.join(dir, '.meta.json')}`, 'meta_invalid');
+  }
+
+  // The revocation identity must come from material **covered by the signature**. .meta.json is a
+  // dotfile and collectFiles() deliberately excludes it, so meta.id is outside the protection of the
+  // checksum/signature - changing it would make the kill-switch check the wrong subject while
+  // signature verification still passes. manifest.json is an ordinary file and is in the signed
+  // manifest, and contract §3.2 further states id = directory name = manifest.name, which makes it the
+  // trustworthy source of identity.
+  let signedId = null;
+  let signedManifest = null;
+  try {
+    const manifest = JSON.parse(fs.readFileSync(path.join(dir, 'manifest.json'), 'utf8'));
+    signedManifest = manifest;
+    if (typeof manifest.name === 'string') signedId = manifest.name;
+  } catch { /* missing/corrupt: handled below as "identity cannot be confirmed" */ }
+  if (!signedId || !isSafeName(signedId)) {
+    fail(meta, 'manifest.json is missing or its name is illegal, so the skill identity cannot be confirmed (the revocation check would be unreliable)', 'meta_invalid');
+  }
+  if (meta.id && meta.id !== signedId) {
+    fail(meta, `the .meta.json id "${meta.id}" does not match the signed manifest.name "${signedId}", refusing to execute`, 'id_mismatch');
+  }
+
+  // Revocation check a: the local marker (the only basis when offline, written by SessionStart)
+  if (fs.existsSync(disabledMarkerPath(signedId))) {
+    fail(meta, `skill "${signedId}" has been revoked by the platform (disabled locally), refusing to execute`, 'revoked');
+  }
+
+  // Revocation check b: query the public endpoint live. A session can run for a long time, so the
+  // snapshot from SessionStart may be stale; revocation is a security kill-switch and must be
+  // reconfirmed before execution. When unreachable (null), fall back to the result of a.
+  {
+    const revoked = await isRevokedRemotely(signedId);
+    if (revoked === true) {
+      // Persist the marker while we are here, so later offline runs are blocked too (signedId already passed isSafeName)
+      writeJsonSilent(disabledMarkerPath(signedId), {
+        id: signedId,
+        reason: 'revoked',
+        revoked_at: new Date().toISOString(),
+      });
+      fail(meta, `skill "${signedId}" has been revoked by the platform (live query hit), refusing to execute`, 'revoked');
+    }
+  }
+
+  // Recompute the checksum (CONTRACT §3.3: paths in lexicographic order, path + "\0" + sha256hex(content) + "\n", sha256 of the manifest)
+  const files = collectFiles(dir);
+  if (files.length === 0) fail(meta, 'the directory is empty, there is nothing to verify', 'empty_dir');
+  const recomputed = computeChecksum(files);
+  if (recomputed !== meta.checksum) {
+    fail(meta, `checksum mismatch (the files may have been tampered with)\n  expected: ${meta.checksum}\n  actual: ${recomputed}`, 'checksum_mismatch');
+  }
+
+  // Ed25519 verification: the signed object is the UTF-8 bytes of the checksum (CONTRACT §3.3).
+  // It goes through the keyset: each pinned key is tried in turn (the key_id in .meta.json is only a
+  // key selection hint - it is a dotfile and outside the signature's coverage, so changing it at most
+  // makes the client try a few more keys and cannot change the verification outcome);
+  // only if all fail and this key_id is a key the machine has never seen does it refresh the keyset
+  // once to rotate the anchor and retry.
+  const verified = await ensureVerified(
+    (pem) => crypto.verify(
+      null,
+      Buffer.from(meta.checksum, 'utf8'),
+      crypto.createPublicKey(pem),
+      Buffer.from(meta.signature, 'base64'),
+    ),
+    { keyId: typeof meta.key_id === 'string' ? meta.key_id : null },
+  );
+  if (!verified.ok) {
+    if (verified.reason === 'public_key_unavailable') {
+      fail(meta, 'cannot obtain the server public key (no local cache and /api/public-key is unreachable)', 'public_key_unavailable');
+    }
+    fail(meta, 'Ed25519 signature verification failed (the package may be forged)', 'signature_invalid');
+  }
+
+  // manifest.min_plugin_version: checked **after** signature verification. This field is in the signed
+  // manifest, and only verifying the signature first proves it has not been altered - otherwise anyone
+  // could lower it to 0.0.0 and walk past the gate.
+  // Previously it existed only in the schema, with not a single line of server or client code reading
+  // it: all seven skills declared a requirement of 0.8.0 while the Codex plugin sat at 0.1.0, and the
+  // field was quietly wrong without anyone noticing.
+  const minPlugin = signedManifest && signedManifest.min_plugin_version;
+  if (typeof minPlugin === 'string' && minPlugin && compareSemver(minPlugin, PLUGIN_VERSION) > 0) {
+    fail(
+      meta,
+      `this skill requires plugin version >= ${minPlugin}, but the current plugin is ${PLUGIN_VERSION}; upgrade the plugin first`,
+      'plugin_too_old',
+    );
+  }
+
+  console.log(`Verification passed: ${meta.id || '?'}@${meta.version || '?'} (checksum and ed25519 signature are both valid)`);
+  process.exit(0);
+}
+
+main().catch((err) => {
+  console.error(`Verification failed: ${err.message}`);
+  console.error('KABO_VERIFY_FAIL error_type=internal_error skill_id=- skill_version=-');
+  process.exit(1);
+});

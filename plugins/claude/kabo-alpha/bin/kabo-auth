@@ -1,0 +1,67 @@
+#!/usr/bin/env node
+// kabo-auth - cleanup of local trust material and caches (CONTRACT §2.7).
+//
+// Since 0.7.0 Kabo needs **a single authorization**: run `/mcp` in a session -> pick `platform` ->
+// complete OAuth in the browser, and the host manages the token. The second, terminal-side login
+// (login/status plus a local credentials file) is gone entirely; the client no longer holds any
+// token, so there is no login state to query.
+//
+// Usage:
+//   kabo-auth logout   clear the local skill cache, public keyset, meta-guidance cache, and relay buffer
+
+import fs from 'node:fs';
+import { cacheRoot, publicKeyPaths, guidanceCachePaths, pendingReportsPath } from '../scripts/lib/common.js';
+
+const NO_LOGIN_NOTICE =
+  'Kabo only needs one authorization: run /mcp in a session and pick platform. There is no second, terminal-side login.\n' +
+  'This command keeps only logout (clearing the local skill cache, the server public keyset, the meta-guidance cache, and the relay buffer).';
+
+const USAGE = `Usage:
+  kabo-auth logout
+
+Description:
+  logout  clears the local skill cache, the cached server public keyset, the cached meta-guidance,
+          and the skill verification failure records not yet relayed
+          (to revoke platform-side authorization, use the dashboard or disconnect the connector in the host's /mcp)
+
+${NO_LOGIN_NOTICE}`;
+
+function cmdLogout() {
+  // Logout clears everything: no local trust material is left behind (design doc §5, trust chain,
+  // "logout clears everything").
+  // The public keyset is the TOFU-pinned trust anchor and the meta-guidance cache is verified injected
+  // content - both are trust material; the relay buffer holds only allowlisted fields but still carries
+  // traces of "which skills this machine ran", so logout must clear it too.
+  let cleared = 0;
+  for (const target of [
+    // Note: the <id>.disabled revocation markers also live inside cacheRoot. Clearing them is
+    // acceptable - the next SessionStart resyncs from the public endpoint; but until then an offline
+    // run loses its basis for blocking, so the semantics of logout must clearly be "clear local trust
+    // material and caches", not "routine cleanup".
+    { path: cacheRoot(), recursive: true, label: 'skill cache (including revocation markers)' },
+    ...publicKeyPaths().map((p) => ({ path: p, recursive: false, label: 'server public keyset cache' })),
+    ...guidanceCachePaths().map((p) => ({ path: p, recursive: false, label: 'meta-guidance cache' })),
+    { path: pendingReportsPath(), recursive: false, label: 'verification failure records awaiting relay' },
+  ]) {
+    try {
+      if (fs.existsSync(target.path)) cleared += 1;
+      fs.rmSync(target.path, { recursive: target.recursive, force: true });
+    } catch { /* one failure does not affect the rest of the cleanup */ }
+  }
+  console.log(`Local Kabo data cleared (skill cache, server public keyset, meta-guidance cache, relay records${cleared === 0 ? '; it was already empty' : ''}).`);
+  console.log("To revoke platform-side authorization, disconnect the platform connection in the dashboard or in the host's /mcp connectors.");
+}
+
+const [cmd] = process.argv.slice(2);
+if (!cmd || cmd === '--help' || cmd === '-h' || cmd === 'help') {
+  console.log(USAGE);
+  process.exit(cmd ? 0 : 1);
+} else if (cmd === 'logout') {
+  cmdLogout();
+} else if (cmd === 'login' || cmd === 'status') {
+  console.log(NO_LOGIN_NOTICE);
+  process.exit(0);
+} else {
+  console.error(`Unknown subcommand: ${cmd}\n\n${USAGE}`);
+  process.exit(1);
+}

@@ -1,0 +1,15 @@
+{
+  "skill_id": "yt-youtube-research-agent",
+  "implementation": "implemented_v1_alpha",
+  "kind": "local_public_collector_plus_analysis",
+  "connector_ids": ["public-video-media"],
+  "internal_skill_dependencies": [],
+  "runtime_service_ids": [],
+  "source": "research/creator-skills/youtube-derived-skills/build-youtube-research-agent",
+  "entrypoint": "scripts/run_connector.py",
+  "input_contract": "One named channel, a seed/comparison set, a niche to discover up to five channels, and optional region/language/window.",
+  "output_contract": "Per-channel recent/top rows, source URLs, missing-value status, winning formula and optional cross-channel comparison.",
+  "failure_policy": "Platform challenge and missing public fields remain explicit; never claim private analytics or silently switch collectors.",
+  "python_requirements": "requirements/yt-youtube-research-agent.txt",
+  "required_system_binaries": ["python3", "ffmpeg", "ffprobe"]
+}

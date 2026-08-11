@@ -1,0 +1,45 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://creator-ai.local/schemas/creator-skill-result.v1.json",
+  "title": "Creator Skill Result V1",
+  "description": "Internal structured result envelope for orchestration and audit; it is not the user-facing response format.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["request_id", "skill_id", "status", "summary", "evidence", "attribution", "limitations"],
+  "properties": {
+    "request_id": {"type": "string"},
+    "skill_id": {"type": "string"},
+    "status": {
+      "enum": ["completed", "completed_partial", "blocked_setup", "feature_gated", "unsupported", "failed"]
+    },
+    "summary": {"type": "string"},
+    "data": {},
+    "evidence": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["source", "retrieved_at"],
+        "properties": {
+          "source": {"type": "string"},
+          "retrieved_at": {"type": "string", "format": "date-time"},
+          "provider": {"type": ["string", "null"]},
+          "raw_hash": {"type": ["string", "null"]},
+          "notes": {"type": ["string", "null"]}
+        }
+      }
+    },
+    "attribution": {
+      "type": "object",
+      "required": ["candidate_skill", "connector_or_provider", "agent_native_reasoning", "human_input", "fallback"],
+      "properties": {
+        "candidate_skill": {"type": "array", "items": {"type": "string"}},
+        "connector_or_provider": {"type": "array", "items": {"type": "string"}},
+        "agent_native_reasoning": {"type": "array", "items": {"type": "string"}},
+        "human_input": {"type": "array", "items": {"type": "string"}},
+        "fallback": {"type": "array", "items": {"type": "string"}}
+      }
+    },
+    "limitations": {"type": "array", "items": {"type": "string"}},
+    "next_actions": {"type": "array", "items": {"type": "string"}}
+  }
+}
