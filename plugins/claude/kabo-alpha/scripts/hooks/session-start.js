@@ -1,4 +1,4 @@
-// SessionStart hook (CONTRACT §2.4, line 1) - since 0.7.0 it is **completely credential-free**.
+// SessionStart hook - since 0.7.0 it is **completely credential-free**.
 //
 // At SessionStart the MCP server is not yet connected (confirmed by the host docs), so no token is
 // available; yet the revocation list is the pre-execution gate for bin/skill-verify and must be
@@ -141,8 +141,8 @@ function countUpdates(catalog, installed) {
  * Verify a guidance envelope with the **keyset**: try each pinned key in turn, and only if all fail
  * and the envelope's key_id is a key this machine has never seen does it refresh the keyset once
  * (continuity anchor rotation) and retry.
- * key_id is not part of the signed five-line header - it is only a key selection hint, and changing
- * it cannot buy a signature that verifies.
+ * key_id is not part of the signed header (six lines on a v1 envelope, five on a legacy one) - it
+ * is only a key selection hint, and changing it cannot buy a signature that verifies.
  */
 async function verifyWithKeyset(envelope, endpoint, opts) {
   const result = await ensureVerified(

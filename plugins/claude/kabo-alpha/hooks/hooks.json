@@ -47,8 +47,7 @@
                   "session_id": "${session_id}",
                   "agent_id": "${agent_id}",
                   "agent_type": "${agent_type}",
-                  "status": "${success}",
-                  "skill_output": "${output}"
+                  "status": "${success}"
                 }
               ]
             }

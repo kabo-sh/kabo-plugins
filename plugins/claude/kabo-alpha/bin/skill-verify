@@ -1,8 +1,8 @@
 #!/usr/bin/env node
-// skill-verify - integrity verification of the skill cache (CONTRACT §2.7 / §3.3).
+// skill-verify - integrity verification of the skill cache.
 // Usage: skill-verify <skill-dir>
 // Steps:
-//   1. Read <skill-dir>/.meta.json ({id, version, checksum, signature, ...})
+//   1. Read <skill-dir>/.meta.json ({id, version, checksum, signature, format_version?, ...})
 //   2. Revocation check (kill-switch):
 //      a. a local <data root>/skill-cache/<id>.disabled marker hit means reject
 //      b. then query the public GET <endpoint>/api/sync live (no token needed) - a revocation the
@@ -28,7 +28,7 @@ import crypto from 'node:crypto';
 import {
   isSafeName,
   apiEndpoint, readJsonSilent, writeJsonSilent,
-  disabledMarkerPath, computeChecksum, ensureVerified, fetchJsonSilent,
+  disabledMarkerPath, computeChecksum, artifactFormatOf, ensureVerified, fetchJsonSilent,
   appendPendingReport, compareSemver, PLUGIN_VERSION,
 } from '../scripts/lib/common.js';
 
@@ -55,7 +55,7 @@ function fail(meta, reason, errorType) {
     skill_version: meta && meta.version,
     error_type: errorType,
   });
-  // Fixed format for the final stderr line, for the main agent to relay to telemetry_report_usage (CONTRACT §4)
+  // Fixed format for the final stderr line, for the main agent to relay to telemetry_report_usage
   console.error(
     `KABO_VERIFY_FAIL error_type=${token(errorType)}` +
     ` skill_id=${token(meta && meta.id)}` +
@@ -65,9 +65,10 @@ function fail(meta, reason, errorType) {
 }
 
 /** Recursively collect every file under dir (relative paths, posix separators).
- *  Dotfiles are always skipped (CONTRACT §3.3: dotfiles neither go into a package nor take part in
- *  verification, matching the server's registry.js; this also naturally excludes the on-disk metadata
- *  .meta.json plus stray dotfiles such as .DS_Store and editor temp files). */
+ *  Dotfiles are always skipped: they neither go into a package nor take part in verification, and this
+ *  selection must stay in step with the server's packaging - the two have to pick exactly the same
+ *  files or every checksum comes out different. It also naturally excludes the on-disk metadata
+ *  .meta.json plus stray dotfiles such as .DS_Store and editor temp files. */
 function collectFiles(dir, base = '') {
   const out = [];
   for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
@@ -118,8 +119,8 @@ async function main() {
   // dotfile and collectFiles() deliberately excludes it, so meta.id is outside the protection of the
   // checksum/signature - changing it would make the kill-switch check the wrong subject while
   // signature verification still passes. manifest.json is an ordinary file and is in the signed
-  // manifest, and contract §3.2 further states id = directory name = manifest.name, which makes it the
-  // trustworthy source of identity.
+  // manifest, and a skill's id, its directory name and its manifest.name are by construction the same
+  // string, which makes it the trustworthy source of identity.
   let signedId = null;
   let signedManifest = null;
   try {
@@ -155,15 +156,35 @@ async function main() {
     }
   }
 
-  // Recompute the checksum (CONTRACT §3.3: paths in lexicographic order, path + "\0" + sha256hex(content) + "\n", sha256 of the manifest)
+  // Recompute the checksum. Which canonical bytes apply is decided by the format_version
+  // skill-unpack copied out of the package - this process never sees the response body, so without
+  // that field there is nothing to decide from. Absent means the legacy bytes, and a version this
+  // plugin does not implement is a refusal rather than a guess (compat rule in common.js). The
+  // field is a dotfile field and unsigned; tampering with it can only pick the wrong algorithm,
+  // which ends here in a mismatch - it can never turn a bad package into a good one.
+  const format = artifactFormatOf(meta);
+  if (!format.ok) {
+    fail(
+      meta,
+      `this skill was signed with artifact format_version ${JSON.stringify(meta.format_version)}, which this plugin (${PLUGIN_VERSION}) cannot verify; upgrade the plugin`,
+      'unsupported_artifact_format',
+    );
+  }
   const files = collectFiles(dir);
   if (files.length === 0) fail(meta, 'the directory is empty, there is nothing to verify', 'empty_dir');
-  const recomputed = computeChecksum(files);
+  let recomputed = null;
+  try {
+    recomputed = computeChecksum(files, format.formatVersion);
+  } catch (err) {
+    // An illegal path on disk (a backslash, a NUL, a newline in a file name) cannot appear in a
+    // signed manifest at all, so the cached tree cannot be the one that was signed.
+    fail(meta, `the cached files cannot form a signed manifest: ${err.message}`, 'checksum_mismatch');
+  }
   if (recomputed !== meta.checksum) {
     fail(meta, `checksum mismatch (the files may have been tampered with)\n  expected: ${meta.checksum}\n  actual: ${recomputed}`, 'checksum_mismatch');
   }
 
-  // Ed25519 verification: the signed object is the UTF-8 bytes of the checksum (CONTRACT §3.3).
+  // Ed25519 verification: the signed object is the UTF-8 bytes of the checksum.
   // It goes through the keyset: each pinned key is tried in turn (the key_id in .meta.json is only a
   // key selection hint - it is a dotfile and outside the signature's coverage, so changing it at most
   // makes the client try a few more keys and cannot change the verification outcome);
@@ -188,9 +209,8 @@ async function main() {
   // manifest.min_plugin_version: checked **after** signature verification. This field is in the signed
   // manifest, and only verifying the signature first proves it has not been altered - otherwise anyone
   // could lower it to 0.0.0 and walk past the gate.
-  // Previously it existed only in the schema, with not a single line of server or client code reading
-  // it: all seven skills declared a requirement of 0.8.0 while the Codex plugin sat at 0.1.0, and the
-  // field was quietly wrong without anyone noticing.
+  // The field is only worth declaring if something reads it: a version floor that no code enforces
+  // drifts out of step with the plugins it names and nothing goes red.
   const minPlugin = signedManifest && signedManifest.min_plugin_version;
   if (typeof minPlugin === 'string' && minPlugin && compareSemver(minPlugin, PLUGIN_VERSION) > 0) {
     fail(

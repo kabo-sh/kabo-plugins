@@ -2,24 +2,8 @@
   "mcpServers": {
     "kabo": {
       "type": "http",
-      "url": "https://kabo.sh/mcp"
-    },
-    "connectors": {
-      "command": "node",
-      "args": [
-        "${CLAUDE_PLUGIN_ROOT}/connectors/server.mjs"
-      ],
-      "env": {
-        "YOUTUBE_API_KEY": "${user_config.youtube_api_key}",
-        "TUBELAB_API_KEY": "${user_config.tubelab_api_key}",
-        "SCRAPECREATORS_API_KEY": "${user_config.scrapecreators_api_key}",
-        "GEMINI_API_KEY": "${user_config.gemini_api_key}",
-        "NODE_USE_ENV_PROXY": "1"
-      }
-    },
-    "openseo": {
-      "type": "http",
-      "url": "https://app.openseo.so/mcp"
+      "url": "https://kabo.sh/mcp-for-claude",
+      "headersHelper": "${CLAUDE_PLUGIN_ROOT}/bin/kabo-headers"
     }
   }
 }

@@ -1,0 +1,13 @@
+interface:
+  display_name: "Kabo Skill Router"
+  short_description: "Route creator analytics tasks through verified Kabo skills"
+  default_prompt: "Use $analyze for creator research; $meta-guidance holds the routing rules it follows."
+dependencies:
+  tools:
+    - type: "mcp"
+      value: "kabo"
+      description: "Kabo registry, telemetry, and creator analytics tools"
+      transport: "streamable_http"
+      url: "https://kabo.sh/mcp"
+policy:
+  allow_implicit_invocation: false

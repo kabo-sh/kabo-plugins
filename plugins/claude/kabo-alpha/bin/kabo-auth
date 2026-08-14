@@ -1,44 +1,288 @@
 #!/usr/bin/env node
-// kabo-auth - cleanup of local trust material and caches (CONTRACT §2.7).
+// kabo-auth - terminal sign-in (RFC 8628 device flow), sign-in status, and local cleanup.
 //
-// Since 0.7.0 Kabo needs **a single authorization**: run `/mcp` in a session -> pick `platform` ->
-// complete OAuth in the browser, and the host manages the token. The second, terminal-side login
-// (login/status plus a local credentials file) is gone entirely; the client no longer holds any
-// token, so there is no login state to query.
+// The wire exchange below is frozen: it is what the authorization server implements, and this client
+// must stay in step with it. The UX around it - what is printed, when, in what order - is this
+// file's own.
+//
+// Why a terminal login exists again after 0.7.0 removed one: the host OAuth path is not reliable for
+// a **plugin-bundled** HTTP MCP server - `/mcp` frequently never opens a browser at all
+// (anthropics/claude-code#11585, and #36307 merged into it), so those users get zero logins, not one.
+// The device flow needs nothing from the host: the terminal prints a URL and an 8-character code, and
+// the confirmation can happen on **any** device, phone included.
+//
+// What did NOT come back is the thing 0.9.0 deleted: a static, non-expiring, audience-less token in
+// an environment variable. What `login` stores is a refresh token bound to the `kabo-cli` client and
+// to the MCP resource, valid 30 days, rotated on every renewal, and killed globally by
+// `auth_revoke_all`. There is deliberately no proof-key exchange here either: RFC 8628 has no
+// authorization code to protect, so one would imply a defence that is not operating.
 //
 // Usage:
-//   kabo-auth logout   clear the local skill cache, public keyset, meta-guidance cache, and relay buffer
+//   kabo-auth login [--no-open]  sign in from the terminal (prints the URL and the code, then waits)
+//   kabo-auth status             what this machine holds, and how long it is good for (never a token)
+//   kabo-auth logout             delete the local credential, skill cache, work dirs, keyset, guidance, buffer
 
 import fs from 'node:fs';
-import { cacheRoot, publicKeyPaths, guidanceCachePaths, pendingReportsPath } from '../scripts/lib/common.js';
-
-const NO_LOGIN_NOTICE =
-  'Kabo only needs one authorization: run /mcp in a session and pick platform. There is no second, terminal-side login.\n' +
-  'This command keeps only logout (clearing the local skill cache, the server public keyset, the meta-guidance cache, and the relay buffer).';
+import { spawn } from 'node:child_process';
+import {
+  apiEndpoint, cacheRoot, workRoot, publicKeyPaths, guidanceCachePaths, pendingReportsPath,
+  credentialsPath, credentialsLockPath, readCredentials, writeCredentials, deleteCredentials,
+  safeBrowserUrl,
+} from '../scripts/lib/common.js';
+import {
+  credentialsFromTokens, discoverOAuthEndpoints, msUntil, redeemDeviceCode, requestDeviceCode,
+  POLL_JITTER_MS, SLOW_DOWN_STEP_MS,
+} from '../scripts/lib/credentials.js';
 
 const USAGE = `Usage:
+  kabo-auth login [--no-open]
+  kabo-auth status
   kabo-auth logout
 
 Description:
-  logout  clears the local skill cache, the cached server public keyset, the cached meta-guidance,
-          and the skill verification failure records not yet relayed
-          (to revoke platform-side authorization, use the dashboard or disconnect the connector in the host's /mcp)
+  login   signs in from this terminal: it prints a URL and a short code, opens the URL in a browser
+          when it can, and waits for you to confirm the code (any device works - the confirmation
+          page does not have to be on this machine). --no-open prints and waits without launching
+          anything. The credential is written to ${credentialsPath()} with mode 0600
+  status  whether this machine is signed in, to which deployment, and how long that is good for.
+          It never prints a token, not even a fragment of one
+  logout  deletes the local credential and clears the skill cache, the run work directories, the
+          pinned server keyset, the cached meta-guidance, and the verification failures awaiting relay
+          (to revoke platform-side access on every device, use /kabo-logout, which calls the
+          platform's auth_revoke_all over the authorized MCP connection first)`;
 
-${NO_LOGIN_NOTICE}`;
+/**
+ * The platform opener, or null when there is nobody to open anything.
+ *
+ * Headless is the common case here, not the edge case: this plugin runs inside coding hosts that are
+ * routinely driven over SSH or inside a container. That is exactly why the flow is built so the
+ * printed URL is sufficient - the opener is a convenience layered on top and never the only path.
+ */
+function browserOpener() {
+  if (process.env.CI) return null;
+  if (process.platform === 'darwin') return { command: 'open', args: [] };
+  // Windows: rundll32 url.dll,FileProtocolHandler, **not** `cmd /c start "" <url>`.
+  //
+  // The URL on this path comes from the authorization server's device-code response, i.e. from the
+  // network. `cmd` re-parses its own command line and applies metacharacter processing to it, so a
+  // `&`, `|`, `^` or `%VAR%` inside that URL is read by the shell rather than by the browser - a
+  // response body would be able to run a command on the user's machine. Of the two fixes available
+  // (a non-shell opener, or blocklisting cmd metacharacters), the non-shell opener is the one that
+  // does not depend on a blocklist being complete: rundll32 receives its arguments through
+  // CreateProcess and no shell ever looks at them. It is also the documented way to hand a URL to
+  // the registered handler, so nothing is lost. safeBrowserUrl still runs on every platform - it is
+  // what keeps `file:`/`javascript:` schemes out of any opener, which no amount of quoting would.
+  if (process.platform === 'win32') return { command: 'rundll32', args: ['url.dll,FileProtocolHandler'] };
+  if (!process.env.DISPLAY && !process.env.WAYLAND_DISPLAY) return null;
+  return { command: 'xdg-open', args: [] };
+}
+
+function sleep(ms) {
+  return new Promise((resolve) => { setTimeout(resolve, ms); });
+}
+
+/** "in 27 minutes" / "in 29 days" / "expired" - relative, because an absolute UTC stamp helps nobody */
+function relative(iso) {
+  const ms = msUntil(iso);
+  if (!Number.isFinite(ms) || ms <= 0) return 'expired';
+  const minutes = Math.round(ms / 60000);
+  if (minutes < 60) return `in ${minutes} minute${minutes === 1 ? '' : 's'}`;
+  const hours = Math.round(minutes / 60);
+  if (hours < 48) return `in ${hours} hour${hours === 1 ? '' : 's'}`;
+  return `in ${Math.round(hours / 24)} days`;
+}
+
+function die(code, message) {
+  console.error(message);
+  process.exit(code);
+}
+
+// ---------------------------------------------------------------- login
+
+async function cmdLogin(noOpen) {
+  const endpoint = apiEndpoint();
+
+  // 1. Discovery. Endpoints are discovered, never hardcoded - and this is where that rule pays for
+  // itself: against a deployment that predates the device flow the user gets a sentence instead of a
+  // 404 from a guessed path.
+  const discovered = await discoverOAuthEndpoints(endpoint);
+  if (!discovered.ok) {
+    if (discovered.reason === 'network') {
+      die(2, `Could not reach ${endpoint} to look up how to sign in. Check the network and try again.`);
+    }
+    die(1, `This Kabo deployment (${endpoint}) does not offer terminal sign-in: its authorization server advertises no device endpoint.\nIt predates the device flow. Point KABO_API_ENDPOINT at a current deployment, or install the 0.12.x plugin, which authorizes through the host instead.`);
+  }
+
+  // 2. Ask for a device code. The request carries client_id and scope and nothing else - never a
+  // user_id, which would pre-bind the code to a named user and make the confirmation page a targeted
+  // phishing device.
+  const requested = await requestDeviceCode(discovered.device_authorization_endpoint);
+  if (!requested.ok) {
+    if (requested.reason === 'network') {
+      die(2, `Could not reach ${endpoint} to start the sign-in. Check the network and try again.`);
+    }
+    if (requested.reason === 'invalid_client') {
+      die(1, 'This plugin and that Kabo deployment do not agree on the client identity (invalid_client). Update the plugin.');
+    }
+    die(1, `Kabo refused to start the sign-in (${requested.reason}).`);
+  }
+  const device = requested.device;
+  const userCode = String(device.user_code);
+  // The verification URL is a **server-supplied string** that this process both prints and hands to a
+  // subprocess, so it is constrained before either: it must parse as an absolute http/https URL
+  // (safeBrowserUrl). A deployment that answers with anything else - a `file:` path, a `javascript:`
+  // payload, a bare `--flag` - is not a deployment this client can sign in to, so the run stops here
+  // instead of printing an instruction that would be wrong to follow.
+  const verifyUrl = safeBrowserUrl(
+    typeof device.verification_uri_complete === 'string'
+      ? device.verification_uri_complete
+      : device.verification_uri,
+  );
+  if (!verifyUrl) {
+    die(1, `Kabo returned a verification URL this client will not open (it must be an http or https URL). Nothing was stored; report this against ${endpoint}.`);
+  }
+
+  // 3. Print first, open second. The order is not cosmetic: if the opener throws, or the box is
+  // headless, or the host swallows the spawn, everything the user needs is already on screen. The
+  // whole argument for the device flow is that a terminal does not have to be able to open a browser.
+  console.log('To authorize Kabo, open:\n');
+  console.log(`    ${verifyUrl}\n`);
+  console.log(`and confirm the code:  ${userCode}\n`);
+  const minutes = Math.max(1, Math.round((Number(device.expires_in) || 900) / 60));
+  console.log(`Waiting for approval... (expires in ${minutes} minutes; Ctrl-C to cancel)`);
+
+  const opener = noOpen ? null : browserOpener();
+  if (opener) {
+    try {
+      // Detached with ignored stdio: the opener outlives this process, and a chatty xdg-open must not
+      // pollute the output the model reads back to the user. The only thing handed to the subprocess
+      // is this URL - no token is ever passed through argv - and it has already been through
+      // safeBrowserUrl, so it is a parsed, re-serialized http(s) URL rather than whatever the
+      // response body contained.
+      spawn(opener.command, [...opener.args, verifyUrl], { detached: true, stdio: 'ignore' }).unref();
+    } catch { /* the printed URL above is the whole fallback */ }
+  }
+
+  // 4. Poll. The interval comes from the server, plus jitter, because the server throttles on
+  // ">= interval" and polling exactly on the boundary produces avoidable slow_down responses.
+  // The cadence is the server's to choose (RFC 8628 §3.5); 5s only when it says nothing. A server may
+  // legitimately ask for 0 - the +250ms jitter below still floors the real rate - and honoring that
+  // is what keeps the test suite's polling cases fast without a test-only branch in this code.
+  const advertised = Number(device.interval);
+  let intervalMs = Number.isFinite(advertised) && advertised >= 0 ? advertised * 1000 : 5000;
+  const deadline = Date.now() + (Number(device.expires_in) || 900) * 1000;
+  let networkFailures = 0;
+
+  for (;;) {
+    if (Date.now() >= deadline) {
+      die(1, 'The code expired before it was confirmed. Run /kabo-login to start again.');
+    }
+    await sleep(intervalMs + POLL_JITTER_MS);
+
+    const result = await redeemDeviceCode(discovered.token_endpoint, device.device_code);
+
+    if (result.outcome === 'network') {
+      // A blip mid-poll is not a reason to abandon a code the user may be confirming right now; three
+      // in a row is. Keeping this bounded is what makes an offline run fail in seconds, not minutes.
+      networkFailures += 1;
+      if (networkFailures >= 3) die(2, `Lost contact with ${endpoint} while waiting for approval. Check the network and run /kabo-login again.`);
+      continue;
+    }
+    networkFailures = 0;
+
+    if (result.outcome === 'error') {
+      if (result.code === 'authorization_pending') continue;
+      if (result.code === 'slow_down') {
+        intervalMs += SLOW_DOWN_STEP_MS; // RFC 8628 §3.5: the step is permanent, not per-response
+        continue;
+      }
+      if (result.code === 'expired_token') {
+        die(1, 'The code expired before it was confirmed. Run /kabo-login to start again.');
+      }
+      if (result.code === 'access_denied') {
+        die(1, 'The sign-in was declined in the browser. Nothing was stored on this machine.');
+      }
+      if (result.code === 'server_error') {
+        die(2, 'Kabo could not complete the sign-in (server error). Try again in a moment.');
+      }
+      die(1, `Kabo refused to complete the sign-in (${result.code}). Run /kabo-login to start again.`);
+    }
+
+    // 5. Persist, atomically and 0600. The refresh token is the only thing here worth protecting;
+    // the id_token that came with `openid` is dropped rather than stored.
+    const credentials = credentialsFromTokens({
+      endpoint,
+      issuer: discovered.issuer,
+      tokenEndpoint: discovered.token_endpoint,
+      tokens: result.tokens,
+    });
+    if (!credentials.refresh_token) {
+      // The one silent failure this flow can produce: no refresh token means the scope did not carry
+      // offline_access, and the user would be signed out every 30 minutes with no explanation. Fail
+      // loudly instead.
+      die(1, 'Kabo returned no renewable credential (the deployment did not grant offline_access). Nothing was stored; report this.');
+    }
+    try {
+      writeCredentials(credentials);
+    } catch (err) {
+      die(2, `Signed in, but the credential could not be written to ${credentialsPath()} (${err?.code || 'write failed'}). Fix the permissions on that directory and run /kabo-login again.`);
+    }
+
+    // 6. Success. Not one character of the token appears here, or anywhere else outside the file.
+    console.log('\nAuthorized. Kabo tools will be available in your next Claude Code session.');
+    console.log('If this session already showed Kabo as unavailable, start a new session - the credential is read fresh on every request from a new connection.');
+    process.exit(0);
+  }
+}
+
+// ---------------------------------------------------------------- status
+
+function cmdStatus() {
+  const endpoint = apiEndpoint();
+  const credentials = readCredentials();
+  if (!credentials) {
+    console.log(`Not signed in on this machine (no credential at ${credentialsPath()}).`);
+    console.log('Run /kabo-login in Claude Code to sign in.');
+    process.exit(0);
+  }
+  if (credentials.endpoint !== endpoint) {
+    // Not an error state, but the only state where everything looks fine and nothing works: the
+    // helper refuses to present this credential to a deployment it was not issued for.
+    console.log(`Signed in to ${credentials.endpoint}, but this session is configured for ${endpoint}.`);
+    console.log('The stored credential will not be used. Run /kabo-login to sign in to the configured deployment.');
+    process.exit(0);
+  }
+  console.log(`Signed in to ${credentials.endpoint}`);
+  console.log(`  scope:          ${credentials.scope}`);
+  console.log(`  access expires: ${relative(credentials.access_expires_at)} (renewed automatically)`);
+  console.log(`  sign-in expires: ${relative(credentials.refresh_expires_at)}`);
+  console.log(`  credential:     ${credentialsPath()} (mode 0600)`);
+  process.exit(0);
+}
+
+// ---------------------------------------------------------------- logout
 
 function cmdLogout() {
-  // Logout clears everything: no local trust material is left behind (design doc §5, trust chain,
-  // "logout clears everything").
-  // The public keyset is the TOFU-pinned trust anchor and the meta-guidance cache is verified injected
-  // content - both are trust material; the relay buffer holds only allowlisted fields but still carries
-  // traces of "which skills this machine ran", so logout must clear it too.
+  // Logout clears everything local: the credential first, because that is the half that actually
+  // ends access on this machine (the next MCP request finds no credential, emits no header, and gets
+  // a 401 in the same second), and then the trust material and caches.
+  // The credential path stays in this list even if .mcp.json is ever rolled back to the host OAuth
+  // URL: a rollback would leave a live refresh token in a file nothing reads any more, and abandoning
+  // it on a user's disk is worse than the rollback it came with.
   let cleared = 0;
   for (const target of [
+    { path: credentialsPath(), recursive: false, label: 'local credential' },
+    { path: credentialsLockPath(), recursive: true, label: 'renewal lock' },
     // Note: the <id>.disabled revocation markers also live inside cacheRoot. Clearing them is
     // acceptable - the next SessionStart resyncs from the public endpoint; but until then an offline
     // run loses its basis for blocking, so the semantics of logout must clearly be "clear local trust
     // material and caches", not "routine cleanup".
     { path: cacheRoot(), recursive: true, label: 'skill cache (including revocation markers)' },
+    // Run work directories hold the outputs of this machine's previous runs - the assembled
+    // snapshots, the analyses, the rendered reports. They go with the trust material rather than
+    // after it because logout means "clear this machine's Kabo data and trust material": leaving
+    // them behind ends the flow with the account's own diagnosis still sitting on disk.
+    { path: workRoot(), recursive: true, label: 'run work directories' },
     ...publicKeyPaths().map((p) => ({ path: p, recursive: false, label: 'server public keyset cache' })),
     ...guidanceCachePaths().map((p) => ({ path: p, recursive: false, label: 'meta-guidance cache' })),
     { path: pendingReportsPath(), recursive: false, label: 'verification failure records awaiting relay' },
@@ -48,19 +292,25 @@ function cmdLogout() {
       fs.rmSync(target.path, { recursive: target.recursive, force: true });
     } catch { /* one failure does not affect the rest of the cleanup */ }
   }
-  console.log(`Local Kabo data cleared (skill cache, server public keyset, meta-guidance cache, relay records${cleared === 0 ? '; it was already empty' : ''}).`);
-  console.log("To revoke platform-side authorization, disconnect the platform connection in the dashboard or in the host's /mcp connectors.");
+  // Belt and braces for the one file that matters: deleteCredentials also removes a lock left behind
+  // by a process that was killed mid-renewal.
+  deleteCredentials();
+  console.log(`Local Kabo data cleared (credential, skill cache, run work directories, server public keyset, meta-guidance cache, relay records${cleared === 0 ? '; it was already empty' : ''}).`);
+  console.log('This machine can no longer call Kabo. Access elsewhere is unaffected: revoking on every device is what /kabo-logout does first, through the platform\'s auth_revoke_all tool.');
 }
 
-const [cmd] = process.argv.slice(2);
+// ---------------------------------------------------------------- dispatch
+
+const [cmd, ...rest] = process.argv.slice(2);
 if (!cmd || cmd === '--help' || cmd === '-h' || cmd === 'help') {
   console.log(USAGE);
   process.exit(cmd ? 0 : 1);
 } else if (cmd === 'logout') {
   cmdLogout();
-} else if (cmd === 'login' || cmd === 'status') {
-  console.log(NO_LOGIN_NOTICE);
-  process.exit(0);
+} else if (cmd === 'login') {
+  await cmdLogin(rest.includes('--no-open'));
+} else if (cmd === 'status') {
+  cmdStatus();
 } else {
   console.error(`Unknown subcommand: ${cmd}\n\n${USAGE}`);
   process.exit(1);

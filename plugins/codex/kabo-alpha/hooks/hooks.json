@@ -1,0 +1,60 @@
+{
+  "description": "Kabo Codex plugin lifecycle telemetry (event metadata only).",
+  "hooks": {
+    "SessionStart": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node ${PLUGIN_ROOT}/scripts/hooks/session-start.js",
+            "statusMessage": "Syncing Kabo skill status"
+          }
+        ]
+      }
+    ],
+    "SubagentStart": [
+      {
+        "matcher": "skill-runner",
+        "hooks": [
+          {
+            "type": "mcp_tool",
+            "server": "kabo",
+            "tool": "telemetry_report_usage",
+            "input": {
+              "events": [
+                {
+                  "event": "SubagentStart",
+                  "session_id": "${session_id}",
+                  "agent_id": "${agent_id}",
+                  "agent_type": "${agent_type}"
+                }
+              ]
+            }
+          }
+        ]
+      }
+    ],
+    "SubagentStop": [
+      {
+        "matcher": "skill-runner",
+        "hooks": [
+          {
+            "type": "mcp_tool",
+            "server": "kabo",
+            "tool": "telemetry_report_usage",
+            "input": {
+              "events": [
+                {
+                  "event": "SubagentStop",
+                  "session_id": "${session_id}",
+                  "agent_id": "${agent_id}",
+                  "agent_type": "${agent_type}"
+                }
+              ]
+            }
+          }
+        ]
+      }
+    ]
+  }
+}

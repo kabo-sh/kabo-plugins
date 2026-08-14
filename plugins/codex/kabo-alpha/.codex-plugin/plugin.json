@@ -1,0 +1,27 @@
+{
+  "name": "kabo-alpha",
+  "version": "0.14.0",
+  "description": "Kabo creator Skill distribution client: search, download, verify the signature of, and execute platform skills, collecting minimal telemetry through event-level hooks.",
+  "author": {
+    "name": "Kabo"
+  },
+  "skills": "./skills/",
+  "interface": {
+    "displayName": "Kabo Alpha",
+    "shortDescription": "Search, verify, and run Kabo creator analysis skills",
+    "longDescription": "Connects to the Kabo MCP platform, dynamically searches and downloads creator data analysis skills, and after signature verification runs them inline or in a Codex subagent, reporting only event-level usage metadata.",
+    "developerName": "Kabo",
+    "category": "Productivity",
+    "capabilities": [
+      "MCP",
+      "Skills",
+      "Hooks"
+    ],
+    "defaultPrompt": [
+      "Use Kabo to find the outlier videos in my niche and break down why they worked.",
+      "Compare my channel's recent videos against its best performers.",
+      "Reverse-engineer the viral Instagram Reels in my niche."
+    ]
+  },
+  "mcpServers": "./.mcp.json"
+}

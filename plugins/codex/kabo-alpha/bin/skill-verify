@@ -1,0 +1,193 @@
+#!/usr/bin/env node
+// skill-verify - integrity verification of the skill cache.
+// Usage: skill-verify <skill-dir>
+// Steps:
+//   1. Read <skill-dir>/.meta.json ({id, version, checksum, signature, format_version?, ...})
+//   2. Revocation check: a <data root>/skill-cache/<id>.disabled marker means reject
+//   3. Recompute the checksum (algorithm verbatim identical to the server's, see computeChecksum in
+//      common.js) and compare it against .meta.json
+//   4. Verify the signature with the locally pinned server Ed25519 keyset, refreshing once via a
+//      continuity proof when necessary
+// Exit 0 on success; on any failed step print the reason, exit 1, and leave one skill_verify_fail
+// event awaiting relay.
+import fs from 'node:fs';
+import path from 'node:path';
+import {
+  readJsonSilent, disabledMarkerPath,
+  computeChecksum, artifactFormatOf, appendPendingReport, verifySignedChecksum,
+  compareSemver, PLUGIN_VERSION,
+  isSafeName,
+  apiEndpoint, writeJsonSilent, fetchJsonSilent,
+} from '../scripts/lib/common.js';
+const USAGE = `Usage: skill-verify <skill-dir>
+  Verifies the checksum and Ed25519 signature of a skill already written to disk; exit 0 on success, exit 1 with a printed reason on failure`;
+/**
+ * Since 0.9.0 this script **no longer reports anything itself**: it is a shell subprocess and never
+ * has an MCP connection, and keeping automatic reporting would mean keeping a client credentials file
+ * - exactly the thing being removed. Instead it prints one machine-readable line as the final stderr
+ * line, which meta-guidance directs the main agent to relay once on a best-effort basis.
+ * That is a best-effort **quality signal**: the model may ignore it and it can be forged, so it is not
+ * a security audit trail; the real security guarantee is local - a failed signature verification means
+ * exit 1 and the skill does not run.
+ */
+function fail(meta, reason, errorType) {
+  console.error(`Verification failed: ${reason}`);
+  // Leave a line locally for relay: that stderr line is only relayed if the main agent happens to read
+  // this output, and a background run, a truncated output, or an interrupted session would lose the
+  // signal entirely. Writing it to disk lets it survive to the next session.
+  // Purely best-effort: if it cannot be written, the exit 1 below is unaffected - refusing to execute
+  // locally is the actual security guarantee.
+  appendPendingReport({
+    skill_id: meta && meta.id,
+    skill_version: meta && meta.version,
+    error_type: errorType,
+  });
+  const cell = (v) => (v == null || v === '' ? '-' : String(v).replace(/\s+/g, '_'));
+  console.error(
+    `KABO_VERIFY_FAIL error_type=${cell(errorType)} ` +
+    `skill_id=${cell(meta && meta.id)} skill_version=${cell(meta && meta.version)}`,
+  );
+  process.exit(1);
+}
+/** Recursively collect every file under dir (relative paths, posix separators).
+ *  Dotfiles are always skipped (dotfiles neither go into a package nor take part in verification,
+ *  matching the server's packaging; this also naturally excludes the on-disk metadata .meta.json
+ *  plus stray dotfiles such as .DS_Store and editor temp files). */
+function collectFiles(dir, base = '') {
+  const out = [];
+  for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+    const rel = base ? `${base}/${entry.name}` : entry.name;
+    if (entry.name.startsWith('.')) continue;
+    const full = path.join(dir, entry.name);
+    if (entry.isDirectory()) {
+      out.push(...collectFiles(full, rel));
+    } else if (entry.isFile()) {
+      out.push({ path: rel, content: fs.readFileSync(full) });
+    }
+  }
+  return out;
+}
+async function main() {
+  const args = process.argv.slice(2);
+  if (args.length === 0 || args[0] === '--help' || args[0] === '-h') {
+    console.log(USAGE);
+    process.exit(args.length === 0 ? 1 : 0);
+  }
+  if (args.length > 1) {
+    console.error(`Too many arguments\n\n${USAGE}`);
+    process.exit(1);
+  }
+  const dir = path.resolve(args[0]);
+  if (!fs.existsSync(dir) || !fs.statSync(dir).isDirectory()) {
+    fail(null, `directory does not exist: ${dir}`, 'dir_not_found');
+  }
+  const meta = readJsonSilent(path.join(dir, '.meta.json'));
+  if (!meta || typeof meta.checksum !== 'string' || typeof meta.signature !== 'string') {
+    fail(meta, `.meta.json is missing or incomplete: ${path.join(dir, '.meta.json')}`, 'meta_invalid');
+  }
+  // The revocation identity must come from material **covered by the signature**. .meta.json is a
+  // dotfile and is not in the signed manifest, so changing its id would make the kill-switch check the
+  // wrong subject while signature verification still passes - the Claude variant has long
+  // cross-checked against manifest.name, and the same check is added here (it was a porting gap).
+  let signedId = null;
+  try {
+    const manifest = JSON.parse(fs.readFileSync(path.join(dir, 'manifest.json'), 'utf8'));
+    if (typeof manifest.name === 'string') signedId = manifest.name;
+  } catch { /* missing/corrupt: handled as "identity cannot be confirmed" */ }
+  if (!signedId || !isSafeName(signedId)) {
+    fail(meta, 'manifest.json is missing or its name is illegal, so the skill identity cannot be confirmed (the revocation check would be unreliable)', 'meta_invalid');
+  }
+  if (meta.id && meta.id !== signedId) {
+    fail(meta, `the .meta.json id "${meta.id}" does not match the signed manifest.name "${signedId}", refusing to execute`, 'id_mismatch');
+  }
+  // Revocation check a: the local marker (the only basis when offline, written by SessionStart)
+  if (fs.existsSync(disabledMarkerPath(signedId))) {
+    fail(meta, `skill "${signedId}" has been revoked by the platform (disabled locally), refusing to execute`, 'revoked');
+  }
+
+  // Revocation check b: query the public endpoint live. A session can run for a long time, so the
+  // snapshot from SessionStart may be stale; revocation is a security kill-switch and must be
+  // reconfirmed before execution (the same check as in the Claude variant; it was a porting gap).
+  // When unreachable (null), fall back to the result of a.
+  {
+    const resp = await fetchJsonSilent(`${apiEndpoint()}/api/sync`, {}, 2500);
+    const revoked = resp && Array.isArray(resp.revocations)
+      ? resp.revocations.includes(signedId)
+      : null;
+    if (revoked === true) {
+      // Persist the marker while we are here, so later offline runs are blocked too (signedId already passed isSafeName)
+      writeJsonSilent(disabledMarkerPath(signedId), {
+        id: signedId,
+        reason: 'revoked',
+        revoked_at: new Date().toISOString(),
+      });
+      fail(meta, `skill "${signedId}" has been revoked by the platform (live query hit), refusing to execute`, 'revoked');
+    }
+  }
+  // Recompute the checksum. Which canonical bytes apply is decided by the format_version
+  // skill-unpack copied out of the package - this process never sees the response body, so without
+  // that field there is nothing to decide from. Absent means the legacy bytes, and a version this
+  // plugin does not implement is a refusal rather than a guess (compat rule in common.js). The
+  // field is a dotfile field and unsigned; tampering with it can only pick the wrong algorithm,
+  // which ends here in a mismatch - it can never turn a bad package into a good one.
+  const format = artifactFormatOf(meta);
+  if (!format.ok) {
+    fail(
+      meta,
+      `this skill was signed with artifact format_version ${JSON.stringify(meta.format_version)}, which this plugin (${PLUGIN_VERSION}) cannot verify; upgrade the plugin`,
+      'unsupported_artifact_format',
+    );
+  }
+  const files = collectFiles(dir);
+  if (files.length === 0) fail(meta, 'the directory is empty, there is nothing to verify', 'empty_dir');
+  let recomputed = null;
+  try {
+    recomputed = computeChecksum(files, format.formatVersion);
+  } catch (err) {
+    // An illegal path on disk (a backslash, a NUL, a newline in a file name) cannot appear in a
+    // signed manifest at all, so the cached tree cannot be the one that was signed.
+    fail(meta, `the cached files cannot form a signed manifest: ${err.message}`, 'checksum_mismatch');
+  }
+  if (recomputed !== meta.checksum) {
+    fail(meta, `checksum mismatch (the files may have been tampered with)\n  expected: ${meta.checksum}\n  actual: ${recomputed}`, 'checksum_mismatch');
+  }
+  // Ed25519 verification: the signed object is the UTF-8 bytes of the checksum.
+  // key_id is a key selection hint from the server (not signed, and tamperable); it is used only to
+  // order the keys tried and to decide whether to run one continuity refresh - success still comes
+  // down to whether any pinned key verifies.
+  const keyId = typeof meta.key_id === 'string' && meta.key_id ? meta.key_id : null;
+  const verdict = await verifySignedChecksum(meta.checksum, meta.signature, keyId);
+  if (!verdict.ok) {
+    if (verdict.reason === 'public_key_unavailable') {
+      fail(meta, 'cannot obtain the server public key (no local pin and /api/public-key is unreachable)', 'public_key_unavailable');
+    }
+    fail(meta, 'Ed25519 signature verification failed (the package may be forged, or a key rotation lacks its continuity proof)', 'signature_invalid');
+  }
+
+  // min_plugin_version: checked **after** signature verification - this field is in the signed
+  // manifest, and only verifying the signature first proves it has not been altered; otherwise anyone
+  // could lower it to 0.0.0 and walk past the gate.
+  let signedManifest = null;
+  try {
+    signedManifest = JSON.parse(fs.readFileSync(path.join(dir, 'manifest.json'), 'utf8'));
+  } catch {
+    fail(meta, 'manifest.json is missing or unparseable, so min_plugin_version cannot be checked', 'meta_invalid');
+  }
+  const minPlugin = signedManifest.min_plugin_version;
+  if (typeof minPlugin === 'string' && minPlugin && compareSemver(minPlugin, PLUGIN_VERSION) > 0) {
+    fail(
+      meta,
+      `this skill requires plugin version >= ${minPlugin}, but the current plugin is ${PLUGIN_VERSION}; upgrade the plugin first`,
+      'plugin_too_old',
+    );
+  }
+
+  console.log(`Verification passed: ${meta.id || '?'}@${meta.version || '?'} (checksum and ed25519 signature are both valid)`);
+  process.exit(0);
+}
+main().catch((err) => {
+  console.error(`Verification failed: ${err.message}`);
+  console.error('KABO_VERIFY_FAIL error_type=internal_error skill_id=- skill_version=-');
+  appendPendingReport({ error_type: 'internal_error' });
+  process.exit(1);
+});

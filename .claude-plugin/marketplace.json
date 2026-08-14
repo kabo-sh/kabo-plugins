@@ -4,14 +4,14 @@
     "name": "Kabo Platform"
   },
   "metadata": {
-    "description": "The official Kabo plugin marketplace: the Claude Code client for the creator-focused Skill distribution platform.",
-    "version": "0.11.2"
+    "description": "Kabo official plugin marketplace: clients (Claude Code / Codex) for the creator-focused Skill distribution platform. The server and the skill sources are not in this repo.",
+    "version": "0.14.0"
   },
   "plugins": [
     {
       "name": "kabo-alpha",
       "source": "./plugins/claude/kabo-alpha",
-      "description": "The Kabo client plugin: skill search/download/verification, restricted subagent execution orchestration, dynamic routing guidance (injected after Ed25519 signature verification)",
+      "description": "Kabo client plugin: skill search/download/verification, skill-runner execution orchestration, dynamic meta-guidance (injected after Ed25519 signature verification). Usage telemetry is limited to event-level metadata (which skill ran and whether it succeeded); no prompt, tool or skill-output content is collected.",
       "author": {
         "name": "Kabo Platform"
       }

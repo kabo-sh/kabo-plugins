@@ -1,0 +1,8 @@
+{
+  "mcpServers": {
+    "kabo": {
+      "url": "https://kabo.sh/mcp",
+      "auth": "oauth"
+    }
+  }
+}

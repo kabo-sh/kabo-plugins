@@ -1,0 +1,171 @@
+#!/usr/bin/env node
+// kabo-auth - opens the sign-in page, and cleans up local trust material and caches.
+//
+// Since 0.9.0 the Codex variant is aligned with the Claude variant: **no Kabo token is stored on this
+// machine at all**. Authorization happens at the MCP connection layer - `codex mcp login kabo` opens
+// the browser to complete OAuth, and the host holds and renews the token. The second, terminal-side
+// login (login/status plus credentials.json) is gone entirely, so there is no login state to query.
+//
+// `login` therefore does exactly one thing and holds nothing: it opens the platform sign-in page in
+// a browser. That is not a second login - it pre-warms the **web** session so that the consent screen
+// `codex mcp login kabo` shows a moment later is one click instead of a full sign-in. This process
+// never sees, receives, or writes a token; if it ever needs to, that is the bug.
+//
+// Usage:
+//   kabo-auth login    open the platform sign-in page in a browser (also prints the URL)
+//   kabo-auth logout   clear the local skill cache, the run work directories, the pinned server public keyset, and the events awaiting relay
+
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
+import { spawn } from 'node:child_process';
+import { apiEndpoint, cacheRoot, workRoot, guidanceCachePaths, publicKeyPaths, pendingReportsPath, safeBrowserUrl } from '../scripts/lib/common.js';
+
+const NO_LOGIN_NOTICE =
+  'Kabo only needs a single sign-in: run `codex mcp login kabo` once to complete the browser flow. There is no second, terminal-side login.\n' +
+  'This command only opens the sign-in page and clears local caches - it never handles a token.';
+
+/**
+ * What the usage text names as the sign-in target.
+ *
+ * It goes through the same gate the opener does, because printing is not the safer half of the pair:
+ * this line says "opens <x> in a browser", the output is read back by a model as well as by a human,
+ * and a `file:`/`javascript:` value there is an instruction to do the thing cmdOpenSignIn refuses to
+ * do. The value comes from KABO_API_ENDPOINT, which a project-level environment can set, so it is not
+ * a constant. When it is unusable the sentence names the variable rather than the value - `kabo-auth`
+ * with no subcommand prints this text, and that path takes no other input.
+ */
+const SIGN_IN_TARGET = safeBrowserUrl(signInURL())
+  ?? 'the deployment sign-in page (KABO_API_ENDPOINT is not an http or https URL, so there is none)';
+
+const USAGE = `Usage:
+  kabo-auth login [--no-open]
+  kabo-auth logout
+
+Description:
+  login   opens ${SIGN_IN_TARGET} in a browser so the web session is warm before \`codex mcp login kabo\`;
+          the URL is always printed as well, so a headless or blocked opener costs nothing
+          (--no-open prints the URL only)
+  logout  clears the local skill cache, the run work directories, the pinned server public keyset,
+          and the verification failure events awaiting relay
+          (to revoke platform-side access on every device, use $kabo-logout, which calls the
+          platform's auth_revoke_all over the already-connected MCP link)
+
+${NO_LOGIN_NOTICE}`;
+
+/** The sign-in page of the configured deployment (KABO_API_ENDPOINT overrides the default). */
+function signInURL() {
+  return `${apiEndpoint()}/login`;
+}
+
+/**
+ * The platform opener, or null when there is nobody to open anything.
+ *
+ * Headless is the common case here, not the edge case: this plugin runs inside coding hosts that are
+ * routinely driven over SSH or inside a container, where spawning xdg-open produces an error on
+ * stderr and no window. Printing the URL is the behaviour that always works, so the opener is a
+ * best-effort addition on top of it and never the only path.
+ */
+function browserOpener() {
+  if (process.env.CI) return null;
+  if (process.platform === 'darwin') return { command: 'open', args: [] };
+  // Windows: rundll32 url.dll,FileProtocolHandler, **not** `cmd /c start "" <url>`.
+  //
+  // Unlike the Claude variant this URL is built locally (`${apiEndpoint()}/login`) rather than read
+  // out of a server response - but "locally built" is not "trusted": apiEndpoint() is
+  // `KABO_API_ENDPOINT`, an ordinary environment variable that a project-level environment can set,
+  // and until now nothing checked that it even parsed as a URL. `cmd` re-parses its own command line
+  // and applies metacharacter processing, so a `&`, `|`, `^` or `%VAR%` inside that value would be
+  // read by the shell rather than by the browser. Of the two fixes available (a non-shell opener, or
+  // blocklisting cmd metacharacters), the non-shell opener is the one that does not depend on a
+  // blocklist being complete: rundll32 receives its arguments through CreateProcess and no shell
+  // ever looks at them. safeBrowserUrl runs on every platform and covers the other half - a scheme
+  // like `file:` or `javascript:` is a problem no amount of quoting would fix.
+  if (process.platform === 'win32') return { command: 'rundll32', args: ['url.dll,FileProtocolHandler'] };
+  if (!process.env.DISPLAY && !process.env.WAYLAND_DISPLAY) return null;
+  return { command: 'xdg-open', args: [] };
+}
+
+function cmdOpenSignIn(noOpen) {
+  const raw = signInURL();
+  const url = safeBrowserUrl(raw);
+  if (!url) {
+    // Printing it would be no better than opening it: the printed line is read back by a model and
+    // by the user, and telling either to open a `file:`/`javascript:` target is the same mistake one
+    // step removed. KABO_API_ENDPOINT is the only way to get here, so name it.
+    console.error(`KABO_API_ENDPOINT is not an http or https URL (${JSON.stringify(raw)}), so there is no sign-in page to open. Fix the endpoint and run kabo-auth login again.`);
+    process.exit(1);
+  }
+  const opener = noOpen ? null : browserOpener();
+  if (opener) {
+    try {
+      // Detached + ignored stdio: the opener outlives this process, and a chatty xdg-open must not
+      // pollute the output the model reads back to the user. The argument is safeBrowserUrl's own
+      // re-serialization, not the raw environment value.
+      spawn(opener.command, [...opener.args, url], { detached: true, stdio: 'ignore' }).unref();
+      console.log(`Opening the Kabo sign-in page in your browser: ${url}`);
+    } catch {
+      console.log(`Could not launch a browser. Open this page yourself: ${url}`);
+    }
+  } else {
+    console.log(`Open this page in a browser to sign in: ${url}`);
+  }
+  console.log('Sign in there first, then run `codex mcp login kabo` to connect - the host holds the token, this machine stores nothing.');
+}
+
+function cmdLogout() {
+  // Logout clears everything: no local trust material is left behind. The pinned public keyset is the
+  // trust anchor and therefore trust material; pending-reports holds events produced on this machine
+  // that have not been relayed yet, and after logout nobody will relay them, so keeping them would
+  // only leave dirty data.
+  let cleared = 0;
+  const targets = [
+    // Note: the <id>.disabled revocation markers also live inside cacheRoot. Clearing them is
+    // acceptable - the next SessionStart resyncs from the public endpoint; but until then an offline
+    // run loses its basis for blocking, so the semantics of logout must clearly be "clear local trust
+    // material and caches", not "routine cleanup".
+    { path: cacheRoot(), recursive: true },
+    // Run work directories hold the outputs of this machine's previous runs - the assembled
+    // snapshots, the analyses, the rendered reports. They go with the trust material rather than
+    // after it because logout means "clear this machine's Kabo data and trust material": leaving
+    // them behind ends the flow with the account's diagnosis still sitting on disk.
+    { path: workRoot(), recursive: true },
+    ...publicKeyPaths().map((p) => ({ path: p, recursive: false })),
+    { path: pendingReportsPath(), recursive: false },
+    ...guidanceCachePaths().map((p) => ({ path: p, recursive: false })),
+  ];
+  for (const target of targets) {
+    try {
+      if (fs.existsSync(target.path)) cleared += 1;
+      fs.rmSync(target.path, { recursive: target.recursive, force: true });
+    } catch { /* one failure does not affect the rest of the cleanup */ }
+  }
+
+  // Nothing here touches ~/.kabo/credentials.json. That path is not this variant's - dataRoot() here
+  // is ~/.kabo/codex, and Codex stores no credential of its own at all, because the host holds the
+  // token. It is the *Claude* variant's live sign-in (its dataRoot() is ~/.kabo), so anything this
+  // command did to it could only ever damage the other plugin, never clear something of ours.
+  console.log(`Local Kabo data cleared (skill cache, run work directories, server public keyset, events awaiting relay${cleared === 0 ? '; it was already empty' : ''}).`);
+  console.log("This clears local files only. Revoking platform-side access on every device is what $kabo-logout does through the platform's auth_revoke_all tool.");
+}
+
+const [cmd, ...rest] = process.argv.slice(2);
+if (!cmd || cmd === '--help' || cmd === '-h' || cmd === 'help') {
+  console.log(USAGE);
+  process.exit(0);
+}
+if (cmd === 'logout') {
+  cmdLogout();
+  process.exit(0);
+}
+if (cmd === 'login') {
+  cmdOpenSignIn(rest.includes('--no-open'));
+  process.exit(0);
+}
+if (cmd === 'status') {
+  // There is no login state on this machine to report, so the honest answer is the notice itself.
+  console.log(NO_LOGIN_NOTICE);
+  process.exit(0);
+}
+console.error(`Unknown subcommand: ${cmd}\n\n${USAGE}`);
+process.exit(1);

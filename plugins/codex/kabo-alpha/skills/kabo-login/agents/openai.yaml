@@ -1,0 +1,6 @@
+interface:
+  display_name: "Kabo Login"
+  short_description: "Open Kabo's sign-in page, then authorize the MCP connection"
+  default_prompt: "Use $kabo-login to connect me to Kabo."
+policy:
+  allow_implicit_invocation: false

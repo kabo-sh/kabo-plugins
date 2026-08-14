@@ -1,0 +1,95 @@
+#!/usr/bin/env node
+// kabo-headers - the `headersHelper` the bundled MCP server is configured with (.mcp.json).
+//
+// The host runs this once per MCP request and reads **one line of JSON** from stdout, which it merges
+// into the request headers. The contract this helper has to satisfy, exactly:
+//
+//   stdout on success: {"Authorization":"Bearer <jwt>"}\n   - exactly that, one line, nothing else
+//   stdout on failure: 0 bytes
+//   exit 0  header emitted
+//   exit 1  no credential / credential belongs to another endpoint / the refresh token is dead or
+//           expired -> the user must sign in again, so the stderr line must name /kabo-login
+//   exit 2  the authorization server could not be reached -> a network problem, NOT a sign-in
+//           problem; the credential file is left untouched
+//
+// The host only distinguishes zero from non-zero. The two non-zero codes exist for humans and for the
+// test suite - and precisely because the host cannot tell them apart, the single stderr line has to.
+// A user who redoes the whole login because of one flaky minute was failed by that line.
+//
+// WARNING - this is the only file in the plugin allowed to contain the Authorization/Bearer literals.
+// The token is never written to argv, env, logs or stderr; only to stdout, as one line of JSON:
+//   - no token, token prefix, token length or "masked" fragment on stderr. There is deliberately no
+//     masking helper anywhere in this tree: a program that never prints a token does not need one,
+//     and having one guarantees somebody eventually prints "just the safe part";
+//   - no log file and no debug switch of any kind that could dump the header;
+//   - no subprocess (so no token in argv) and no environment variable carrying a token. This file
+//     imports no process-spawning module at all, and must keep importing none.
+
+import fs from 'node:fs';
+import { apiEndpoint, readCredentials } from '../scripts/lib/common.js';
+import { accessTokenUsable, ensureFreshAccessToken } from '../scripts/lib/credentials.js';
+
+/** Recovery line for exit 1. It must name /kabo-login: this is the only text the stuck user gets. */
+const NEEDS_LOGIN =
+  'Kabo is not authorized on this machine. Run /kabo-login in Claude Code to sign in (a browser tab confirms a short code).';
+/** Recovery line for exit 2. It must NOT send anyone through a login they do not need. */
+const UNREACHABLE =
+  'Could not reach the Kabo authorization server (network error or timeout). Your sign-in is still valid; retry in a moment.';
+
+/**
+ * Blocking write to a file descriptor.
+ *
+ * process.stdout.write is asynchronous when stdout is a pipe - which it always is here, since the
+ * host reads us - and process.exit() would then truncate the very line the host is waiting for. That
+ * failure mode is intermittent and looks exactly like "the helper produced no header".
+ */
+function writeFd(fd, text) {
+  const buf = Buffer.from(text, 'utf8');
+  let offset = 0;
+  while (offset < buf.length) {
+    try {
+      offset += fs.writeSync(fd, buf, offset);
+    } catch (err) {
+      if (err && err.code === 'EAGAIN') continue; // non-blocking pipe not ready yet
+      return;
+    }
+  }
+}
+
+function fail(code) {
+  writeFd(2, `${code === 1 ? NEEDS_LOGIN : UNREACHABLE}\n`);
+  process.exit(code);
+}
+
+// Hard budget. The host allows 10s per helper invocation; a stuck renewal must not spend all of it on
+// every MCP request. Being marked needs-auth is recoverable; a session where every tool call hangs for
+// ten seconds is not. unref() so a fast path is never held open by this timer.
+const budget = setTimeout(() => fail(2), 9500);
+budget.unref();
+
+try {
+  const endpoint = apiEndpoint();
+
+  // Fast path first: roughly 98% of calls have a cached access token that is not close to expiry, and
+  // those must cost zero network round trips.
+  const cached = readCredentials();
+  if (!cached) fail(1);
+  if (cached.endpoint !== endpoint) fail(1);
+
+  let accessToken;
+  if (accessTokenUsable(cached)) {
+    accessToken = cached.access_token;
+  } else {
+    const resolved = await ensureFreshAccessToken(endpoint);
+    if (resolved.status === 'needs_login') fail(1);
+    if (resolved.status !== 'ok') fail(2);
+    accessToken = resolved.access_token;
+  }
+
+  writeFd(1, `${JSON.stringify({ Authorization: `Bearer ${accessToken}` })}\n`);
+  process.exit(0);
+} catch {
+  // Anything unexpected is reported as a transport problem and never as a printed exception: a stack
+  // trace is the one place a token could otherwise reach stderr.
+  fail(2);
+}

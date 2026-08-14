@@ -1,0 +1,13 @@
+interface:
+  display_name: "Kabo Skill Runner"
+  short_description: "Run one verified downloaded Kabo skill in a Codex subagent"
+  default_prompt: "Use $skill-runner with a verified skill path and task summary."
+dependencies:
+  tools:
+    - type: "mcp"
+      value: "kabo"
+      description: "Kabo data tools required by downloaded skills"
+      transport: "streamable_http"
+      url: "https://kabo.sh/mcp"
+policy:
+  allow_implicit_invocation: false

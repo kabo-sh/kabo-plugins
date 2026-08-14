@@ -1,15 +1,25 @@
 // Kabo plugin shared utility library (used by both hook scripts and bin/ executables).
 //
-// Since 0.7.0 this plugin holds **no client credentials at all**:
-//   - The user authorizes once per session: `/mcp` -> pick `kabo` (the host manages the token).
-//   - Every action needing a token (tool calls, telemetry reporting) rides that authorized MCP connection.
-//   - The client only touches three **public read-only** endpoints: GET /api/sync, GET /api/meta-guidance,
-//     GET /api/public-key. They take no arguments, carry no identity, and upload no user data.
-//   So this file no longer reads/writes local credentials, discovers OAuth endpoints, or renews tokens.
+// Since 0.13.0 the Claude variant authorizes through an RFC 8628 device flow run by `kabo-auth login`,
+// and the resulting refresh token lives in one local file (see the credential section at the end):
+//   - The user authorizes once per machine: `/kabo-login` -> confirm an 8-character code in a browser
+//     tab (any device works), and the token lands in <data root>/credentials.json with mode 0600.
+//   - The bundled MCP server is configured with `headersHelper`, so every MCP request asks
+//     bin/kabo-headers for the auth header instead of asking the host to run OAuth.
+//   - Everything else is unchanged: the three **public read-only** endpoints (GET /api/sync,
+//     GET /api/meta-guidance, GET /api/public-key) take no arguments and carry no identity, and this
+//     file still never assembles an auth header - that lives in exactly one file, bin/kabo-headers.
 //
-// WARNING - collection boundary (CONTRACT §2.4 / §4):
-//   Tool-level telemetry is recorded by the server itself; skill-runner's skill_output is reported
-//   directly by the mcp_tool hook in hooks.json (see CONTRACT §2.4). The client's only local buffer
+// What 0.7.0/0.9.0 deleted stays deleted: the static, non-expiring, audience-less environment
+// token and the helper written around it (their names stay banned by the test suite, which is why
+// they are not spelled here). The token stored now is bound to the `kabo-cli` client and to the MCP
+// resource, expires in 30 days, rotates strictly on every renewal, and dies globally the moment
+// `auth_revoke_all` is called.
+//
+// WARNING - collection boundary:
+//   Tool-level telemetry is recorded by the server itself; skill-runner start/stop events are
+//   reported directly by the mcp_tool hooks in hooks.json, metadata only - no subagent output and
+//   no other content-level field ever rides that channel. The client's only local buffer
 //   is pending-reports.jsonl: it stores only the **telemetry allowlist fields** of skill-verify
 //   failure events, and it is not a reporting channel - reporting still happens only when the main
 //   agent rides the authorized MCP connection (see the pending-reports section at the end of this file).
@@ -22,7 +32,7 @@
 //   Being able to collect it does not mean it should be collected; the implementation side holds this line.
 //
 // Every function follows the "silent degradation" principle: no failure throws, and none affects the
-// user's session (CONTRACT §2.4).
+// user's session.
 
 import fs from 'node:fs';
 import path from 'node:path';
@@ -30,12 +40,12 @@ import os from 'node:os';
 import crypto from 'node:crypto';
 import { fileURLToPath } from 'node:url';
 
-export const PLUGIN_VERSION = '0.11.2';
+export const PLUGIN_VERSION = '0.14.0';
 export const SUPPORTED_API_VERSION = '1.0.0';
 export const DEFAULT_ENDPOINT = 'https://kabo.sh';
-export const CACHE_TTL_MS = 14 * 24 * 60 * 60 * 1000; // skill cache TTL: 14 days (CONTRACT §2.3)
+export const CACHE_TTL_MS = 14 * 24 * 60 * 60 * 1000; // skill cache TTL: 14 days
 
-// ---------- Paths / endpoint conventions (CONTRACT §2.3) ----------
+// ---------- Paths / endpoint conventions ----------
 
 /**
  * Plugin data root, fixed at ~/.kabo.
@@ -52,8 +62,12 @@ export function dataRoot() {
 
 /**
  * Platform API root (trailing slashes stripped).
- * Since 0.7.0 the endpoint no longer comes from a credentials file (there is none); only an
- * environment variable override is honored, defaulting to https://kabo.sh.
+ *
+ * The **source** of this value is still exactly one place: `KABO_API_ENDPOINT` or the default
+ * https://kabo.sh. 0.13.0 brought back a credentials file, and that file also records an `endpoint`
+ * - but it is only ever **compared** against this function's result, never read as the value.
+ * If the two disagree, bin/kabo-headers refuses to emit a header at all, which is the cheap
+ * client-side version of "do not present A's token to B".
  * hooks and bin/* must use the same source, otherwise the revocation list comes from A while
  * the signature verification public key comes from B.
  */
@@ -64,6 +78,26 @@ export function apiEndpoint() {
 
 export function cacheRoot() {
   return path.join(dataRoot(), 'skill-cache');
+}
+
+/**
+ * Where a run writes: `<data root>/work/<run-id>/`, one directory per run, created by the
+ * skill-runner subagent itself under `umask 077` (see agents/skill-runner.md).
+ *
+ * Same root as the skill cache, a different branch, and deliberately not the same branch:
+ * bin/skill-verify recomputes the checksum of every non-dot file under a cached skill directory,
+ * so a single analyzer output left there makes that skill fail checksum_mismatch on its next run.
+ * Reclamation is not shared with the cache either, although both use CACHE_TTL_MS: a cache entry's
+ * age comes from `downloaded_at` in its .meta.json, while a run directory has no such file and can
+ * only be judged by its own mtime. One loop reading two different clocks would silently treat
+ * "no .meta.json" as "expired", which is right for the cache and wrong here.
+ *
+ * Byte-for-byte the same convention as the Codex variant, one root apart (`~/.kabo` here,
+ * `$KABO_CODEX_DATA || ~/.kabo/codex` there): the skills that write into it are the same skills,
+ * and a per-variant layout would fork their SKILL.md instructions for no gain.
+ */
+export function workRoot() {
+  return path.join(dataRoot(), 'work');
 }
 
 /**
@@ -83,7 +117,7 @@ export function pluginRootMarkerPath() {
   return path.join(dataRoot(), 'plugin-root');
 }
 
-/** Cache location of the server signing public key (CONTRACT §2.7), TOFU: pinned on first fetch */
+/** Cache location of the server signing public key, TOFU: pinned on first fetch */
 /**
  * TOFU cache path for the server signing public key, **bucketed per endpoint**.
  *
@@ -132,7 +166,7 @@ export function pendingReportsPath() {
   return path.join(dataRoot(), 'pending-reports.jsonl');
 }
 
-/** last-known-good cache of signature-verified meta-guidance (CONTRACT §1.7) */
+/** last-known-good cache of signature-verified meta-guidance */
 export function guidanceCachePath(endpoint = apiEndpoint()) {
   const bucket = sha256hex(String(endpoint)).slice(0, 16);
   return path.join(dataRoot(), `meta-guidance.${bucket}.json`);
@@ -175,6 +209,207 @@ export function isSafeName(name) {
   );
 }
 
+/**
+ * Normalize a URL that is about to be handed to a platform browser opener, or return null.
+ *
+ * The verification URL of the device flow arrives **from the server** (RFC 8628
+ * `verification_uri_complete`), and kabo-auth spawns an opener with it. A response body is not a
+ * trusted input, so it is parsed and constrained before it can reach a subprocess:
+ *   - it must parse as an absolute URL (`new URL`), which rules out a bare argv fragment such as
+ *     `--flag` or `-e`;
+ *   - the scheme must be http/https. Nothing else may be opened: `file:` reads a local file,
+ *     `javascript:`/`data:` execute in whatever the platform hands them to, and on Windows several
+ *     schemes are registered to interpreters.
+ * The **serialized** form is returned rather than the string as received, so whatever reaches argv is
+ * the parser's own output with control characters and spaces percent-encoded.
+ *
+ * @returns {string|null} null = do not open it
+ */
+export function safeBrowserUrl(value) {
+  if (typeof value !== 'string' || value === '') return null;
+  let parsed;
+  try {
+    parsed = new URL(value);
+  } catch {
+    return null;
+  }
+  if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') return null;
+  return parsed.href;
+}
+
+// ---------- Local credential: paths, atomic read/write, cross-process lock ----------
+//
+// This half deliberately contains **no** auth-header literal: assembling the header is
+// bin/kabo-headers' job and nothing else's. Splitting "hold the token" from "present the token" is
+// what lets the test suite narrow the header ban to exactly one file instead of dropping it.
+
+/** File format version of credentials.json; a file that does not say 1 is treated as absent */
+export const CREDENTIALS_VERSION = 1;
+
+/**
+ * The one credential file: <data root>/credentials.json.
+ *
+ * Flat and unbucketed, unlike publicKeyPath/guidanceCachePath. Those cache things that may
+ * legitimately coexist for several endpoints; being signed in to two deployments at once is not a
+ * real need, and bucketing would buy a second path convention, a second logout enumerator, and a
+ * second place to get it wrong. The protection bucketing would have given ("do not hand A's token to
+ * B") is provided instead by the endpoint comparison in bin/kabo-headers - earlier and louder.
+ */
+export function credentialsPath() {
+  return path.join(dataRoot(), 'credentials.json');
+}
+
+/**
+ * Renewal lock: a **directory**, because mkdir is atomic on every platform while open(O_EXCL) is not
+ * on some network filesystems.
+ */
+export function credentialsLockPath() {
+  return path.join(dataRoot(), 'credentials.lock');
+}
+
+/** Lock protocol constants; all three are frozen - do not retune them in isolation */
+export const LOCK_RETRY_MS = 50;
+export const LOCK_MAX_WAIT_MS = 2000;
+/** A holder can only ever hold the lock for ~6s (the renewal timeout), so 15s is unambiguous abandonment */
+export const LOCK_STALE_MS = 15000;
+
+/**
+ * Read the credential file.
+ * Returns null for "not signed in", which is also what a truncated or foreign-shaped file gets: a
+ * half-written JSON and "no credential" must lead to the same recovery path, never to a crash on the
+ * hot path.
+ */
+export function readCredentials() {
+  const raw = readJsonSilent(credentialsPath());
+  if (!raw || typeof raw !== 'object') return null;
+  if (raw.version !== CREDENTIALS_VERSION) return null;
+  if (typeof raw.refresh_token !== 'string' || raw.refresh_token === '') return null;
+  if (typeof raw.endpoint !== 'string' || raw.endpoint === '') return null;
+  return raw;
+}
+
+/**
+ * Write the credential file **atomically** with mode 0600.
+ *
+ * Not writeFileSync onto the target: `mode` does not apply to an existing file, and one interrupted
+ * write leaves a truncated JSON behind - which is a different thing from "not signed in" on every
+ * recovery path. So: create a temp file in the same directory with mode 0600, write, rename over the
+ * target, then chmod as a belt-and-braces pass over umask and any permissions inherited from an
+ * older file.
+ * Throws on failure - unlike the caches in this file, silently failing to persist a credential would
+ * show up much later as a mysterious "I have to log in again every time".
+ */
+export function writeCredentials(credentials) {
+  const dir = dataRoot();
+  fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
+  try { fs.chmodSync(dir, 0o700); } catch { /* a pre-existing directory may be owned differently */ }
+
+  const target = credentialsPath();
+  const tmp = path.join(dir, `credentials.json.tmp-${process.pid}`);
+  // Remove any leftover from a crashed run with the same pid before opening: `mode` is ignored for an
+  // existing file, so reusing one would silently inherit whatever permissions it had.
+  try { fs.rmSync(tmp, { force: true }); } catch { /* the open below will report anything real */ }
+  const fd = fs.openSync(tmp, 'w', 0o600);
+  try {
+    fs.writeFileSync(fd, `${JSON.stringify(credentials, null, 2)}\n`);
+  } finally {
+    fs.closeSync(fd);
+  }
+  try {
+    fs.renameSync(tmp, target);
+  } catch (err) {
+    try { fs.rmSync(tmp, { force: true }); } catch { /* best effort */ }
+    throw err;
+  }
+  fs.chmodSync(target, 0o600);
+  return target;
+}
+
+/**
+ * Delete the credential file (and any lock left behind by a killed process).
+ *
+ * Called on `logout` and whenever the authorization server says the refresh token is dead
+ * (`invalid_grant`). It must **not** be called for a network failure: that would turn one flaky
+ * minute into a forced re-login.
+ */
+export function deleteCredentials() {
+  let removed = false;
+  try {
+    if (fs.existsSync(credentialsPath())) removed = true;
+    fs.rmSync(credentialsPath(), { force: true });
+  } catch { /* one failure does not stop the rest of the cleanup */ }
+  try {
+    fs.rmSync(credentialsLockPath(), { recursive: true, force: true });
+  } catch { /* same */ }
+  // A run that died between "write the temp file" and "rename it" leaves a temp file holding a live
+  // token. It is rare, but deleting the credential while leaving a copy of it next door is the exact
+  // outcome this whole path exists to prevent.
+  try {
+    for (const name of fs.readdirSync(dataRoot())) {
+      if (name.startsWith('credentials.json.tmp-')) fs.rmSync(path.join(dataRoot(), name), { force: true });
+    }
+  } catch { /* no data root, nothing to sweep */ }
+  return removed;
+}
+
+/**
+ * Sleep helper for the lock retry loop.
+ * Deliberately **not** unref'd: this timer is the only thing keeping the process alive while it waits
+ * for another process to finish renewing, and an unref'd one lets Node drain the loop and exit 13
+ * ("unsettled top-level await") - which looks to the host exactly like a helper that produced nothing.
+ */
+function sleep(ms) {
+  return new Promise((resolve) => { setTimeout(resolve, ms); });
+}
+
+/**
+ * Try to take the renewal lock, waiting up to LOCK_MAX_WAIT_MS.
+ *
+ * Why a lock is a correctness requirement and not an optimization: the server rotates refresh tokens
+ * strictly once (no reuse window), so two concurrent kabo-headers renewing with the same refresh
+ * token guarantees one `invalid_grant` - and `invalid_grant` means "delete the credential file".
+ * Without this lock, ordinary concurrent tool calls would randomly sign the user out.
+ *
+ * @returns {Promise<boolean>} false = give up; the caller must NOT force its way in, it re-reads the
+ *   file instead (someone else has very likely just renewed it).
+ */
+export async function acquireCredentialLock(maxWaitMs = LOCK_MAX_WAIT_MS) {
+  const lock = credentialsLockPath();
+  const deadline = Date.now() + maxWaitMs;
+  let breakAttempted = false;
+  for (;;) {
+    try {
+      fs.mkdirSync(path.dirname(lock), { recursive: true, mode: 0o700 });
+      fs.mkdirSync(lock);
+      return true;
+    } catch (err) {
+      if (err && err.code !== 'EEXIST') return false;
+    }
+    // Stale lock: the only holder that can exist held it for at most the renewal timeout, so a
+    // directory older than LOCK_STALE_MS belongs to a process that died. Break it once - repeatedly
+    // breaking would race two "rescuers" against each other.
+    if (!breakAttempted) {
+      try {
+        const age = Date.now() - fs.statSync(lock).mtimeMs;
+        if (age > LOCK_STALE_MS) {
+          breakAttempted = true;
+          fs.rmSync(lock, { recursive: true, force: true });
+          continue;
+        }
+      } catch { /* it vanished between the two calls: just retry */ }
+    }
+    if (Date.now() >= deadline) return false;
+    await sleep(LOCK_RETRY_MS);
+  }
+}
+
+/** Release the renewal lock; safe to call when it was never taken */
+export function releaseCredentialLock() {
+  try {
+    fs.rmSync(credentialsLockPath(), { recursive: true, force: true });
+  } catch { /* the stale-lock rule in acquireCredentialLock is the backstop */ }
+}
+
 // ---------- stdin / JSON helpers ----------
 
 /**
@@ -213,35 +448,153 @@ export function writeJsonSilent(file, obj) {
   }
 }
 
-// ---------- checksum (CONTRACT §3.3, verbatim identical to the server's sign.ts) ----------
+// ---------- checksum ----------
+//
+// WARNING: everything from here to computeChecksum is the client half of a two-sided agreement - the
+// server's signing implementation must build the very same bytes from the very same files, and a
+// cross-repo test pins both sides to shared vectors. Change the manifest construction (the sort key,
+// the separators, the prefix line, the path rules) on one side only and every artifact the server
+// signs stops verifying here: do not change it unilaterally.
 
 export function sha256hex(data) {
   return crypto.createHash('sha256').update(data).digest('hex');
 }
 
 /**
- * SkillPackage checksum algorithm (must be verbatim identical to the server):
- * sort files by path lexicographically, concatenate `path + "\0" + sha256hex(content) + "\n"`
- * into a manifest string, and take the sha256 hex of its UTF-8 bytes.
- * @param {{path: string, content: Buffer}[]} files
+ * The only signed-artifact format this plugin can verify.
+ *
+ * Deliberately a single value and not a range: a client that guesses at an unknown version would be
+ * verifying new bytes with old rules, which is the one failure mode a format field exists to prevent.
  */
-export function computeChecksum(files) {
-  const sorted = [...files].sort((a, b) => (a.path < b.path ? -1 : a.path > b.path ? 1 : 0));
-  let manifest = '';
+export const PLUGIN_ARTIFACT_FORMAT_VERSION = 1;
+
+/**
+ * Path rules of the signed manifest, byte-for-byte the server's assertion set.
+ *
+ * The list is closed on purpose - **an implementation must not add a rule of its own**. Every extra
+ * rule is a path the server will happily sign and this client will then refuse, which surfaces to the
+ * user as "the package is corrupt" while nothing is corrupt at all. Two consequences worth spelling
+ * out because they look like omissions:
+ *   - `\r` (U+000D) is legal in a path;
+ *   - no Unicode normalization happens anywhere, so the NFC and NFD spellings of one grapheme are two
+ *     distinct paths that sort at two different positions.
+ * The dot-prefix rule is what keeps `.meta.json` outside signature coverage - see skill-verify.
+ */
+function assertArtifactPath(p) {
+  const reject = (why) => {
+    throw new Error(`illegal signed-artifact path (${why}): ${JSON.stringify(p)}`);
+  };
+  if (typeof p !== 'string' || p.length === 0) reject('empty');
+  if (p.includes('\\') || p.includes('\0') || p.includes('\n')) reject('illegal character');
+  if (p.startsWith('/')) reject('absolute');
+  // "." and ".." are already covered by the dot-prefix rule; the empty segment catches both a
+  // doubled separator and a trailing "/".
+  for (const seg of p.split('/')) {
+    if (seg === '' || seg.startsWith('.')) reject('illegal segment');
+  }
+}
+
+/**
+ * Canonical manifest bytes of a signed artifact.
+ *
+ * Two formats live here at once, and which one applies is decided **by the wire**, never by a guess
+ * (see the compat rule in artifactFormatOf below):
+ *
+ *   formatVersion === 1  ->  CANON-V1: a `kabo.artifact-format\0<n>\n` prefix line, then one line per
+ *                            file, with the files sorted by the **UTF-8 bytes** of their path.
+ *   formatVersion == null ->  CANON-V0: the pre-format_version bytes - no prefix line, and the sort is
+ *                            a plain JS string comparison, i.e. UTF-16 code-unit order.
+ *
+ * The sort key is the load-bearing clause and the two orders really do disagree: `a < b` on JS strings
+ * compares UTF-16 code units, so a path holding a non-BMP character (a surrogate pair, lead unit
+ * U+D800-U+DBFF) sorts *before* a path holding a BMP character in U+E000-U+FFFF, while their UTF-8
+ * bytes sort the other way round (0xF0.. vs 0xEF..). An all-ASCII vector cannot tell the two apart,
+ * which is exactly how the wrong sort survived in this file until 0.14.0 - the conformance vectors
+ * now pin a non-BMP case for that reason.
+ *
+ * @param {{path: string, content: Buffer}[]} files
+ * @param {1|null} formatVersion the value carried by the envelope; null means "the field was absent"
+ */
+export function canonicalManifest(files, formatVersion = null) {
+  if (formatVersion === null || formatVersion === undefined) {
+    const sorted = [...files].sort((a, b) => (a.path < b.path ? -1 : a.path > b.path ? 1 : 0));
+    let manifest = '';
+    for (const f of sorted) {
+      manifest += f.path + '\0' + sha256hex(f.content) + '\n';
+    }
+    return Buffer.from(manifest, 'utf8');
+  }
+  // Fail closed on anything else: no forward guess, no "probably compatible".
+  if (formatVersion !== PLUGIN_ARTIFACT_FORMAT_VERSION) {
+    throw new Error(`unsupported_artifact_format: ${JSON.stringify(formatVersion)}`);
+  }
+  for (const f of files) assertArtifactPath(f.path);
+  const sorted = [...files].sort(
+    (a, b) => Buffer.compare(Buffer.from(a.path, 'utf8'), Buffer.from(b.path, 'utf8')),
+  );
+  for (let i = 1; i < sorted.length; i += 1) {
+    // Two entries with one path would make the manifest ambiguous: the same bytes could be produced
+    // by two different file sets, so one signature would cover both.
+    if (sorted[i].path === sorted[i - 1].path) {
+      throw new Error(`duplicate signed-artifact path: ${JSON.stringify(sorted[i].path)}`);
+    }
+  }
+  let manifest = `kabo.artifact-format\0${formatVersion}\n`;
   for (const f of sorted) {
     manifest += f.path + '\0' + sha256hex(f.content) + '\n';
   }
-  return sha256hex(Buffer.from(manifest, 'utf8'));
+  return Buffer.from(manifest, 'utf8');
 }
 
-// ---------- Version comparison (same semantics as compareSemver in apps/api/src/registry.ts) ----------
+/**
+ * checksum = sha256hex(canonical manifest bytes). Throws for an unsupported format version or an
+ * illegal path - both are refusals, and every caller on a hot path turns them into a rejection rather
+ * than letting them escape (silent degradation).
+ * @param {{path: string, content: Buffer}[]} files
+ * @param {1|null} formatVersion
+ */
+export function computeChecksum(files, formatVersion = null) {
+  return sha256hex(canonicalManifest(files, formatVersion));
+}
+
+/**
+ * The compat rule for `format_version` on the wire (v0.14.0), applied identically by skill packages,
+ * meta-guidance and the keyset.
+ *
+ * The field is required by the server's contract schemas, and artifacts predating it may still be
+ * cached or in flight, so the client has to handle both shapes:
+ *
+ *   present and === 1  -> CANON-V1
+ *   present and  != 1  -> refuse (`unsupported_artifact_format`); never fall back
+ *   absent             -> CANON-V0, until the sunset
+ *
+ * Four rules hold this together, and none of them may be relaxed into "try both and take whichever
+ * matches" - that would make the field decorative and re-admit the bug it exists to prevent:
+ *   1. no downgrade: a v1 envelope that fails is a hard failure, never a CANON-V0 retry;
+ *   2. no upgrade guess: an envelope with no field is never tried as v1;
+ *   3. both directions stay single-shot;
+ *   4. therefore every mismatched combination - stripping the field from a v1 envelope, injecting
+ *      `format_version: 1` into a legacy one - ends in a checksum mismatch. The dual-format window
+ *      can cause a refusal; it cannot cause an acceptance.
+ *
+ * @returns {{ok: true, formatVersion: 1|null} | {ok: false, formatVersion: null}}
+ */
+export function artifactFormatOf(carrier) {
+  const raw = carrier && typeof carrier === 'object' ? carrier.format_version : undefined;
+  if (raw === undefined || raw === null) return { ok: true, formatVersion: null };
+  if (raw !== PLUGIN_ARTIFACT_FORMAT_VERSION) return { ok: false, formatVersion: null };
+  return { ok: true, formatVersion: PLUGIN_ARTIFACT_FORMAT_VERSION };
+}
+
+// ---------- Version comparison (same semantics as the server's own compareSemver) ----------
 
 /**
  * Three-segment numeric comparison: split on ".", each segment parseInt(x,10)||0, missing
  * segments count as 0, only the first three segments matter.
  * Since 0.7.0 update detection moved to the client (the public GET /api/sync does not accept
  * installed_skills), so this implementation must be verbatim identical in semantics to the
- * server's, otherwise the "updatable" counts disagree between the two sides.
+ * server's, otherwise the "updatable" counts disagree between the two sides. A cross-repo test pins
+ * both implementations to the same vectors: this one must not be changed on its own.
  * @returns {-1|0|1}
  */
 export function compareSemver(a, b) {
@@ -272,7 +625,7 @@ export async function fetchJsonSilent(url, options = {}, timeoutMs = 3000) {
   }
 }
 
-// ---------- Server public key (TOFU cache, CONTRACT §2.7) ----------
+// ---------- Server public key (TOFU cache) ----------
 
 /**
  * Fetch the server's Ed25519 signing public key (**legacy single-key interface**; since 0.10.0 the
@@ -303,7 +656,7 @@ export async function loadPublicKeyPem(endpoint = apiEndpoint(), timeoutMs = 300
   return resp.public_key_pem;
 }
 
-// ---------- Signing keyset: TOFU + continuity refresh (CONTRACT §2.7) ----------
+// ---------- Signing keyset: TOFU + continuity refresh ----------
 
 /**
  * Pseudo path for the keyset's canonical bytes.
@@ -340,7 +693,7 @@ function sortKeysByKid(keys) {
 /**
  * Canonical bytes of the keyset.
  * Built from an object literal + JSON.stringify rather than string concatenation: both sides (here
- * and the server's sign.ts) construct the literal with the same fixed property order, and every JS
+ * and the server's signer) construct the literal with the same fixed property order, and every JS
  * implementation emits insertion order, so the bytes are reproducible.
  * The property order is part of the signature - change it anywhere and every pinned client will
  * treat the keyset as tampered with.
@@ -350,9 +703,17 @@ export function keysetCanonicalBytes(keyset) {
   return Buffer.from(JSON.stringify({ issued_at: keyset.issued_at, keys }), 'utf8');
 }
 
-/** Keyset checksum: reuses the same checksum function from §3.3, with the pseudo path providing domain separation */
-export function keysetChecksum(keyset) {
-  return computeChecksum([{ path: KEYSET_PSEUDO_PATH, content: keysetCanonicalBytes(keyset) }]);
+/**
+ * Keyset checksum: reuses the checksum function above, with the pseudo path providing domain
+ * separation. `formatVersion` comes from the /api/public-key response and nowhere else - getting this
+ * one wrong is the worst of the three, because a keyset that fails to verify means the anchor cannot
+ * rotate and every fresh install and every key rotation dies with `public_key_unavailable`.
+ */
+export function keysetChecksum(keyset, formatVersion = null) {
+  return computeChecksum(
+    [{ path: KEYSET_PSEUDO_PATH, content: keysetCanonicalBytes(keyset) }],
+    formatVersion,
+  );
 }
 
 function normalizeKeyEntry(entry) {
@@ -431,6 +792,12 @@ async function refreshKeyset(endpoint, pinned, timeoutMs) {
   const resp = await fetchJsonSilent(`${endpoint}/api/public-key`, {}, timeoutMs);
   if (!resp || typeof resp !== 'object') return null;
 
+  // The response decides which canonical bytes the keyset_checksum was built from; an unknown value
+  // is a refusal, not a guess (see artifactFormatOf). Refusing here costs a rotation, not a
+  // compromise: the client keeps the anchor it already trusts.
+  const format = artifactFormatOf(resp);
+  if (!format.ok) return null;
+
   // ---- Legacy server: only public_key_pem, no keyset ----
   if (!resp.keyset || typeof resp.keyset !== 'object' || !Array.isArray(resp.keyset.keys)) {
     if (pinned) {
@@ -469,7 +836,12 @@ async function refreshKeyset(endpoint, pinned, timeoutMs) {
     keys.push(k);
   }
   const next = { issued_at: raw.issued_at, keys: sortKeysByKid(keys) };
-  const checksum = keysetChecksum(next);
+  let checksum;
+  try {
+    checksum = keysetChecksum(next, format.formatVersion);
+  } catch {
+    return null; // an unusable format/path is a refusal, and a refusal on this path is silent
+  }
   if (typeof resp.keyset_checksum !== 'string' || checksum !== resp.keyset_checksum) return null;
 
   const signatures = (Array.isArray(resp.keyset_signatures) ? resp.keyset_signatures : [])
@@ -568,7 +940,7 @@ export async function ensureVerified(attempt, opts = {}) {
   return { ok: false, reason: 'signature_invalid' };
 }
 
-// ---------- pending-reports relay buffer (CONTRACT §4) ----------
+// ---------- pending-reports relay buffer ----------
 //
 // The client has no reporting channel (no credentials), and skill-verify is a Bash subprocess that
 // cannot even see MCP. A verification failure is exactly the signal the platform most needs to see,
@@ -712,7 +1084,7 @@ export function readAndPrunePendingReports(now = Date.now()) {
   return pruned;
 }
 
-// ---------- meta-guidance signature envelope (CONTRACT §1.7) ----------
+// ---------- meta-guidance signature envelope ----------
 
 /** Injection fence sentinels. If either sentinel appears in content, reject the whole thing (otherwise the content could close the fence itself) */
 export const GUIDANCE_BEGIN = '<<<KABO-META-GUIDANCE-BEGIN>>>';
@@ -730,17 +1102,27 @@ const GUIDANCE_HEADER_PATH = 'kabo.meta-guidance/header.txt';
 const GUIDANCE_CONTENT_PATH = 'kabo.meta-guidance/content.md';
 
 /**
- * Rebuild the signed header text (CONTRACT §1.7).
+ * Rebuild the signed header text.
  *
- * Strictly five lines, fixed order, nothing added or removed: type / guidance_version / issued_at /
- * expires_at / resource, each line `key + ": " + value + "\n"`.
+ * Fixed order, nothing added or removed, each line `key + ": " + value + "\n"`:
+ *   format_version (v1 only) / type / guidance_version / issued_at / expires_at / resource.
  * Deliberately not JSON: key order, whitespace, and number formatting cannot be guaranteed
  * byte-identical between two language implementations, while signature comparison requires both
  * sides to assemble **exactly the same bytes**.
+ *
+ * The header **is** the format switch on this domain: a v1 envelope carries `format_version` and its
+ * header therefore has six lines, a legacy envelope has five. The line is driven by the wire field
+ * rather than by a constant, so the two shapes cannot be mixed - emitting a six-line header for an
+ * envelope that was signed over five (or the reverse) simply fails the checksum, which is the
+ * fail-closed half of the compat rule in artifactFormatOf.
  */
 export function buildGuidanceHeader(envelope) {
   const e = envelope || {};
+  const formatLine = e.format_version === undefined || e.format_version === null
+    ? ''
+    : `format_version: ${e.format_version}\n`;
   return (
+    formatLine +
     `type: ${e.type}\n` +
     `guidance_version: ${e.guidance_version}\n` +
     `issued_at: ${e.issued_at}\n` +
@@ -750,7 +1132,7 @@ export function buildGuidanceHeader(envelope) {
 }
 
 /**
- * meta-guidance signature verification (the seven client-side verification steps of CONTRACT §1.7
+ * meta-guidance signature verification (the seven client-side verification steps numbered below,
  * plus two content-level rejections).
  *
  * Injected content goes straight into the model context and is the only new attack surface
@@ -784,12 +1166,23 @@ export function verifyGuidanceEnvelope(envelope, pem, opts = {}) {
   // (1) Algorithm
   if (envelope.algorithm !== 'ed25519') return reject('algorithm');
 
+  // (1b) Artifact format. A version this client does not implement is refused outright: verifying
+  // unknown bytes with the rules we happen to have is how a format field gets defeated.
+  const format = artifactFormatOf(envelope);
+  if (!format.ok) return reject('unsupported_artifact_format');
+
   // (2) Rebuild the header and the two files from the response fields, recompute the checksum, and compare for equality
   const files = [
     { path: GUIDANCE_HEADER_PATH, content: Buffer.from(buildGuidanceHeader(envelope), 'utf8') },
     { path: GUIDANCE_CONTENT_PATH, content: Buffer.from(envelope.content, 'utf8') },
   ];
-  if (computeChecksum(files) !== envelope.checksum) return reject('checksum_mismatch');
+  let recomputed = null;
+  try {
+    recomputed = computeChecksum(files, format.formatVersion);
+  } catch {
+    return reject('checksum_mismatch'); // the two pseudo paths are fixed, so this is unreachable in practice
+  }
+  if (recomputed !== envelope.checksum) return reject('checksum_mismatch');
 
   // (3) Ed25519 verification (the signed object = the UTF-8 bytes of the checksum string, the same scheme as skill packages)
   let verified = false;

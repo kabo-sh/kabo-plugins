@@ -1,16 +1,16 @@
 #!/usr/bin/env node
-// skill-unpack - writes a SkillPackage JSON to disk as a cache directory tree (CONTRACT §2.7 / §2.3 / §3.3).
+// skill-unpack - writes a SkillPackage JSON to disk as a cache directory tree.
 // Usage:
 //   skill-unpack <path to package.json|-> [dest-root]
 //     - when the first argument is "-", the SkillPackage JSON is read from stdin
 //     - dest-root defaults to <data root>/skill-cache (the data root is fixed at ~/.kabo, overridable with KABO_DATA_ROOT)
 // On-disk layout: <dest-root>/<id>/<version>/ containing every file + .meta.json
-//   .meta.json = {id, version, checksum, signature, downloaded_at, key_id?}
+//   .meta.json = {id, version, checksum, signature, downloaded_at, format_version?, key_id?}
 // Note: this script only writes to disk and performs no verification; bin/skill-verify must pass before execution.
 
 import fs from 'node:fs';
 import path from 'node:path';
-import { cacheRoot } from '../scripts/lib/common.js';
+import { cacheRoot, PLUGIN_ARTIFACT_FORMAT_VERSION } from '../scripts/lib/common.js';
 
 const USAGE = `Usage: skill-unpack <path to package.json|-> [dest-root]
   Reads a SkillPackage JSON from a file or stdin(-) and writes it to <dest-root>/<id>/<version>/
@@ -22,10 +22,10 @@ function die(msg) {
 }
 
 /** Path-traversal guard: reject absolute paths, backslashes, empty segments, and segments starting with ".".
- *  Dotfile segments must be rejected (CONTRACT §3.3): the server's packaging and skill-verify's checksum
- *  recomputation both exclude dotfiles, so if the unpacking side let them through, a dotfile inside a
- *  package would become a smuggling channel around signature verification
- *  (a MITM stuffs a .xxx file into a legitimately signed package and verify still passes). */
+ *  Dotfile segments must be rejected: the server's packaging and skill-verify's checksum recomputation
+ *  both exclude dotfiles, so if the unpacking side let them through, a dotfile inside a package would
+ *  become a smuggling channel around signature verification (a MITM stuffs a .xxx file into a
+ *  legitimately signed package and verify still passes). */
 function assertSafeRelPath(p) {
   if (typeof p !== 'string' || p === '' || path.isAbsolute(p) || p.includes('\\')) {
     die(`SkillPackage contains an illegal file path: ${JSON.stringify(p)}`);
@@ -61,12 +61,20 @@ async function main() {
     die(`Failed to read/parse the SkillPackage JSON: ${err.message}`);
   }
 
-  // Basic shape validation (CONTRACT §3.3)
+  // Basic shape validation
   if (!pkg || typeof pkg.id !== 'string' || !pkg.id) die('SkillPackage is missing id');
   if (typeof pkg.version !== 'string' || !pkg.version) die('SkillPackage is missing version');
   if (!Array.isArray(pkg.files) || pkg.files.length === 0) die('SkillPackage is missing files');
   if (typeof pkg.checksum !== 'string' || typeof pkg.signature !== 'string') {
     die('SkillPackage is missing checksum/signature');
+  }
+  // Fail closed on a format this plugin cannot verify, and fail here rather than three steps later:
+  // unpacking it would leave a cache entry that skill-verify can only ever reject, and the reason
+  // ("checksum mismatch") would point at tampering instead of at a plugin that is too old.
+  // An absent field is the legacy shape and is accepted - see artifactFormatOf in common.js.
+  if (pkg.format_version !== undefined && pkg.format_version !== null
+      && pkg.format_version !== PLUGIN_ARTIFACT_FORMAT_VERSION) {
+    die(`SkillPackage declares artifact format_version ${JSON.stringify(pkg.format_version)}, which this plugin cannot verify; upgrade the plugin`);
   }
   // id/version also become directory names, so they need the same traversal guard
   assertSafeRelPath(pkg.id);
@@ -102,6 +110,19 @@ async function main() {
     signature: pkg.signature,
     downloaded_at: new Date().toISOString(),
   };
+  // The format version has to survive to disk, because skill-verify runs later, from the cache
+  // directory, with no access to the response body - without this field it cannot tell which
+  // canonical bytes produced meta.checksum and would have to guess. Omitted when the package omits
+  // it: absent means "the legacy bytes", and writing a default would turn a legacy package into an
+  // unverifiable one.
+  //
+  // .meta.json is a dotfile and therefore outside signature coverage, the same status as key_id
+  // below. That is safe for the same reason: tampering with this field can only change **which
+  // algorithm is tried**, and every wrong choice produces a checksum that does not match the signed
+  // one. It can cause a refusal, never an acceptance.
+  if (pkg.format_version !== undefined && pkg.format_version !== null) {
+    meta.format_version = pkg.format_version;
+  }
   // key_id is a **key selection hint** and is not signed: the checksum only covers files, so changing
   // it at most makes skill-verify try a few more pinned keys and cannot change the verification
   // outcome. It is passed through only to save a try during a key rotation.

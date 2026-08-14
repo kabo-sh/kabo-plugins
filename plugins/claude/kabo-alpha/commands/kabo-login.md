@@ -1,35 +1,63 @@
 ---
-description: Connect and authorize the Kabo platform (OAuth completed in the browser, only ever once)
+description: Sign in to Kabo from the terminal (a short code, confirmed in a browser tab on any device)
 ---
 
-Guide the user through Kabo's **single** authorization. This command does not authenticate by itself — it cannot, and it should not:
+Get the user authorized. One step: run the bundled script, have them confirm the code it prints.
 
-**Make this clear first**: there is no "terminal login" for Kabo. No Kabo token is stored on this machine, there is no credentials file, and there is nowhere to enter a token. Authorization happens only in the host's MCP connection layer; the **host** holds the token and refreshes it automatically.
+**Make this clear first**: sign-in happens in the terminal, and the browser tab only confirms a code. The plugin then holds a renewable credential in a `0600` file under `~/.kabo`, and reads it for you on every request. **You never touch it** — do not open it, print it, cat it, or assemble an Authorization header from anything; that is the plugin's job and doing it by hand is both a leak and a bug.
 
-## Guide the user through
+Requires **Claude Code 2.1.195 or newer** — see the troubleshooting section, this is the first thing to check when sign-in succeeded but the tools stay invisible.
 
-1. Run `/mcp` in the session.
-2. Select `kabo` (if it is not in the list, the plugin is not enabled — have the user run `claude plugin enable kabo-alpha` first).
-3. Choose connect/authorize; the host opens a browser to complete login and authorization (OAuth 2.1 + PKCE).
-4. Once done, **platform tools are immediately usable in this session** — no restart needed.
+## 1. Sign in
 
-## Then verify
+Use Bash to run the bundled script (`bin/` is already on PATH; `${CLAUDE_PLUGIN_ROOT}/bin/kabo-auth` also works):
 
-Confirm with a real call instead of just claiming success: call `mcp__plugin_kabo-alpha_kabo__registry_skill_search` with query `youtube`.
+```
+kabo-auth login
+```
 
-- Results returned → tell the user they are authorized, and mention they can state a request directly or use `/kabo-analyze`.
-- 401 or the tool is invisible → authorization did not complete; go back to step 1. **Do not** try any other authentication method.
+It prints a URL and an 8-character code, opens the URL in a browser when it can, and then waits. Read the code back to the user and tell them two things:
+
+- the page can be opened **on any device** — their phone works, and so does another machine; nothing has to open on this box;
+- the page shows a code too, and it must **match** the one in the terminal. That comparison is the only thing standing between them and approving somebody else's sign-in request, so never tell them to skip it.
+
+The command waits up to 15 minutes and exits 0 the moment they confirm. Ctrl-C cancels and stores nothing.
+
+If no browser appeared (headless, SSH, container, or no opener installed), that is **not an error**: the printed URL is the whole fallback and the flow was designed around it. This is also why the old browser-launch failure ([anthropics/claude-code#36307](https://github.com/anthropics/claude-code/issues/36307), merged into #11585) no longer blocks anyone — a terminal that cannot open a browser can still complete this.
+
+Exit codes are worth reading back accurately: `1` means declined, expired, or a deployment that does not offer terminal sign-in (the message says which); `2` means the network could not be reached, so retrying is the fix, not signing in differently.
+
+## 2. Verify with a real call
+
+Confirm instead of claiming success: call `mcp__plugin_kabo-alpha_kabo__registry_skill_search` with query `youtube`.
+
+- Results returned → tell the user they are authorized, name a couple of the skills that came back, and mention they can state a request directly or use `/kabo-analyze`.
+- Tools still invisible or 401 → the sign-in worked but the connection did not pick it up; go to troubleshooting.
+
+`kabo-auth status` reports whether this machine is signed in, to which deployment, and how long that is good for. It never prints a token.
+
+## Troubleshooting: signed in, but the tools are still not there
+
+1. **Host version.** The plugin points the `kabo` server at a helper via `${CLAUDE_PLUGIN_ROOT}`, and that substitution only works on **Claude Code 2.1.195 or newer**. On an older host the path is taken literally, the helper never runs, and every request 401s with no way forward. Have the user upgrade Claude Code; nothing else fixes this one.
+2. **Stale connection.** A session that started before sign-in may still hold the failed server. Starting a new session is the reliable fix.
+3. **Wrong deployment.** If `KABO_API_ENDPOINT` was set to something other than the deployment they signed in to, the credential is deliberately refused. `kabo-auth status` says so explicitly; re-run `kabo-auth login` against the configured one.
+4. Still stuck → offer the connector path below. Do **not** start hunting for a token.
+
+### Fallback outside Claude Code
+
+Anyone with a Claude account can reach Kabo's data plane without this plugin: in **claude.ai** or the Claude chat desktop app, go to **Settings → Connectors**, add a custom connector with the URL `https://kabo.sh/mcp`, and authorize it there.
+
+Say plainly what they lose: that surface is **data only**. The platform tools answer, but the skill orchestration this plugin provides — meta-guidance routing, signed skill download, local signature verification, the restricted skill-runner subagent — does not exist there. Offer it as a fallback, never as the recommended path, and never as a substitute for signing in here (adding the same server as a connector *in Claude Code* changes the registered tool prefixes and breaks skill-runner).
 
 ## Hard rules
 
-- **Do not** read, hunt for, or write any credentials file or token in an env var — it does not exist, and looking for it is itself wrong.
-- **Do not** use Bash to assemble an Authorization header and call the platform HTTP API directly to "bypass" authorization (token leak risk, and there is no token on this machine to assemble anyway).
-- If the user asks how to **revoke** authorization: use the Kabo dashboard, or disconnect the `kabo` connection in `/mcp`. `/kabo-logout` clears the local cache, not the authorization.
+- **Do not** read, print, copy, or edit the local credential file, and do not go looking for one anywhere else. The plugin's helper is the only thing that reads it.
+- **Do not** use Bash to assemble an Authorization header and call the platform HTTP API directly to "bypass" a failure. It leaks the token into your context, the shell history, and the process list — and the failure it is meant to route around is always something else.
+- **Do not** ask the user to enter, paste, or store a token anywhere. There is nothing for them to type: the only thing they ever handle is the 8-character code, and that is not a token.
+- If the user asks how to **revoke** authorization: run `/kabo-logout`. It revokes every device through the platform and then deletes this machine's credential.
 
-## Third-party provider keys (unrelated to authorization; bring up only when needed)
+## There are no provider keys to configure (bring up only when needed)
 
-Creator research skills need user-supplied external data source keys (their own account and quota). This is separate from Kabo authorization; mention it only when the user asks, or when a tool returns `blocked_setup`.
+As of 0.12.0 every creator research fetch runs **on Kabo's servers**: the platform holds the provider credentials and the user configures nothing. This plugin declares no config fields at all, and `kabo` is the only server in its `.mcp.json`.
 
-The configuration entry point is **the config prompt shown when enabling the plugin**: have the user run `/plugin` in an interactive session and re-enable kabo-alpha to trigger it again; sensitive fields are entered in a password box and the values go into the system keychain. The config fields that get read: `youtube_api_key`, `tubelab_api_key`, `gemini_api_key`, `scrapecreators_api_key`.
-
-**Never** have the user paste a key into the conversation, the command line, or any file — `claude plugin install --config` does exist, but command-line arguments end up in shell history and the process list, so do not use it to pass these keys; the `claude plugin configure` subcommand does not exist, do not reference it.
+If a fetch comes back `blocked_setup` (the platform is missing that credential) or `unsupported` (that operation is not implemented server-side yet), it is a **platform-side gap the user cannot fix** — say so plainly, and never send them off to configure a key or paste one into the conversation. `data_connector_catalog` reports the state of every connector and operation without fetching anything.

@@ -1,0 +1,20 @@
+{
+  "name": "kabo-plugins-codex",
+  "interface": {
+    "displayName": "Kabo Codex Plugins"
+  },
+  "plugins": [
+    {
+      "name": "kabo-alpha",
+      "source": {
+        "source": "local",
+        "path": "./plugins/codex/kabo-alpha"
+      },
+      "policy": {
+        "installation": "AVAILABLE",
+        "authentication": "ON_INSTALL"
+      },
+      "category": "Productivity"
+    }
+  ]
+}

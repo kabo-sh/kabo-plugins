@@ -1,0 +1,87 @@
+#!/usr/bin/env node
+// skill-gc - clears skill cache entries and run work directories past their TTL (14 days).
+// Usage: skill-gc [--dry-run]
+//   Cache expiry is decided by downloaded_at in <skill-cache>/<id>/<version>/.meta.json;
+//   a directory with a missing .meta.json or an invalid timestamp counts as expired and is cleared
+//   too; empty <id> directories are removed afterwards.
+//   Work expiry is decided by the run directory's own mtime - there is no .meta.json under work/ -
+//   which is why the two are reclaimed by two loops rather than one shared one.
+import fs from 'node:fs';
+import path from 'node:path';
+import { cacheRoot, workRoot, readJsonSilent, CACHE_TTL_MS } from '../scripts/lib/common.js';
+const USAGE = `Usage: skill-gc [--dry-run]
+  Clears skill cache entries and run work directories past their TTL (14 days); --dry-run only lists the directories that would be deleted without deleting them`;
+const args = process.argv.slice(2);
+if (args.includes('--help') || args.includes('-h')) {
+  console.log(USAGE);
+  process.exit(0);
+}
+const dryRun = args.includes('--dry-run');
+const unknown = args.filter((a) => a !== '--dry-run');
+if (unknown.length > 0) {
+  console.error(`Unknown argument: ${unknown.join(' ')}\n\n${USAGE}`);
+  process.exit(1);
+}
+const root = cacheRoot();
+const now = Date.now();
+let removed = 0;
+let kept = 0;
+for (const id of fs.existsSync(root) ? fs.readdirSync(root) : []) {
+  const idDir = path.join(root, id);
+  let stat;
+  try {
+    stat = fs.statSync(idDir);
+  } catch {
+    continue;
+  }
+  if (!stat.isDirectory()) continue; // skip marker files such as *.disabled
+  for (const version of fs.readdirSync(idDir)) {
+    const verDir = path.join(idDir, version);
+    try {
+      if (!fs.statSync(verDir).isDirectory()) continue;
+    } catch {
+      continue;
+    }
+    const meta = readJsonSilent(path.join(verDir, '.meta.json'));
+    const downloadedAt = meta && meta.downloaded_at ? Date.parse(meta.downloaded_at) : NaN;
+    // missing meta / invalid timestamp / past the TTL -> expired
+    const expired = Number.isNaN(downloadedAt) || (now - downloadedAt) > CACHE_TTL_MS;
+    if (expired) {
+      console.log(`${dryRun ? '[dry-run] would delete' : 'deleting'}: ${id}/${version}`);
+      if (!dryRun) fs.rmSync(verDir, { recursive: true, force: true });
+      removed += 1;
+    } else {
+      kept += 1;
+    }
+  }
+  // Remove the <id> directory once it is empty
+  if (!dryRun) {
+    try {
+      if (fs.readdirSync(idDir).length === 0) fs.rmdirSync(idDir);
+    } catch { /* ignore */ }
+  }
+}
+// Run work directories: same 14-day TTL, different evidence. A run directory holds the outputs of
+// one run (assembled snapshot, analysis, rendered report), so it is judged by its own mtime.
+// Reported on its own count rather than folded into the cache number: "your cache was refetched"
+// and "last month's analysis was deleted" must not look identical to the person reading this line.
+let workRemoved = 0;
+const work = workRoot();
+for (const runId of fs.existsSync(work) ? fs.readdirSync(work) : []) {
+  const runDir = path.join(work, runId);
+  let stat;
+  try {
+    stat = fs.statSync(runDir);
+  } catch {
+    continue;
+  }
+  if (!stat.isDirectory()) continue;
+  if (now - stat.mtimeMs > CACHE_TTL_MS) {
+    console.log(`${dryRun ? '[dry-run] would delete' : 'deleting'}: work/${runId}`);
+    if (!dryRun) fs.rmSync(runDir, { recursive: true, force: true });
+    workRemoved += 1;
+  } else {
+    kept += 1;
+  }
+}
+console.log(`skill-gc done: ${dryRun ? 'would clear' : 'cleared'} ${removed} skill(s), ${workRemoved} work dir(s), kept ${kept}`);
