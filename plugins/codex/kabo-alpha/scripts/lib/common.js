@@ -17,7 +17,7 @@ import path from 'node:path';
 import os from 'node:os';
 import crypto from 'node:crypto';
 import { fileURLToPath } from 'node:url';
-export const PLUGIN_VERSION = '0.14.0';
+export const PLUGIN_VERSION = '0.15.0';
 export const SUPPORTED_API_VERSION = '1.0.0';
 export const DEFAULT_ENDPOINT = 'https://kabo.sh';
 export const CACHE_TTL_MS = 14 * 24 * 60 * 60 * 1000; // skill cache TTL: 14 days
@@ -155,10 +155,26 @@ export function readJsonSilent(file, fallback = null) {
     return fallback;
   }
 }
-/** Write a JSON file silently (creating directories); never throws on failure */
+/**
+ * mkdir -p that keeps the directory private (0700), creation and healing in one place.
+ * Everything under the data root is private state (trust anchors, cached skills, the relay buffer),
+ * yet its directories are created lazily by whichever code path runs first - and onboarding
+ * field-testing caught the consequence: delete ~/.kabo and the next SessionStart rebuilt it 0755
+ * (the mkdirSync default under the usual umask). Node applies `mode` to every directory a recursive
+ * call creates, so the whole fresh chain (including the shared parent ~/.kabo below the Codex root)
+ * comes out 0700. The chmod is the healing half: `mode` never touches a directory that already
+ * exists, so a root the 0755 bug left behind would otherwise stay world-readable forever; it is
+ * best-effort because a pre-existing directory may be owned differently. mkdir failures propagate
+ * so every caller keeps its own failure semantics.
+ */
+export function ensurePrivateDir(dir) {
+  fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
+  try { fs.chmodSync(dir, 0o700); } catch { /* a pre-existing directory may be owned differently */ }
+}
+/** Write a JSON file silently (creating directories, kept 0700 - see ensurePrivateDir); never throws on failure */
 export function writeJsonSilent(file, obj) {
   try {
-    fs.mkdirSync(path.dirname(file), { recursive: true });
+    ensurePrivateDir(path.dirname(file));
     fs.writeFileSync(file, JSON.stringify(obj));
     return true;
   } catch {
@@ -781,7 +797,7 @@ export function appendPendingReport(fields = {}, now = new Date()) {
       ts: new Date(now).toISOString(),
     });
     if (!row) return false;
-    fs.mkdirSync(path.dirname(pendingReportsPath()), { recursive: true });
+    ensurePrivateDir(path.dirname(pendingReportsPath()));
     fs.appendFileSync(pendingReportsPath(), `${JSON.stringify(row)}\n`);
     return true;
   } catch {

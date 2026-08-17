@@ -1,9 +1,9 @@
 node_modules/
 *.log
 .DS_Store
-
-# The plugins ship .py files (snapshot_store.py, build_public_snapshot.py). Bytecode is not a
-# published artifact, and both variants' creator-research/ trees must stay byte-identical - running
-# a script in only one of them would otherwise leave a one-sided __pycache__ and break that mirror.
+# The support tree ships .py now (snapshot_store.py, build_public_snapshot.py). Bytecode is not a
+# published artifact, and both variants' creator-research/ trees are held by a treeOf file-list mirror
+# assertion: compiling or running only one side leaves a one-sided __pycache__ and fails the suite as
+# "both variants must ship the same creator-research support tree" - an error naming the wrong cause.
 __pycache__/
 *.py[cod]

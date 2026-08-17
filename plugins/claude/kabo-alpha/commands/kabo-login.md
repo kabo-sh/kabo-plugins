@@ -27,19 +27,25 @@ If no browser appeared (headless, SSH, container, or no opener installed), that 
 
 Exit codes are worth reading back accurately: `1` means declined, expired, or a deployment that does not offer terminal sign-in (the message says which); `2` means the network could not be reached, so retrying is the fix, not signing in differently.
 
-## 2. Verify with a real call
+## 2. Activate in this session — no restart needed
+
+Sign-in takes effect in the running session; never tell the user to restart as the first move. On success, tell them explicitly: **run `/mcp reconnect kabo` to activate the Kabo tools in this session — no restart needed** (Claude Code 2.1.205 or newer; `/reload-plugins` also works). Reconnecting re-runs the plugin's credential helper, which now finds the fresh credential. You cannot run that slash command for them — it is theirs to type. On a Claude Code older than 2.1.205, `/reload-plugins` is the way in — a new session is only the last resort if the tools still do not appear.
+
+If the Kabo tools were already visible (just failing with 401), you may not even need the reconnect: the host re-runs the credential helper and retries once when a tool call answers 401/403, so go straight to the verification call below and only fall back to the reconnect if it still fails.
+
+## 3. Verify with a real call
 
 Confirm instead of claiming success: call `mcp__plugin_kabo-alpha_kabo__registry_skill_search` with query `youtube`.
 
 - Results returned → tell the user they are authorized, name a couple of the skills that came back, and mention they can state a request directly or use `/kabo-analyze`.
-- Tools still invisible or 401 → the sign-in worked but the connection did not pick it up; go to troubleshooting.
+- Tools still invisible or 401 → the sign-in worked but the connection did not pick it up; have the user run `/mcp reconnect kabo`, then retry the call. Still stuck → troubleshooting.
 
 `kabo-auth status` reports whether this machine is signed in, to which deployment, and how long that is good for. It never prints a token.
 
 ## Troubleshooting: signed in, but the tools are still not there
 
-1. **Host version.** The plugin points the `kabo` server at a helper via `${CLAUDE_PLUGIN_ROOT}`, and that substitution only works on **Claude Code 2.1.195 or newer**. On an older host the path is taken literally, the helper never runs, and every request 401s with no way forward. Have the user upgrade Claude Code; nothing else fixes this one.
-2. **Stale connection.** A session that started before sign-in may still hold the failed server. Starting a new session is the reliable fix.
+1. **Host version.** The plugin points the `kabo` server at a helper via `${CLAUDE_PLUGIN_ROOT}`, and that substitution only works on **Claude Code 2.1.195 or newer**. On an older host the path is taken literally, the helper never runs, and every request 401s. The host's own OAuth fallback may then offer to authorize — do not send the user through it: it leaves a host-held token this plugin's sign-in, logout, and telemetry model does not manage. Have the user upgrade Claude Code; that is the only supported fix.
+2. **Stale connection.** A session that started before sign-in may still hold the failed server. `/mcp reconnect kabo` (Claude Code 2.1.205 or newer) or `/reload-plugins` re-runs the credential helper on the spot; hosts older than 2.1.205 use `/reload-plugins` alone, and a new session is only the last resort.
 3. **Wrong deployment.** If `KABO_API_ENDPOINT` was set to something other than the deployment they signed in to, the credential is deliberately refused. `kabo-auth status` says so explicitly; re-run `kabo-auth login` against the configured one.
 4. Still stuck → offer the connector path below. Do **not** start hunting for a token.
 

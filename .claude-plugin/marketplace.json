@@ -5,7 +5,7 @@
   },
   "metadata": {
     "description": "Kabo official plugin marketplace: clients (Claude Code / Codex) for the creator-focused Skill distribution platform. The server and the skill sources are not in this repo.",
-    "version": "0.14.0"
+    "version": "0.15.0"
   },
   "plugins": [
     {

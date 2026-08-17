@@ -4,7 +4,7 @@ The Claude Code plugin for **Kabo**, the creator-focused Skill distribution plat
 
 ## Install
 
-**Requires Claude Code 2.1.195 or newer.** The bundled MCP server supplies its own credential through a `headersHelper`, and `${CLAUDE_PLUGIN_ROOT}` inside that setting is only interpolated from 2.1.195 on. An older host runs the literal path, the helper never starts, and every request fails with a 401 that has no way out of it — because a server configured with a `headersHelper` does not fall back to host OAuth. If you are on an older Claude Code, upgrade before installing.
+**Requires Claude Code 2.1.195 or newer.** The bundled MCP server supplies its own credential through a `headersHelper`, and `${CLAUDE_PLUGIN_ROOT}` inside that setting is only interpolated from 2.1.195 on. An older host runs the literal path, the helper never starts, and every request 401s; the host then falls back to its own OAuth discovery, and once the server publishes the metadata that chain needs, it can even complete — but it leaves a host-held token that this plugin's sign-in, logout, and telemetry model does not manage. The supported path is the `/kabo-login` device flow, and that needs 2.1.195. If you are on an older Claude Code, upgrade before installing.
 
 ```bash
 # 1. Add this repo as a plugin marketplace (the repo root has .claude-plugin/marketplace.json)
@@ -47,6 +47,10 @@ That is an RFC 8628 device flow. Three consequences worth knowing:
 
 `kabo-auth status` shows whether this machine is signed in, to which deployment, and for how long. It never prints a token.
 
+**Signed in from inside a running session? No restart needed.** Run `/mcp reconnect kabo` (Claude Code 2.1.205 or newer; `/reload-plugins` also reconnects plugin servers): the host re-runs the credential helper on every connection, so the reconnect picks the fresh credential up on the spot. The helper is also re-run automatically — with a single retry — when a tool call answers 401/403, so a call that failed before sign-in may recover on its own. Hosts older than 2.1.205 lack the reconnect subcommand but still have `/reload-plugins`; a new session is only the last resort.
+
+The installer offers to start this same sign-in right after installing, which makes the shortest onboarding: install → confirm the code in the installer → start a session, tools ready. The older path — install → restart → `/kabo-login` → `/mcp reconnect kabo` — still works and needs no restart after the login either.
+
 **Without this plugin at all.** In claude.ai or the Claude chat desktop app you can add `https://kabo.sh/mcp` under **Settings → Connectors** as a custom connector and authorize it there. That surface is **data only**: the platform's data tools answer and nothing else — no meta-guidance routing, no signed skill download, no local signature verification, no skill-runner subagent. It is a fallback for people who cannot get the plugin flow to work — and it is a *different host*, not something to do inside Claude Code (see "Known limitation" below).
 
 Alongside the credential, the plugin reaches three **public read-only** endpoints: `GET /api/sync`, `GET /api/meta-guidance`, `GET /api/public-key`. They take no arguments, carry no identity, and upload no local data — the anonymous half of the client is unchanged.
@@ -77,19 +81,23 @@ Because the fetch no longer happens on your machine, everything earlier versions
 
 Just talk normally: when a task involves **creator research**, the `meta-guidance` skill routes it through search → user confirmation → download → write to disk → signature verification → execution; a skill that fails verification or has been revoked by the platform is never executed.
 
-Five creator research skills are currently published on the platform:
+Seven creator research skills (the 2026-08-16 V2 generation) are currently published on the platform:
 
 | skill | What it does |
 |---|---|
-| `pp-youtube` | YouTube public evidence collection: search, channels, videos, public metrics |
-| `yt-youtube-research-agent` | Recent vs high-view comparison for one channel, multi-channel benchmarking, playbook summary |
-| `head-youtube-research` | Account-relative outliers + hook/structure/CTA breakdown → topic ideas |
-| `yt-reverse-viral-reels` | Reverse-engineering viral Instagram Reels |
-| `yt-detect-creator-breakouts` | Emerging creator breakout board and watchlist |
+| `review-creator-account` | Own-account health check: continue/stop/test decisions against a personal baseline |
+| `research-content-trends` | Current trends, top content and small-account outliers, turned into creator-fit directions |
+| `analyze-creator-competitors` | Competitor discovery, cross-account playbooks, evidence-backed differentiation |
+| `analyze-content-video` | Per-timestamp single-video diagnosis and re-edit plan; third-party teardowns included |
+| `recommend-publish-timing` | Publish windows from the creator's own publish history; abstains honestly when the data is short |
+| `develop-content-ideas` | Upstream evidence into selectable content ideas (pure downstream, no data fetching) |
+| `create-script-and-packaging` | A selected idea into a production-ready script and packaging draft (pure downstream) |
+
+They replace the five V1 skills (`pp-youtube`, `yt-youtube-research-agent`, `head-youtube-research`, `yt-reverse-viral-reels`, `yt-detect-creator-breakouts`), which are retired and revoked platform-side: cached copies are disabled at the next session sync, and this plugin's V1 wrapper contracts were removed with them.
 
 Which connectors and operations are live right now is answered by `data_connector_catalog`, not by this file — readiness moves, and a table in a shipped README cannot. Nothing it reports is fixable on your machine: an unready connector or an unimplemented operation is a platform-side gap, and a skill degrades under partial semantics rather than inventing the missing half.
 
-These skills' bodies are **used verbatim from upstream with no rewriting** — upstream treats a skill body as a read-only deliverable and puts the adaptation in the connectors and wrappers. `meta-guidance` maps `../../config/`, `../../schemas/`, `../../wrappers/`, and `../../scripts/` in the body to this plugin's `creator-research/`, and maps `run_connector.py <connector>` (which no longer ships) to a `data_connector_run` call.
+These skills' bodies are **used verbatim from upstream with no rewriting** — upstream treats a skill body as a read-only deliverable. A V2 package bundles its own `scripts/` (stdlib-only python3) and `references/` (frozen schemas and field maps) and resolves them relative to the skill directory; the one plugin-side piece of the pipeline is `creator-research/scripts/build_public_snapshot.py`, the assembler skill-runner drives before an analyzer runs. The `../../` path mapping into `creator-research/` that the V1 bodies needed applies only to bodies that literally contain `../../`, which no V2 body does.
 
 `creator-research/` is nested in a subdirectory rather than spread across the plugin root because the root's `scripts/` already holds `hooks/` and `lib/` — dropping upstream's `scripts/` straight on top would delete the hook entry points.
 
@@ -174,7 +182,7 @@ Likewise, the two `mcp_tool` hooks in `hooks/hooks.json` use the bundled scoped 
 
 - **No automatic reporting for skill_verify_fail**: `bin/skill-verify` is a Bash subprocess and never has an MCP connection. On failure it prints `KABO_VERIFY_FAIL error_type=... skill_id=... skill_version=...` on the **last line** of stderr, and meta-guidance instructs the main agent to make one best-effort relay. This is a best-effort **quality signal** — the model may ignore it and it can be forged — so it is not a security audit trail; the real security guarantee is local: signature verification failure means exit 1, and the skill is not executed.
 - **No telemetry opt-out switch**: the reporting hooks are `mcp_tool` entries the host fires directly, so there is no client-side point at which the plugin could gate them. What is reported is the 12-field event-level whitelist above and nothing else — no content leaves the machine — and the hooks are visible entry by entry in the `/hooks` menu, which is where a user who wants none of it can see and refuse them.
-- **About `.mcp.json`**: one server only — `kabo`, as `{type: "http", url: "https://kabo.sh/mcp-for-claude", headersHelper: "${CLAUDE_PLUGIN_ROOT}/bin/kabo-headers"}`. The URL stays **hardcoded, never a config template**: the desktop connector settings UI does not interpolate, so it would take a template literally as the URL and report "URL must start with https". `headersHelper` is configured deliberately as of 0.13.0, which is exactly what makes the host stop doing OAuth discovery — hence the 2.1.195 requirement at the top of this file, and hence the separate path: `/mcp-for-claude` and the host-OAuth route it forked from are the same handler behind the same audience and the same scopes, split only so the 401 on each can tell the user the truth about how *that* path is authorized.
+- **About `.mcp.json`**: one server only — `kabo`, as `{type: "http", url: "https://kabo.sh/mcp-for-claude", headersHelper: "${CLAUDE_PLUGIN_ROOT}/bin/kabo-headers"}`. The URL stays **hardcoded, never a config template**: the desktop connector settings UI does not interpolate, so it would take a template literally as the URL and report "URL must start with https". `headersHelper` is configured deliberately as of 0.13.0: the host runs the helper for this server's headers — at session start, on every reconnect, and once more as a retry when a call answers 401/403 — instead of opening its own OAuth flow up front. (When the helper produces nothing the host does still fall back to OAuth discovery, and once the server publishes the metadata that chain needs, it can complete — but it produces a host-held token that this plugin's sign-in, logout, and telemetry model does not manage, so it is not a supported way in and does not substitute for `/kabo-login` on an old host.) Hence the 2.1.195 requirement at the top of this file, and hence the separate path: `/mcp-for-claude` and the host-OAuth route it forked from are the same handler behind the same audience and the same scopes, split only so the 401 on each can tell the user the truth about how *that* path is authorized.
 
 ## Directory structure
 
@@ -182,7 +190,7 @@ Likewise, the two `mcp_tool` hooks in `hooks/hooks.json` use the bundled scoped 
 plugins/claude/kabo-alpha/
 ├── .claude-plugin/plugin.json    # plugin manifest (no config fields — there are no user-supplied keys; endpoint hardcoded in .mcp.json)
 ├── .mcp.json                     # one bundled MCP server: kabo (http, kabo.sh/mcp-for-claude + headersHelper) — the local connectors server is gone (0.12.0)
-├── creator-research/             # upstream creator research support tree (config/schemas/wrappers + scripts/build_public_snapshot.py and scripts/snapshot_store.py); the local fetch scripts are gone
+├── creator-research/             # creator research support tree (config/schemas + scripts/build_public_snapshot.py and scripts/snapshot_store.py); the local fetch scripts and the V1 wrappers/ are gone
 ├── skills/meta-guidance/SKILL.md # resident router skill, and the verbatim fallback snapshot when dynamic guidance fails verification (must not be deleted)
 ├── agents/skill-runner.md        # restricted execution subagent (Read/Grep/Glob/Bash + data_connector_catalog/run)
 ├── hooks/hooks.json              # 3 events: SessionStart(command) + SubagentStart/Stop(mcp_tool, matcher=skill-runner)

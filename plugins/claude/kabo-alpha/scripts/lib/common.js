@@ -40,7 +40,7 @@ import os from 'node:os';
 import crypto from 'node:crypto';
 import { fileURLToPath } from 'node:url';
 
-export const PLUGIN_VERSION = '0.14.0';
+export const PLUGIN_VERSION = '0.15.0';
 export const SUPPORTED_API_VERSION = '1.0.0';
 export const DEFAULT_ENDPOINT = 'https://kabo.sh';
 export const CACHE_TTL_MS = 14 * 24 * 60 * 60 * 1000; // skill cache TTL: 14 days
@@ -210,6 +210,28 @@ export function isSafeName(name) {
 }
 
 /**
+ * mkdir -p that keeps the directory private (0700), creation and healing in one place.
+ *
+ * Everything under the data root is private state (credentials, trust anchors, cached skills, the
+ * relay buffer), yet its directories are created lazily by whichever code path runs first - and
+ * onboarding field-testing caught the consequence: delete ~/.kabo and the next SessionStart rebuilt
+ * it 0755 (the mkdirSync default under the usual umask), because only the login path passed a mode.
+ * Every directory-creating path goes through here so the permission no longer depends on which code
+ * path won the race to create the root. Node applies `mode` to every directory a recursive call
+ * creates, so the whole fresh chain comes out 0700.
+ *
+ * The chmod is the healing half: `mode` never touches a directory that already exists, so a root the
+ * 0755 bug already left behind would otherwise stay world-readable forever. It is best-effort - a
+ * pre-existing directory may be owned differently and must not fail the caller. mkdir failures do
+ * propagate: callers disagree on whether that is fatal (writeCredentials throws, writeJsonSilent
+ * swallows), and this helper must not flatten that difference.
+ */
+export function ensurePrivateDir(dir) {
+  fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
+  try { fs.chmodSync(dir, 0o700); } catch { /* a pre-existing directory may be owned differently */ }
+}
+
+/**
  * Normalize a URL that is about to be handed to a platform browser opener, or return null.
  *
  * The verification URL of the device flow arrives **from the server** (RFC 8628
@@ -301,8 +323,7 @@ export function readCredentials() {
  */
 export function writeCredentials(credentials) {
   const dir = dataRoot();
-  fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
-  try { fs.chmodSync(dir, 0o700); } catch { /* a pre-existing directory may be owned differently */ }
+  ensurePrivateDir(dir);
 
   const target = credentialsPath();
   const tmp = path.join(dir, `credentials.json.tmp-${process.pid}`);
@@ -379,7 +400,7 @@ export async function acquireCredentialLock(maxWaitMs = LOCK_MAX_WAIT_MS) {
   let breakAttempted = false;
   for (;;) {
     try {
-      fs.mkdirSync(path.dirname(lock), { recursive: true, mode: 0o700 });
+      ensurePrivateDir(path.dirname(lock));
       fs.mkdirSync(lock);
       return true;
     } catch (err) {
@@ -437,10 +458,10 @@ export function readJsonSilent(file, fallback = null) {
   }
 }
 
-/** Write a JSON file silently (creating directories); never throws on failure */
+/** Write a JSON file silently (creating directories, kept 0700 - see ensurePrivateDir); never throws on failure */
 export function writeJsonSilent(file, obj) {
   try {
-    fs.mkdirSync(path.dirname(file), { recursive: true });
+    ensurePrivateDir(path.dirname(file));
     fs.writeFileSync(file, JSON.stringify(obj));
     return true;
   } catch {
@@ -650,7 +671,7 @@ export async function loadPublicKeyPem(endpoint = apiEndpoint(), timeoutMs = 300
     return null;
   }
   try {
-    fs.mkdirSync(path.dirname(cached), { recursive: true });
+    ensurePrivateDir(path.dirname(cached));
     fs.writeFileSync(cached, resp.public_key_pem);
   } catch { /* a cache write failure does not affect this verification */ }
   return resp.public_key_pem;
@@ -1020,7 +1041,7 @@ export function appendPendingReport({ skill_id, skill_version, error_type } = {}
       ts,
     });
     if (!entry) return null;
-    fs.mkdirSync(path.dirname(pendingReportsPath()), { recursive: true });
+    ensurePrivateDir(path.dirname(pendingReportsPath()));
     fs.appendFileSync(pendingReportsPath(), JSON.stringify(entry) + '\n');
     return entry;
   } catch {

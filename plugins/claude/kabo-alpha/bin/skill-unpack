@@ -10,7 +10,7 @@
 
 import fs from 'node:fs';
 import path from 'node:path';
-import { cacheRoot, PLUGIN_ARTIFACT_FORMAT_VERSION } from '../scripts/lib/common.js';
+import { cacheRoot, ensurePrivateDir, PLUGIN_ARTIFACT_FORMAT_VERSION } from '../scripts/lib/common.js';
 
 const USAGE = `Usage: skill-unpack <path to package.json|-> [dest-root]
   Reads a SkillPackage JSON from a file or stdin(-) and writes it to <dest-root>/<id>/<version>/
@@ -93,13 +93,16 @@ async function main() {
   const destRoot = args[1] ? path.resolve(args[1]) : cacheRoot();
   const dest = path.join(destRoot, pkg.id, pkg.version);
 
-  // Clear the old contents and rewrite wholesale, so the directory matches the package exactly
+  // Clear the old contents and rewrite wholesale, so the directory matches the package exactly.
+  // ensurePrivateDir, not a bare mkdirSync: with the default dest-root this call is what
+  // materializes ~/.kabo/skill-cache (and on a fresh machine ~/.kabo itself), and a modeless mkdir
+  // left the whole chain 0755 - the onboarding-field-test permission regression.
   fs.rmSync(dest, { recursive: true, force: true });
-  fs.mkdirSync(dest, { recursive: true });
+  ensurePrivateDir(dest);
 
   for (const f of pkg.files) {
     const target = path.join(dest, f.path);
-    fs.mkdirSync(path.dirname(target), { recursive: true });
+    ensurePrivateDir(path.dirname(target));
     fs.writeFileSync(target, Buffer.from(f.content_base64, 'base64'));
   }
 

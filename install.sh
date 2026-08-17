@@ -1,12 +1,17 @@
 #!/usr/bin/env bash
 # Kabo plugin installer — the one-shot entry point behind `curl -fsSL … | bash`.
 #
-# This script does three things and deliberately only these three: register the marketplace,
-# install the plugin, and tell you what to do next. It does **not** install Claude Code or Codex
-# for you, write any config file, use sudo, or touch a credential.
-# The reasoning: `curl | bash` is the most trust a user can extend, and the less the script does,
-# the cheaper that trust is. Authorization is left entirely to each host's own flow
-# (/kabo-login on Claude Code, `codex mcp login kabo` on Codex).
+# This script does four things and deliberately only these four: register the marketplace,
+# install the plugin, (on the Claude side, with consent) start the plugin's own sign-in
+# command for you, and tell you what to do next.
+# It does **not** install Claude Code or Codex for you, write any config file, use sudo, or
+# ever read or write credential material. Signing in is done end to end by the plugin's own
+# kabo-auth device flow (on the Codex side it is host OAuth: `codex mcp login kabo`) — the
+# installer merely types that command for you, saving the "install → restart → one more
+# command → restart again" round trip; it never touches a byte of where credentials are
+# created or stored.
+# The reasoning: `curl | bash` is the most trust a user can extend, and the less the script
+# does, the cheaper that trust is.
 #
 # Usage:
 #   curl -fsSL https://raw.githubusercontent.com/kabo-sh/kabo-plugins/main/install.sh | bash
@@ -29,9 +34,12 @@ CODEX_MARKETPLACE="kabo-plugins-codex"
 PLUGIN_NAME="kabo-alpha"
 
 # Claude's floor comes from when ${CLAUDE_PLUGIN_ROOT} inside a headersHelper is interpolated
-# (the plugin README has the full reasoning): an older host runs the literal path, never gets a
-# header, and 401s with **no fallback to host OAuth**. Better to stop here than to let someone
-# install successfully and then hit a dead end.
+# (the README has the full reasoning): an older host runs the literal path, never gets a header,
+# and 401s. The host's own OAuth discovery chain can complete now that the server publishes the
+# metadata it needs, but what it leaves behind is a host-held token that this plugin's sign-in,
+# logout, and telemetry model does not manage — the supported path is always the /kabo-login
+# device flow. Better to stop here than to let someone install into an unsupported
+# authorization path.
 CLAUDE_MIN_VERSION="2.1.195"
 # No version floor for Codex: whether the `codex plugin` subcommand exists is a better test than
 # any version number.
@@ -71,7 +79,9 @@ Environment:
   KABO_INSTALL_REPO, KABO_INSTALL_REF  Same as --repo / --ref.
 
 The installer never installs Claude Code or Codex for you, never uses sudo, and never
-touches your credentials. Signing in is a separate step it prints at the end.
+reads or writes your credentials. After installing the Claude plugin it offers to start
+the plugin's own terminal sign-in (kabo-auth login) for you; decline, and signing in
+stays a separate step it prints at the end.
 USAGE
 }
 
@@ -311,6 +321,85 @@ install_codex() {
   CODEX_DONE=1
 }
 
+# ====== Claude sign-in (optional, offered right after installing) ======
+# An installed plugin that is not signed in gets no data at all, and "restart → /kabo-login →
+# activate again" is three steps that collapse into one. So after installing the Claude plugin
+# the script asks once, and on a yes it starts the sign-in command for the user.
+# The boundary is unchanged: signing in is always the plugin's own kabo-auth device flow, the
+# installer only launches it, and it never touches a byte of where credentials are created or
+# stored.
+CLAUDE_SIGNED_IN=0
+
+# Where the plugin got installed is taken only from the host's own answer (claude plugin list
+# --json). The output shape varies by version (2.1.89 differs from 2.1.2xx), so the parsing has
+# to be defensive: try the common field names, and when none parses, give this step up and fall
+# back to printing the instructions — guessing or hard-coding a path would break silently the
+# day the host changes its install layout, with no error pointing here. JSON parsing goes to
+# node rather than grep/awk: kabo-auth needs node anyway, so this adds no new dependency.
+claude_plugin_root() {
+  claude plugin list --json 2>/dev/null | node -e '
+    let raw = "";
+    process.stdin.on("data", (d) => { raw += d; });
+    process.stdin.on("end", () => {
+      try {
+        const parsed = JSON.parse(raw);
+        const list = Array.isArray(parsed) ? parsed
+          : Array.isArray(parsed?.plugins) ? parsed.plugins
+            : Array.isArray(parsed?.installed) ? parsed.installed : [];
+        const hit = list.find((p) => p
+          && (p.id === `${process.argv[1]}@${process.argv[2]}` || p.name === process.argv[1]));
+        for (const key of ["installPath", "installedPath", "path", "root", "location", "dir"]) {
+          if (hit && typeof hit[key] === "string" && hit[key]) { process.stdout.write(hit[key]); return; }
+        }
+      } catch { /* stay silent when the shape does not match; the caller treats empty output as a parse failure */ }
+    });
+  ' "$PLUGIN_NAME" "$CLAUDE_MARKETPLACE"
+}
+
+offer_claude_signin() {
+  [ "${CLAUDE_DONE:-0}" -eq 1 ] || return 0
+  # Ask only when a real person is present: the device flow needs someone to open a browser and
+  # confirm the code, and starting it automatically in an unattended run (--yes, or no tty) would
+  # just block for fifteen minutes and time out.
+  #
+  # These three gates (tty / --yes / node) sit **before** the dry-run output because dry-run's
+  # value is fidelity: if --dry-run --yes still printed the sign-in line, it would be rehearsing a
+  # path a real run would never take. The gates themselves only read variables and check PATH,
+  # never execute a host command, so running them early keeps the dry-run promise intact.
+  [ "$HAS_TTY" -eq 1 ] || return 0
+  [ "$ASSUME_YES" -eq 0 ] || return 0
+  if ! command -v node >/dev/null 2>&1; then
+    warn "node is not on PATH, so the installer cannot start the sign-in here. Run /kabo-login inside Claude Code instead."
+    return 0
+  fi
+  if [ "$DRY_RUN" -eq 1 ]; then
+    # dry-run only shows the command that would run: a real run would open a browser and block on
+    # the device-flow polling. Path resolution is still skipped — it executes a host command, and
+    # dry-run's promise is to execute nothing; the wording states honestly that in a real run this
+    # line is still conditional (it is also skipped when the plugin path cannot be resolved).
+    printf '%s    [dry-run] node <plugin-root>/bin/kabo-auth login  (offered interactively; skipped when the plugin path cannot be resolved)%s\n' "$C_DIM" "$C_OFF"
+    return 0
+  fi
+  local plugin_root
+  plugin_root="$(claude_plugin_root || true)"
+  if [ -z "$plugin_root" ] || [ ! -f "$plugin_root/bin/kabo-auth" ]; then
+    # An older host's list output yields no install path: do not guess, fall back to /kabo-login
+    # inside a session.
+    return 0
+  fi
+  printf '\n'
+  local reply=''
+  prompt reply "Sign in to Kabo now? It prints a URL and a code to confirm in a browser on any device. [Y/n] " "Y"
+  case "$reply" in
+    [nN]*) return 0 ;;
+  esac
+  if run_cli node "$plugin_root/bin/kabo-auth" login; then
+    CLAUDE_SIGNED_IN=1
+  else
+    warn "Sign-in did not complete. Run /kabo-login inside Claude Code to try again."
+  fi
+}
+
 # ====== Main ======
 printf '\n'
 info "Kabo plugin installer"
@@ -397,19 +486,32 @@ CODEX_DONE=0
 want claude && install_claude
 want codex  && { [ "$CLAUDE_DONE" -eq 1 ] && printf '\n'; install_codex; }
 
+# The Claude sign-in offer comes after both installs are done: the device flow blocks waiting for
+# a browser confirmation, and putting it in the middle would split the Codex install output with
+# a long pause.
+offer_claude_signin
+
 # ====== Next steps ======
-# Authorization is not part of installation, and the entry points differ (Claude's device flow
-# versus Codex's host OAuth). These lines are the part users actually follow, so they are written
-# per host rather than merged into one generic hint.
+# The authorization entry points differ per host (Claude's device flow versus Codex's host
+# OAuth), and the Claude side may have just been completed. These lines are the part users
+# actually follow, so they are written per host and per signed-in state rather than merged into
+# one generic hint.
 printf '\n'
 info "Done."
 printf '\n'
 
 if [ "$CLAUDE_DONE" -eq 1 ]; then
   printf '%sClaude Code%s\n' "$C_BLUE" "$C_OFF"
-  printf '  1. In a running session run /reload-plugins, or start a new `claude` session.\n'
-  printf '  2. Run /kabo-login. It prints a URL and an 8-character code; confirm the code in a\n'
-  printf '     browser on any device. You only do this once per machine.\n'
+  if [ "$CLAUDE_SIGNED_IN" -eq 1 ]; then
+    printf '  You are signed in — that was the once-per-machine step. Start a `claude` session\n'
+    printf '  (or run /reload-plugins in one that is already open) and the Kabo tools are ready.\n'
+  else
+    printf '  1. In a running session run /reload-plugins, or start a new `claude` session.\n'
+    printf '  2. Run /kabo-login. It prints a URL and an 8-character code; confirm the code in a\n'
+    printf '     browser on any device. You only do this once per machine.\n'
+    printf '  3. If Kabo already showed as unavailable in that session, run /mcp reconnect kabo\n'
+    printf '     (Claude Code 2.1.205 or newer; /reload-plugins also works) — no new session needed.\n'
+  fi
 fi
 
 if [ "$CODEX_DONE" -eq 1 ]; then

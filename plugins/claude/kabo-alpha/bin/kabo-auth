@@ -43,7 +43,9 @@ Description:
   login   signs in from this terminal: it prints a URL and a short code, opens the URL in a browser
           when it can, and waits for you to confirm the code (any device works - the confirmation
           page does not have to be on this machine). --no-open prints and waits without launching
-          anything. The credential is written to ${credentialsPath()} with mode 0600
+          anything. The credential is written to ${credentialsPath()} with mode 0600. Once it
+          succeeds, /mcp reconnect kabo (Claude Code 2.1.205+) activates the tools in a running
+          session - no restart needed
   status  whether this machine is signed in, to which deployment, and how long that is good for.
           It never prints a token, not even a fragment of one
   logout  deletes the local credential and clears the skill cache, the run work directories, the
@@ -229,8 +231,19 @@ async function cmdLogin(noOpen) {
     }
 
     // 6. Success. Not one character of the token appears here, or anywhere else outside the file.
-    console.log('\nAuthorized. Kabo tools will be available in your next Claude Code session.');
-    console.log('If this session already showed Kabo as unavailable, start a new session - the credential is read fresh on every request from a new connection.');
+    //
+    // The advice is reconnect, not restart: the host re-runs the headersHelper on every connection
+    // (session start, reconnect, and a one-shot retry after a tool call answers 401/403), so
+    // `/mcp reconnect kabo` picks the fresh credential up in the running session. Only the `/mcp
+    // reconnect` subcommand needs 2.1.205; hosts on 2.1.195-2.1.204 still have /reload-plugins,
+    // which reconnects plugin servers and re-runs the helper just the same. So the advice for an
+    // older host is /reload-plugins first and a new session only as the last resort - sending them
+    // straight to a new session would reinstate the very restart this rework removed.
+    console.log('\nAuthorized. To activate the Kabo tools in a running Claude Code session, run:');
+    console.log('\n    /mcp reconnect kabo\n');
+    console.log('(Claude Code 2.1.205 or newer; /reload-plugins also works.) Reconnecting re-runs the');
+    console.log('credential helper, so no restart is needed. On an older Claude Code, run /reload-plugins');
+    console.log('instead, and start a new session only if the tools still do not appear.');
     process.exit(0);
   }
 }

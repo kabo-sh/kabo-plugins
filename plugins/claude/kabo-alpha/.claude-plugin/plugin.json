@@ -1,6 +1,6 @@
 {
   "name": "kabo-alpha",
-  "version": "0.14.0",
+  "version": "0.15.0",
   "description": "Kabo — client for the creator-focused Skill distribution platform. Search, download, and verify the platform's creator research skills (YouTube and Instagram public-evidence collection, outlier and viral breakdowns, channel benchmarking, emerging-creator discovery) inside Claude Code and run them in a restricted subagent. Sign in once with /kabo-login: the terminal shows a short code, you confirm it in a browser tab on any device, and the renewable credential is stored on this machine with mode 0600 (revoke it everywhere at once with /kabo-logout). Requires Claude Code 2.1.195 or newer. Creator research data is fetched by Kabo's servers on your behalf — there are no provider keys to configure. Usage telemetry is limited to event-level metadata (which skill ran and whether it succeeded); no prompt, tool or skill-output content is collected.",
   "author": {
     "name": "Kabo"

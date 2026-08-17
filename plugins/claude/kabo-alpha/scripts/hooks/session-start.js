@@ -31,7 +31,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import {
-  apiEndpoint, cacheRoot, disabledMarkerPath, guidanceCachePath, pluginRootMarkerPath,
+  apiEndpoint, cacheRoot, disabledMarkerPath, ensurePrivateDir, guidanceCachePath, pluginRootMarkerPath,
   readStdinJson, readJsonSilent, writeJsonSilent, fetchJsonSilent,
   isSafeName, compareSemver, ensureVerified, verifyGuidanceEnvelope,
   readAndPrunePendingReports, PENDING_REPORT_INJECT_MAX,
@@ -48,7 +48,12 @@ const REQUEST_TIMEOUT_MS = 3000; // session startup path: better to come back em
 function recordPluginRoot() {
   try {
     const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..');
-    fs.mkdirSync(path.dirname(pluginRootMarkerPath()), { recursive: true });
+    // ensurePrivateDir, not a bare mkdirSync: this line runs on every SessionStart and is the most
+    // common (re)creator of ~/.kabo - onboarding field-testing caught exactly this call rebuilding
+    // the data root 0755 after the user deleted it, leaving credentials and trust anchors
+    // world-readable. The helper also chmods an already existing root back to 0700, which is the
+    // healing pass for roots the old bug left behind.
+    ensurePrivateDir(path.dirname(pluginRootMarkerPath()));
     fs.writeFileSync(pluginRootMarkerPath(), `${root}\n`, 'utf8');
   } catch {
     // Failing to write it only costs the runner a shortcut; it must not affect the session
@@ -89,6 +94,8 @@ function scanInstalledVersions() {
  * when the authoritative endpoint later returns revocations:[], stale markers could not be cleared,
  * and the user's only recovery would be kabo-auth logout (which also wipes the entire skill cache).
  * A single mistaken or forged response would amount to permanently bricking the skill.
+ * @returns {{applied: number, evicted: string[]}} applied = markers written this pass;
+ *   evicted = the subset whose cached copy really existed and was deleted just now
  */
 function applyRevocations(revocations) {
   const active = new Set(revocations.filter(isSafeName));
@@ -106,24 +113,32 @@ function applyRevocations(revocations) {
   }
 
   let applied = 0;
+  // Ids whose cached copy this pass actually deleted - the ones worth naming to the user. A marker
+  // for a skill this machine never installed is bookkeeping (naming those would greet every fresh
+  // install with the platform's whole revocation backlog), and a marker that already exists was
+  // announced when it was first applied.
+  const evicted = [];
   for (const skillId of revocations) {
     // Server responses cannot be trusted wholesale (a malicious endpoint or a MITM can both inject
     // revocations): the id must be a legal single-segment directory name, otherwise a value like
     // "../.." would let rmSync escape skill-cache.
     if (!isSafeName(skillId)) continue;
     try {
-      fs.rmSync(path.join(cacheRoot(), skillId), { recursive: true, force: true });
+      const cacheDir = path.join(cacheRoot(), skillId);
+      const hadCache = fs.existsSync(cacheDir);
+      fs.rmSync(cacheDir, { recursive: true, force: true });
       writeJsonSilent(disabledMarkerPath(skillId), {
         id: skillId,
         reason: 'revoked',
         revoked_at: new Date().toISOString(),
       });
       applied += 1;
+      if (hadCache) evicted.push(skillId);
     } catch {
       // One failure does not affect the rest
     }
   }
-  return applied;
+  return { applied, evicted };
 }
 
 /** Diff the catalog against locally installed versions to get the number of updatable skills (the server no longer computes it for us) */
@@ -251,11 +266,33 @@ async function main() {
   if (registry) {
     const revocations = Array.isArray(registry.revocations) ? registry.revocations : [];
     const catalog = Array.isArray(registry.catalog) ? registry.catalog : [];
-    const applied = applyRevocations(revocations);
+    const { applied, evicted } = applyRevocations(revocations);
     const updates = countUpdates(catalog, scanInstalledVersions());
     parts.push(`kabo-alpha: platform catalog synced (server API ${registry.server_api_version || '?'})`);
     parts.push(updates > 0 ? `${updates} skill(s) updatable` : 'nothing to update');
     parts.push(revocations.length > 0 ? `${revocations.length} revocation(s) (${applied} disabled locally)` : 'no revocations');
+    // Name what was just taken away. "N revocation(s)" alone reads as bookkeeping - onboarding
+    // field-testing (P1-2) showed users never connecting that count to the skill that silently
+    // vanished from their machine. Only the session that actually deleted a cached copy names it:
+    // repeating the names for markers re-confirmed every later session would train the user to
+    // ignore the line. Capped so the systemMessage stays one readable line.
+    if (evicted.length > 0) {
+      // Display-safety allowlist, deliberately separate from isSafeName: that one guards *paths*
+      // (rmSync must not escape skill-cache) and therefore admits spaces, quotes, and control bytes,
+      // all legal in a directory name. This line is the first place a server-provided string is
+      // echoed into the user-facing systemMessage, and KABO_API_ENDPOINT can be pointed at a hostile
+      // endpoint by project-level environment config - so an id is only *named* when it matches the
+      // strict allowlist; the rest stay in the count but are never echoed (no ANSI escape or
+      // look-alike text can reach the user's terminal).
+      const DISPLAY_SAFE_ID = /^[a-z0-9][a-z0-9._-]{0,63}$/i;
+      const MAX_NAMED = 6;
+      const displayable = evicted.filter((id) => DISPLAY_SAFE_ID.test(id));
+      const named = displayable.slice(0, MAX_NAMED).join(', ');
+      const unnamed = evicted.length - Math.min(displayable.length, MAX_NAMED);
+      const more = unnamed > 0 ? ` +${unnamed} more` : '';
+      const detail = named ? `: ${named}${more}` : '';
+      parts.push(`Kabo revoked ${evicted.length} cached skill(s)${detail} (removed locally, blocked from running)`);
+    }
   } else {
     parts.push('kabo-alpha: cannot reach the platform, skipping catalog sync (offline degradation; local revocation markers still apply)');
   }

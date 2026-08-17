@@ -66,11 +66,11 @@ The Codex data root is `$KABO_CODEX_DATA`, defaulting to `~/.kabo/codex`. Downlo
 
 ## Creator research support files
 
-`creator-research/` is the upstream support tree (`config/`, `schemas/`, `wrappers/`, plus `scripts/build_public_snapshot.py` and `scripts/snapshot_store.py`) that the platform's five creator research skills read at runtime. Those skills' bodies are used verbatim from upstream with no rewriting, so `meta-guidance` maps the `../../xxx` relative paths in the body to `<plugin-root>/creator-research/xxx`.
+`creator-research/` is the plugin-side support tree (`config/`, `schemas/`, plus `scripts/build_public_snapshot.py` and `scripts/snapshot_store.py`). The platform's seven creator research skills (the 2026-08-16 V2 generation) bundle their own `scripts/` and `references/` inside the signed package and resolve them relative to the skill directory; what they use from this tree is the assembler, `scripts/build_public_snapshot.py`, which skill-runner drives before an analyzer runs. The `../../xxx` path mapping into `<plugin-root>/creator-research/xxx` that `meta-guidance` describes applies only to bodies that literally contain `../../` — the retired V1 generation — and no V2 body does.
 
 It is nested in a subdirectory rather than spread across the plugin root because the root's `scripts/` already holds `hooks/` and `lib/` — dropping upstream's `scripts/` straight on top would delete the hook entry points.
 
-The local fetch engine is gone in 0.12.0: `run_connector.py`, `preflight.py` and `build_head_video_analyzer.py` no longer ship, because fetching moved to the platform. What stays is what a body still reads (`config/`, `schemas/`, the five `wrappers/<skill>/contract.json`) plus two local-only scripts: `build_public_snapshot.py`, which assembles the collected envelopes into the `public-content-snapshot.v1` an analyzer reads, and `snapshot_store.py`, which is pure local file persistence with no network and no credentials and backs `yt-detect-creator-breakouts`' dated snapshots.
+The local fetch engine is gone in 0.12.0: `run_connector.py`, `preflight.py` and `build_head_video_analyzer.py` no longer ship, because fetching moved to the platform. The V1 `wrappers/<skill>/contract.json` layer is gone too — it resolved connectors for the five V1 skills, all retired in the V2 changeover. What stays is what the shipped runner and guidance still name (`config/`, `schemas/`) plus two local-only scripts: `build_public_snapshot.py`, which assembles the collected envelopes into the `public-content-snapshot.v1` an analyzer reads, and `snapshot_store.py`, plain local file persistence with no network and no credentials, whose V1 consumer retired without a successor.
 
 ## Usage data reporting boundary
 

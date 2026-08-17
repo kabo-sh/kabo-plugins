@@ -1,6 +1,6 @@
 {
   "schema_version": "1.2",
-  "policy": "Top-level Skills select workflows and may name only declared Connector IDs. Every fetch runs on the Kabo platform through the data_connector_run tool: the platform holds every provider credential, the user configures nothing, and no credential name, value or local binary requirement belongs in this file, in a request JSON or in a user prompt.",
+  "policy": "Every fetch runs on the Kabo platform through the data_connector_run tool: the platform holds every provider credential, the user configures nothing, and no credential name, value or local binary requirement belongs in this file, in a request JSON or in a user prompt. Since the 2026-08-16 V2 changeover the published skills carry their own connector references inside the signed package; this file remains the plugin-side record of the platform data plane, and used_by records which current skills' evidence each connector feeds.",
   "runner": "data_connector_run",
   "readiness_source": "This file resolves connector_id and operation names only; it makes no claim that a call will succeed. The Kabo server catalog owns readiness: call data_connector_catalog for each connector's ready state, each operation's implemented state and its params_schema, before promising any evidence.",
   "request_schema": "schemas/connector-request.schema.json",
@@ -12,7 +12,7 @@
       "callable": true,
       "implementation_state": "platform_data_plane; check data_connector_catalog",
       "entrypoint": "data_connector_run",
-      "used_by": ["pp-youtube"],
+      "used_by": ["research-content-trends", "analyze-creator-competitors", "recommend-publish-timing", "review-creator-account"],
       "operations": ["search_videos", "get_channel", "get_video", "list_comments"],
       "block_reason": null,
       "runtime_note": "Runs server-side; the platform owns the YouTube credential and the quota accounting. A blocked_setup response means the platform is missing that credential, which the user cannot fix.",
@@ -24,7 +24,7 @@
       "callable": true,
       "implementation_state": "platform_data_plane; check data_connector_catalog",
       "entrypoint": "data_connector_run",
-      "used_by": ["head-youtube-research"],
+      "used_by": ["research-content-trends"],
       "operations": ["search_outliers", "get_channel_videos"],
       "block_reason": null,
       "runtime_note": "Runs server-side over HTTPS. The catalog carries the region limitation and the per-operation request cap; report the response's limitations verbatim.",
@@ -36,11 +36,11 @@
       "callable": true,
       "implementation_state": "not_implemented_server_side; check data_connector_catalog",
       "entrypoint": "data_connector_run",
-      "used_by": ["head-video-analyzer"],
+      "used_by": [],
       "operations": ["analyze_video"],
       "gates": ["model_capability_probe", "media_send_scope", "budget"],
       "block_reason": null,
-      "runtime_note": "Deep video analysis is not implemented on the Kabo server yet, so this path returns unsupported. Treat it as an optional segment: say the analysis is unavailable platform-side, deliver the collection results without it, and never substitute prior knowledge for a watched video.",
+      "runtime_note": "Deep video analysis is not implemented on the Kabo server yet, so this path returns unsupported. No published V2 skill routes into it: its V1 route (head-youtube-research via the head-video-analyzer internal skill) was retired in the 2026-08-16 changeover, and analyze-content-video draws frames and transcripts from public-video-media with verdicts computed by its own bundled deterministic analyzer. If a future skill does route here, treat it as an optional segment: say the analysis is unavailable platform-side, deliver the collection results without it, and never substitute prior knowledge for a watched video.",
       "source": "https://ai.google.dev/gemini-api"
     },
     "scrapecreators-connector": {
@@ -49,7 +49,7 @@
       "callable": true,
       "implementation_state": "platform_data_plane; check data_connector_catalog",
       "entrypoint": "data_connector_run",
-      "used_by": ["yt-reverse-viral-reels", "yt-detect-creator-breakouts"],
+      "used_by": ["analyze-content-video"],
       "operations": ["resolve_profile", "list_posts", "list_reels", "search_profiles", "discover_trending", "list_comments", "get_transcript"],
       "gates": ["scope_and_credit_budget"],
       "block_reason": null,
@@ -62,11 +62,11 @@
       "callable": true,
       "implementation_state": "platform_data_plane; check data_connector_catalog",
       "entrypoint": "data_connector_run",
-      "used_by": ["yt-youtube-research-agent"],
+      "used_by": ["analyze-content-video"],
       "operations": ["collect_public_metadata", "fetch_transcript", "extract_keyframes"],
       "async_operations": ["collect_public_metadata", "fetch_transcript", "extract_keyframes"],
       "block_reason": null,
-      "runtime_note": "Runs server-side in a private Kabo media worker with pinned yt-dlp/ffmpeg; nothing runs on the user's machine and no credential is involved. All three operations are asynchronous: the call returns a job resource rather than an evidence envelope, and the MCP surface carries no polling tool yet, so evidence can still be in flight when the call returns - report that as pending, never as absent. Readiness is the part that varies: a deployment with no media execution host reports ready false in the catalog and answers unsupported, and availability otherwise depends on upstream access from that worker's egress and can degrade without notice. Either way it is a platform-side condition the user cannot configure away, so check data_connector_catalog first, report which evidence is unavailable, deliver the rest under the skill's partial semantics, and never fall back to web search or prior knowledge.",
+      "runtime_note": "Runs server-side in a private Kabo media worker with pinned yt-dlp/ffmpeg; nothing runs on the user's machine and no credential is involved. All three operations are asynchronous: the call returns a job resource rather than an evidence envelope; poll that job with the data_connector_job tool until it reaches a terminal state, and report a job still running at reporting time as pending, never as absent. Readiness is the part that varies: a deployment with no media execution host reports ready false in the catalog and answers unsupported, and availability otherwise depends on upstream access from that worker's egress and can degrade without notice. Either way it is a platform-side condition the user cannot configure away, so check data_connector_catalog first, report which evidence is unavailable, deliver the rest under the skill's partial semantics, and never fall back to web search or prior knowledge.",
       "source": "https://github.com/yt-dlp/yt-dlp"
     }
   },
@@ -76,13 +76,13 @@
       "platforms": ["youtube", "instagram", "tiktok"],
       "default_user_entry": false,
       "callable": true,
-      "used_by": ["head-youtube-research"],
+      "used_by": [],
       "standby_used_by": ["head-instagram"],
       "connector_ids": ["gemini-video-adapter"],
       "input_contract": "Normalized selected-video rows containing platform, media/page URL, caption/title and source evidence.",
       "output_contract": "Per-video Hook, content structure, delivery style, CTA strategy and explicit error state.",
       "block_reason": null,
-      "runtime_note": "Nothing is built or run locally: the analyzer lives on the platform behind gemini-video-adapter, whose operation is not implemented yet."
+      "runtime_note": "Nothing is built or run locally: the analyzer lives on the platform behind gemini-video-adapter, whose operation is not implemented yet. Its V1 consumer (head-youtube-research) was retired in the 2026-08-16 V2 changeover; no current skill routes into it."
     }
   },
   "runtime_services": {
@@ -91,11 +91,11 @@
       "callable": true,
       "implementation_state": "local_file_persistence_v1_alpha",
       "entrypoint": "scripts/snapshot_store.py",
-      "used_by": ["yt-detect-creator-breakouts"],
+      "used_by": [],
       "operations": ["write_immutable_raw", "append_dated_snapshot", "read_comparable_snapshots"],
       "required_config": ["CREATOR_SKILLS_RAW_ROOT", "CREATOR_SKILLS_SNAPSHOT_ROOT"],
       "block_reason": null,
-      "runtime_note": "The one component that is still local: plain file persistence with no network access and no credential of any kind. Owner-only directories, O_EXCL append, per-file SHA-256, one-snapshot degradation and deterministic t0/t1 metric deltas are implemented and smoke-tested."
+      "runtime_note": "The one component that is still local: plain file persistence with no network access and no credential of any kind. Owner-only directories, O_EXCL append, per-file SHA-256, one-snapshot degradation and deterministic t0/t1 metric deltas are implemented and smoke-tested. Its V1 consumer (yt-detect-creator-breakouts) was retired in the 2026-08-16 V2 changeover with no successor - the breakout board is a deliberate capability loss of that changeover - so no current skill drives it."
     }
   }
 }
