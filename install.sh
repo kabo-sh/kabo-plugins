@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 # Kabo plugin installer — the one-shot entry point behind `curl -fsSL … | bash`.
 #
-# This script does four things and deliberately only these four: register the marketplace,
-# install the plugin, (on the Claude side, with consent) start the plugin's own sign-in
+# This script does four things and deliberately only these four: register (or refresh) the marketplace,
+# install (or update) the plugin, (on the Claude side, with consent) start the plugin's own sign-in
 # command for you, and tell you what to do next.
 # It does **not** install Claude Code or Codex for you, write any config file, use sudo, or
 # ever read or write credential material. Signing in is done end to end by the plugin's own
@@ -255,6 +255,12 @@ install_claude() {
 
   if claude_marketplace_present; then
     ok "marketplace \"$CLAUDE_MARKETPLACE\" already registered"
+    # Registered does not mean current: the marketplace is a git clone, and neither install nor
+    # update refreshes it on its own. Without this step, everything below sees the snapshot from
+    # the day the marketplace was added — which is exactly how re-running the installer on an
+    # already-set-up machine used to hand people the old version.
+    run_cli claude plugin marketplace update "$CLAUDE_MARKETPLACE" \
+      || warn "Could not refresh the marketplace clone; continuing with the local copy (it may be stale)."
   else
     local source="$REPO_SLUG"
     [ -n "$REPO_REF" ] && source="${REPO_SLUG}@${REPO_REF}"
@@ -264,11 +270,18 @@ install_claude() {
   fi
 
   if claude_plugin_present; then
-    ok "plugin ${PLUGIN_NAME} already installed — re-running install to pick up updates"
-  fi
+    # For an installed plugin, `plugin install` is a strict no-op: the host answers
+    # "already installed" and keeps the old version, even against a freshly refreshed clone.
+    # The actual upgrade command is `plugin update`. A failed update is not a failed install:
+    # the old version is still there and still works.
+    if run_cli claude plugin update "${PLUGIN_NAME}@${CLAUDE_MARKETPLACE}"; then
+      ok "plugin updated to the marketplace's latest version (restart to apply)"
+    else
+      warn "claude plugin update failed; the installed version stays as it was. You can retry with: claude plugin update ${PLUGIN_NAME}@${CLAUDE_MARKETPLACE}"
+    fi
   # Check again afterwards rather than trusting the exit code: a repeat install returns 0 on some
   # versions and non-zero on others, and "is it there afterwards" is the fact we actually care about.
-  if ! run_cli claude plugin install "${PLUGIN_NAME}@${CLAUDE_MARKETPLACE}"; then
+  elif ! run_cli claude plugin install "${PLUGIN_NAME}@${CLAUDE_MARKETPLACE}"; then
     claude_plugin_present || fail "claude plugin install failed and ${PLUGIN_NAME} is not installed."
   fi
   if [ "$DRY_RUN" -eq 1 ]; then
@@ -301,6 +314,11 @@ install_codex() {
 
   if codex_marketplace_present; then
     ok "marketplace \"$CODEX_MARKETPLACE\" already registered"
+    # Same reasoning as the Claude side: a Git marketplace snapshot never refreshes itself.
+    # A local-path marketplace has no snapshot, so upgrade fails with "not configured as a
+    # Git marketplace" — that is not an error, the live directory is already current.
+    run_cli codex plugin marketplace upgrade "$CODEX_MARKETPLACE" \
+      || warn "Could not refresh the marketplace snapshot (a local-path marketplace has none); continuing."
   else
     local -a add_args=("$REPO_SLUG")
     [ -n "$REPO_REF" ] && add_args+=(--ref "$REPO_REF")
@@ -309,6 +327,9 @@ install_codex() {
     ok "marketplace registered"
   fi
 
+  # Unlike Claude, Codex's add reinstalls an already-installed plugin from the current snapshot
+  # (verified: an old version gets replaced), so "refresh the snapshot, re-run add" is the whole
+  # upgrade path on this side — no separate update command needed.
   if ! run_cli codex plugin add "${PLUGIN_NAME}@${CODEX_MARKETPLACE}"; then
     # Codex's add can also return non-zero when the plugin is already installed; again, the fact
     # afterwards is what counts.
