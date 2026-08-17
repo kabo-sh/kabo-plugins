@@ -154,9 +154,15 @@ def iso(moment: datetime) -> str:
 
 
 def duration_seconds(row: dict[str, Any]) -> float | None:
-    """Seconds, from whichever of the three shapes the provider used, or None if it said nothing."""
+    """Seconds, from whichever shape the provider used, or None if it said nothing.
+
+    ("snippet", "duration") is TubeLab: plain integer seconds, nested where its identity
+    fields live. Its absence once marked 115 real items youtube_long "without a duration
+    signal" while every row carried one - when a provider nests identity under a key,
+    expect its numbers under that key too.
+    """
     for path in (("duration_seconds",), ("duration",), ("video_duration",), ("length_seconds",),
-                 ("contentDetails", "duration"), ("content_details", "duration")):
+                 ("snippet", "duration"), ("contentDetails", "duration"), ("content_details", "duration")):
         raw = dig(row, path)
         number = as_number(raw)
         if number is not None:
@@ -186,16 +192,21 @@ def metrics_of(row: dict[str, Any]) -> dict[str, dict[str, Any]]:
     the provider answered while refusing to hand a bad number to the analyzer.
     """
     metrics: dict[str, dict[str, Any]] = {}
-    nested = row.get("metrics") if isinstance(row.get("metrics"), dict) else {}
+    # Providers disagree on where the counters nest: youtube-pp style rows use "metrics",
+    # TubeLab puts the same viewCount/likeCount/commentCount names under "statistics".
+    # Consulting only one of them silently downgraded 65/75 real rows to `unavailable`
+    # while the numbers sat right there - the identity lookups already read the snippet
+    # nest, and the counters get the same treatment.
+    nested_sources = [row[key] for key in ("metrics", "statistics") if isinstance(row.get(key), dict)]
     for name, aliases in METRIC_ALIASES.items():
         native = None
         raw: Any = None
         for alias in aliases:
-            if alias in nested:
-                native, raw = alias, nested[alias]
-                break
-            if alias in row:
-                native, raw = alias, row[alias]
+            for source in (*nested_sources, row):
+                if alias in source:
+                    native, raw = alias, source[alias]
+                    break
+            if native is not None:
                 break
         if native is None:
             metrics[name] = {"status": "unavailable", "value": None, "native_name": name}
