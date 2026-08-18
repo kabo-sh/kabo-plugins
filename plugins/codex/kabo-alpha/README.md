@@ -78,17 +78,15 @@ The local fetch engine is gone in 0.12.0: `run_connector.py`, `preflight.py` and
 
 **Tool-level telemetry is recorded by the server itself**: inside the MCP tool handler the platform already holds the tool name, your user id (from the verified JWT), the duration, and success or failure, and writes them straight to its database. The client no longer has PreToolUse/PostToolUse hooks, nor a local telemetry buffer — that "local JSONL + REST batch upload" channel was removed entirely in 0.9.0 (the platform-side `POST /api/telemetry` is retired as well).
 
-The client is left with just two `mcp_tool` hooks, which report event-level metadata over the **authorized MCP connection** when a skill-runner subagent starts and stops: `session_id` / `agent_id` / `agent_type`. They handle no local token.
+**The client collects no usage events at all on this variant.** Earlier builds declared two `mcp_tool` subagent hooks meant to report event-level metadata over the authorized MCP connection — but the Codex host has never parsed that hook variant (its schema is `command` | `prompt` | `agent`), and an unknown variant does not degrade gracefully: it fails the whole hooks file, which silently disabled the SessionStart hook and with it skill sync and revocations (real incident, 2026-08-18). Those hooks are gone; usage telemetry stays uncollected here until the host offers an MCP-capable hook type, and the server-side tool telemetry above already covers what matters.
 
-**This variant does not collect subagent output**: Codex's `SubagentStop` hook has no structured output/success field, and `agent_type` is the host profile rather than the task name, so matcher-based attribution is unreliable. Neither build collects it — the Claude variant reported it under a `skill_output` field until that was removed, so both are now metadata-only.
+**This variant does not collect subagent output** either — and never did: Codex's `SubagentStop` hook has no structured output/success field, and `agent_type` is the host profile rather than the task name, so matcher-based attribution is unreliable. Neither build collects it — the Claude variant reported it under a `skill_output` field until that was removed, so both are metadata-only at most.
 
 The following is never collected, and reading or serializing it is forbidden at the code level: prompts, tool argument/response content, the transcript that `transcript_path` points to, `last_assistant_message`, and the output of any subagent. When hooks are untrusted or disabled, the reports are simply missing and the main skill flow is unaffected. The MVP does not implement a standalone opt-out switch yet; hook trust/disabling is the host-level control today.
 
 ### Subagent limitations
 
-A plain Codex subagent's `agent_type` is the host profile, not the task name. A plugin cannot force-install a project/user custom-agent profile along with the package, so by default the Kabo tool usage that happens inside a subagent can be reported, but "which subagent it came from" cannot be reliably tagged, and that subagent's success/failure is not reported.
-
-Only if you separately install and select a custom-agent profile whose `agent_type` name contains `kabo` or `skill-runner` do the `SubagentStart/Stop` hooks record agent id/type and duration. `SubagentStop` has no structured success field, so `status` is fixed at `null`, and neither output nor the transcript is read to infer success or failure.
+A plain Codex subagent's `agent_type` is the host profile, not the task name, and a plugin cannot force-install a project/user custom-agent profile along with the package — so even when the host one day offers an MCP-capable hook type, per-subagent attribution will stay unreliable. `SubagentStop` has no structured success field, and neither output nor the transcript may be read to infer one. This is the other half of why dropping the unparseable telemetry hooks costs so little: what they could have attributed was never trustworthy to begin with.
 
 ## Development validation
 
@@ -96,6 +94,5 @@ The cross-repo contract (server signs / plugin verifies, server packs / plugin u
 
 Automated validation is not the same as install sign-off on the target host. These three **must be tested on a real Codex**:
 
-1. The full OAuth flow and token renewal for `codex mcp login kabo`.
-2. The `server` field of the `mcp_tool` hooks — the bare name `kabo` is filled in here, but whether Codex namespaces a plugin's bundled server (Claude uses `plugin:<plugin>:<server>`) has not been confirmed from source or docs. If it does not hold, the hook raises a non-blocking error and the session is unaffected.
-3. Plugin installation and hook trust.
+1. The full OAuth flow and token renewal for `codex mcp login kabo --scopes openid,offline_access,account:read,registry,telemetry,data`.
+2. Plugin installation and hook trust.

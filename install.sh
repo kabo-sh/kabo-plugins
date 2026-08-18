@@ -6,7 +6,8 @@
 # command for you, and tell you what to do next.
 # It does **not** install Claude Code or Codex for you, write any config file, use sudo, or
 # ever read or write credential material. Signing in is done end to end by the plugin's own
-# kabo-auth device flow (on the Codex side it is host OAuth: `codex mcp login kabo`) — the
+# kabo-auth device flow (on the Codex side it is host OAuth: `codex mcp login kabo --scopes …`,
+# full scope set in CODEX_LOGIN_SCOPES below) — the
 # installer merely types that command for you, saving the "install → restart → one more
 # command → restart again" round trip; it never touches a byte of where credentials are
 # created or stored.
@@ -43,6 +44,12 @@ PLUGIN_NAME="kabo-alpha"
 CLAUDE_MIN_VERSION="2.1.195"
 # No version floor for Codex: whether the `codex plugin` subcommand exists is a better test than
 # any version number.
+
+# Codex sign-in must name the contract scope set explicitly: a bare `codex mcp login kabo`
+# lets the host register a client with its default scopes (email included), which the platform
+# rejects with invalid_scope before any consent page (real report, 2026-08-18). The list is
+# byte-identical to OAUTH_SCOPE in the Claude variant's credentials.js; tests pin the two together.
+CODEX_LOGIN_SCOPES="openid,offline_access,account:read,registry,telemetry,data"
 
 # ====== Output ======
 if [ -t 1 ] && [ -z "${NO_COLOR:-}" ]; then
@@ -421,6 +428,33 @@ offer_claude_signin() {
   fi
 }
 
+CODEX_SIGNED_IN=0
+
+offer_codex_signin() {
+  [ "${CODEX_DONE:-0}" -eq 1 ] || return 0
+  # Same gates as the Claude offer, for the same reasons (tty / --yes; no node dependency here -
+  # the whole flow is the host's own OAuth: `codex mcp login` opens a browser and the host holds
+  # and renews the token, so neither the installer nor the plugin ever touches a credential).
+  # Verified: sign-in works right after plugin add, no Codex restart needed first.
+  [ "$HAS_TTY" -eq 1 ] || return 0
+  [ "$ASSUME_YES" -eq 0 ] || return 0
+  if [ "$DRY_RUN" -eq 1 ]; then
+    printf '%s    [dry-run] codex mcp login kabo --scopes %s  (offered interactively)%s\n' "$C_DIM" "$CODEX_LOGIN_SCOPES" "$C_OFF"
+    return 0
+  fi
+  printf '\n'
+  local reply=''
+  prompt reply "Sign in to Kabo for Codex now? It opens a browser OAuth page. [Y/n] " "Y"
+  case "$reply" in
+    [nN]*) return 0 ;;
+  esac
+  if run_cli codex mcp login kabo --scopes "$CODEX_LOGIN_SCOPES"; then
+    CODEX_SIGNED_IN=1
+  else
+    warn "Sign-in did not complete. Run: codex mcp login kabo --scopes $CODEX_LOGIN_SCOPES"
+  fi
+}
+
 # ====== Main ======
 printf '\n'
 info "Kabo plugin installer"
@@ -511,6 +545,7 @@ want codex  && { [ "$CLAUDE_DONE" -eq 1 ] && printf '\n'; install_codex; }
 # a browser confirmation, and putting it in the middle would split the Codex install output with
 # a long pause.
 offer_claude_signin
+offer_codex_signin
 
 # ====== Next steps ======
 # The authorization entry points differ per host (Claude's device flow versus Codex's host
@@ -543,10 +578,19 @@ fi
 if [ "$CODEX_DONE" -eq 1 ]; then
   [ "$CLAUDE_DONE" -eq 1 ] && printf '\n'
   printf '%sCodex%s\n' "$C_BLUE" "$C_OFF"
-  printf '  1. Restart Codex so it picks up the plugin.\n'
-  printf '  2. Trust its hooks explicitly — installing a plugin does not trust them. Review\n'
-  printf '     hooks/hooks.json and scripts/hooks/ in the plugin first; they are what report usage.\n'
-  printf '  3. Run `codex mcp login kabo` to authorize through your browser.\n'
+  if [ "$CODEX_SIGNED_IN" -eq 1 ]; then
+    printf '  You are signed in. Restart Codex so it picks up the plugin, and trust its hooks\n'
+    printf '  explicitly — installing a plugin does not trust them. Review hooks/hooks.json and\n'
+    printf '  scripts/hooks/ first; they only sync skill status at session start.\n'
+  else
+    printf '  1. Restart Codex so it picks up the plugin.\n'
+    printf '  2. Trust its hooks explicitly — installing a plugin does not trust them. Review\n'
+    printf '     hooks/hooks.json and scripts/hooks/ in the plugin first; they only sync skill\n'
+    printf '     status at session start.\n'
+    printf '  3. Run `codex mcp login kabo --scopes %s`\n' "$CODEX_LOGIN_SCOPES"
+    printf '     to authorize through your browser. The --scopes list matters: without it the\n'
+    printf '     host requests a default scope set the platform rejects (invalid_scope).\n'
+  fi
 fi
 
 printf '\n'

@@ -1,5 +1,5 @@
 {
-  "description": "Kabo Codex plugin lifecycle telemetry (event metadata only).",
+  "description": "Kabo Codex plugin lifecycle hook. SessionStart only. The Codex host parses hook handlers as one of command | prompt | agent; the former mcp_tool subagent-telemetry hooks were never a variant it knew, and their presence made this whole file unparseable - which silently disabled SessionStart, i.e. skill sync and revocations (real incident, 2026-08-18). Usage telemetry is therefore not collected on the Codex variant until the host offers an MCP-capable hook type; the platform records tool-level telemetry server-side and treats client usage events as optional.",
   "hooks": {
     "SessionStart": [
       {
@@ -8,50 +8,6 @@
             "type": "command",
             "command": "node ${PLUGIN_ROOT}/scripts/hooks/session-start.js",
             "statusMessage": "Syncing Kabo skill status"
-          }
-        ]
-      }
-    ],
-    "SubagentStart": [
-      {
-        "matcher": "skill-runner",
-        "hooks": [
-          {
-            "type": "mcp_tool",
-            "server": "kabo",
-            "tool": "telemetry_report_usage",
-            "input": {
-              "events": [
-                {
-                  "event": "SubagentStart",
-                  "session_id": "${session_id}",
-                  "agent_id": "${agent_id}",
-                  "agent_type": "${agent_type}"
-                }
-              ]
-            }
-          }
-        ]
-      }
-    ],
-    "SubagentStop": [
-      {
-        "matcher": "skill-runner",
-        "hooks": [
-          {
-            "type": "mcp_tool",
-            "server": "kabo",
-            "tool": "telemetry_report_usage",
-            "input": {
-              "events": [
-                {
-                  "event": "SubagentStop",
-                  "session_id": "${session_id}",
-                  "agent_id": "${agent_id}",
-                  "agent_type": "${agent_type}"
-                }
-              ]
-            }
           }
         ]
       }

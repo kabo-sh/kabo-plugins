@@ -1,7 +1,7 @@
 {
   "name": "kabo-alpha",
   "version": "0.15.0",
-  "description": "Kabo creator Skill distribution client: search, download, verify the signature of, and execute platform skills, collecting minimal telemetry through event-level hooks.",
+  "description": "Kabo creator Skill distribution client: search, download, verify the signature of, and execute platform skills. Tool-level telemetry is recorded server-side; this variant collects no client-side usage events.",
   "author": {
     "name": "Kabo"
   },
@@ -9,7 +9,7 @@
   "interface": {
     "displayName": "Kabo Alpha",
     "shortDescription": "Search, verify, and run Kabo creator analysis skills",
-    "longDescription": "Connects to the Kabo MCP platform, dynamically searches and downloads creator data analysis skills, and after signature verification runs them inline or in a Codex subagent, reporting only event-level usage metadata.",
+    "longDescription": "Connects to the Kabo MCP platform, dynamically searches and downloads creator data analysis skills, and after signature verification runs them inline or in a Codex subagent. Tool-level telemetry is recorded by the server inside the tool handler; the client collects no usage events.",
     "developerName": "Kabo",
     "category": "Productivity",
     "capabilities": [
