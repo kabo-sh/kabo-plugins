@@ -23,6 +23,14 @@
 // additionalContext is emitted, with the relay section first (it has its own header and is not
 // confused with the guidance fence).
 //
+// One deliberate nuance since the two-phase login rework (2026-08): the hook probes whether the
+// credential file EXISTS - fs.existsSync and nothing more - to tell a signed-out user so at session
+// start; before this, the first sign of "not signed in" was a 401 in the middle of a task. The probe
+// does not weaken credential-free: the file is never opened, parsed, or validated, no token byte is
+// touched, no identity is derived, and the two GETs above still carry nothing. The Codex variant
+// deliberately has no such line - its sign-in is the host's own OAuth (codex mcp login kabo), and
+// there is no plugin-held credential file whose absence this hook could meaningfully report.
+//
 // WARNING - hard rule: this script must not read or report the prompt, tool_input, tool_response, or
 //   the contents pointed at by transcript_path; neither request sends any local data.
 // Any exception exits 0; the session is never blocked.
@@ -31,7 +39,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import {
-  apiEndpoint, cacheRoot, disabledMarkerPath, ensurePrivateDir, guidanceCachePath, pluginRootMarkerPath,
+  apiEndpoint, cacheRoot, credentialsPath, disabledMarkerPath, ensurePrivateDir, guidanceCachePath, pluginRootMarkerPath,
   readStdinJson, readJsonSilent, writeJsonSilent, fetchJsonSilent,
   isSafeName, compareSemver, ensureVerified, verifyGuidanceEnvelope,
   readAndPrunePendingReports, PENDING_REPORT_INJECT_MAX,
@@ -336,6 +344,12 @@ async function main() {
         ? `${pending.length} event(s) awaiting relay (prompt injected)`
         : `${allPending.length} event(s) awaiting relay (${pending.length} injected this time)`,
     );
+  }
+  // Existence probe ONLY - see the header comment. Reading or parsing the file here would end this
+  // hook's credential-free property; the file's absence is the one fact about it that is not
+  // credential material. Last in the list so the sync results above keep their position.
+  if (!fs.existsSync(credentialsPath())) {
+    parts.push('Kabo is not signed in on this machine - run /kabo-login to enable platform tools');
   }
 
   output.systemMessage = parts.join('; ');

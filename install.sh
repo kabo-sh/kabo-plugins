@@ -524,14 +524,19 @@ printf '\n'
 if [ "$CLAUDE_DONE" -eq 1 ]; then
   printf '%sClaude Code%s\n' "$C_BLUE" "$C_OFF"
   if [ "$CLAUDE_SIGNED_IN" -eq 1 ]; then
+    # /reload-plugins and /mcp's reconnect subcommand exist only in the CLI; the desktop app
+    # has neither, and the only path that works there is a new session. This line must carry
+    # the same split as the not-signed-in branch, or desktop users get told to run a missing command.
     printf '  You are signed in — that was the once-per-machine step. Start a `claude` session\n'
-    printf '  (or run /reload-plugins in one that is already open) and the Kabo tools are ready.\n'
+    printf '  (or run /reload-plugins in a CLI session that is already open; on the desktop app\n'
+    printf '  that command does not exist — start a new session instead) and the tools are ready.\n'
   else
-    printf '  1. In a running session run /reload-plugins, or start a new `claude` session.\n'
+    printf '  1. In a running CLI session run /reload-plugins, or start a new `claude` session.\n'
     printf '  2. Run /kabo-login. It prints a URL and an 8-character code; confirm the code in a\n'
     printf '     browser on any device. You only do this once per machine.\n'
-    printf '  3. If Kabo already showed as unavailable in that session, run /mcp reconnect kabo\n'
-    printf '     (Claude Code 2.1.205 or newer; /reload-plugins also works) — no new session needed.\n'
+    printf '  3. If Kabo already showed as unavailable in that session, run\n'
+    printf '     /mcp reconnect plugin:kabo-alpha:kabo (Claude Code CLI 2.1.205+; older CLI:\n'
+    printf '     /reload-plugins). On the desktop app, start a new session instead.\n'
   fi
 fi
 

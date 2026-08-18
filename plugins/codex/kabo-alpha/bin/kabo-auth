@@ -21,8 +21,15 @@ import path from 'node:path';
 import { spawn } from 'node:child_process';
 import { apiEndpoint, cacheRoot, workRoot, guidanceCachePaths, publicKeyPaths, pendingReportsPath, safeBrowserUrl } from '../scripts/lib/common.js';
 
+// The full command, scopes included, everywhere this process names it. The bare `codex mcp login
+// kabo` is a trap: Codex's default scope request includes `email`, which the platform rejects at
+// client registration (invalid_scope) before any consent page. The list is the contract scope set -
+// byte-identical to OAUTH_SCOPE in the Claude variant's scripts/lib/credentials.js, where the
+// comment also explains why a shorter list fails *silently* instead of erroring.
+const MCP_LOGIN_COMMAND = 'codex mcp login kabo --scopes openid,offline_access,account:read,registry,telemetry,data';
+
 const NO_LOGIN_NOTICE =
-  'Kabo only needs a single sign-in: run `codex mcp login kabo` once to complete the browser flow. There is no second, terminal-side login.\n' +
+  `Kabo only needs a single sign-in: run \`${MCP_LOGIN_COMMAND}\` once to complete the browser flow. There is no second, terminal-side login.\n` +
   'This command only opens the sign-in page and clears local caches - it never handles a token.';
 
 /**
@@ -43,7 +50,7 @@ const USAGE = `Usage:
   kabo-auth logout
 
 Description:
-  login   opens ${SIGN_IN_TARGET} in a browser so the web session is warm before \`codex mcp login kabo\`;
+  login   opens ${SIGN_IN_TARGET} in a browser so the web session is warm before \`${MCP_LOGIN_COMMAND}\`;
           the URL is always printed as well, so a headless or blocked opener costs nothing
           (--no-open prints the URL only)
   logout  clears the local skill cache, the run work directories, the pinned server public keyset,
@@ -110,7 +117,7 @@ function cmdOpenSignIn(noOpen) {
   } else {
     console.log(`Open this page in a browser to sign in: ${url}`);
   }
-  console.log('Sign in there first, then run `codex mcp login kabo` to connect - the host holds the token, this machine stores nothing.');
+  console.log(`Sign in there first, then run \`${MCP_LOGIN_COMMAND}\` to connect - the host holds the token, this machine stores nothing.`);
 }
 
 function cmdLogout() {

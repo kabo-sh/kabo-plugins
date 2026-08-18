@@ -31,10 +31,12 @@ If the current CLI has no `codex plugin` subcommand, the host version does not o
 ## Authorization (only once)
 
 ```bash
-codex mcp login kabo
+codex mcp login kabo --scopes openid,offline_access,account:read,registry,telemetry,data
 ```
 
-Complete the OAuth authorization in the browser (`kabo` is the server name declared in this plugin's `.mcp.json`). Once done, the Kabo tools are available, and the **host** holds the token and renews it.
+Complete the OAuth authorization in the browser (`kabo` is the server name declared in this plugin's `.mcp.json`). Once done, the Kabo tools are available **in tasks started after the login** — a task already running keeps the tool list it negotiated at start, so open a new task to use them — and the **host** holds the token and renews it.
+
+The `--scopes` list is required, exactly as written. Codex's default scope request includes `email`, which Kabo does not offer: client registration is rejected with `invalid_scope` before any consent page, so the bare command fails with what looks like a sign-in problem. Do not trim the list either — consent still succeeds with fewer scopes, but without `offline_access` renewal silently stops (signed out after ~30 minutes, no visible error) and without `registry`/`telemetry`/`data` the platform tools 403. It is the same contract scope set the Claude variant requests (`OAUTH_SCOPE` in its `scripts/lib/credentials.js`).
 
 **If no browser opens**, copy the authorization URL the CLI prints and open it manually; the callback returns to the waiting CLI. The Claude Code build hits this as a known host bug ([anthropics/claude-code#36307](https://github.com/anthropics/claude-code/issues/36307)) and the manual-URL workaround is the same one.
 
@@ -55,7 +57,7 @@ Why `bearer_token_env_var` was removed: Codex's `auth` already defaults to `oaut
 ## Usage
 
 - `$analyze`: the analysis entry point. Start the flow with whatever you want analyzed (channel / niche / specific video); internally it follows `meta-guidance`'s routing rules rather than a separate one.
-- `$kabo-login`: opens Kabo's sign-in page in your browser so the web session is warm, then sends you to `codex mcp login kabo` for a one-click consent, then verifies with one real call. It never touches any credential itself.
+- `$kabo-login`: opens Kabo's sign-in page in your browser so the web session is warm, then sends you to `codex mcp login kabo --scopes …` (the full command is in the Authorization section) for a one-click consent, then verifies with one real call. It never touches any credential itself.
 - `$kabo-logout`: revokes every device's authorization through the platform's `auth_revoke_all` tool, then clears the Codex skill cache, the run work directories, and trust material.
 
 `meta-guidance` is still there, but demoted to the **routing rules** that `$analyze` reads; it is no longer a user-facing command. It also triggers automatically when you simply state a creator research need.

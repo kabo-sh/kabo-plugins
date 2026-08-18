@@ -7,14 +7,22 @@
 //   stdout on success: {"Authorization":"Bearer <jwt>"}\n   - exactly that, one line, nothing else
 //   stdout on failure: 0 bytes
 //   exit 0  header emitted
-//   exit 1  no credential / credential belongs to another endpoint / the refresh token is dead or
-//           expired -> the user must sign in again, so the stderr line must name /kabo-login
+//   exit 1  the sign-in state is unusable, with two distinct stderr lines for its two situations:
+//           - no credential, or the refresh token is dead or expired -> the needs-login line,
+//             which must name /kabo-login (signing in is the fix);
+//           - the credential belongs to a different endpoint than this session is configured
+//             for -> the endpoint-mismatch line, which must name kabo-auth status first (the
+//             command that shows both endpoints) - redoing the login without fixing the
+//             configuration just mints another credential that mismatches the same way
 //   exit 2  the authorization server could not be reached -> a network problem, NOT a sign-in
 //           problem; the credential file is left untouched
 //
 // The host only distinguishes zero from non-zero. The two non-zero codes exist for humans and for the
-// test suite - and precisely because the host cannot tell them apart, the single stderr line has to.
-// A user who redoes the whole login because of one flaky minute was failed by that line.
+// test suite - and precisely because the host cannot tell them apart, the stderr line has to. That is
+// also why exit 1 carries two different sentences rather than one: the host swallows the code, the
+// sentence is all a stuck user ever sees, and "sign in again" is wrong advice for a credential that
+// is merely bound to another endpoint. A user who redoes the whole login because of one flaky minute
+// - or because of one mis-set KABO_API_ENDPOINT - was failed by that line.
 //
 // WARNING - this is the only file in the plugin allowed to contain the Authorization/Bearer literals.
 // The token is never written to argv, env, logs or stderr; only to stdout, as one line of JSON:
@@ -29,9 +37,17 @@ import fs from 'node:fs';
 import { apiEndpoint, readCredentials } from '../scripts/lib/common.js';
 import { accessTokenUsable, ensureFreshAccessToken } from '../scripts/lib/credentials.js';
 
-/** Recovery line for exit 1. It must name /kabo-login: this is the only text the stuck user gets. */
+/** Recovery line for exit 1, needs-login case. It must name /kabo-login: this is the only text the stuck user gets. */
 const NEEDS_LOGIN =
   'Kabo is not authorized on this machine. Run /kabo-login in Claude Code to sign in (a browser tab confirms a short code).';
+/**
+ * Recovery line for exit 1, endpoint-mismatch case. Deliberately distinct from NEEDS_LOGIN: the two
+ * paths shared one sentence until 2026-08, and a user whose only problem was KABO_API_ENDPOINT was
+ * told to sign in again - which succeeds, changes nothing, and loops. kabo-auth status comes first
+ * because it is the one command that prints both endpoints and makes the mismatch visible.
+ */
+const WRONG_ENDPOINT =
+  'Kabo is signed in for a different endpoint than this session expects. Run kabo-auth status for details, then /kabo-login to sign in again.';
 /** Recovery line for exit 2. It must NOT send anyone through a login they do not need. */
 const UNREACHABLE =
   'Could not reach the Kabo authorization server (network error or timeout). Your sign-in is still valid; retry in a moment.';
@@ -56,8 +72,8 @@ function writeFd(fd, text) {
   }
 }
 
-function fail(code) {
-  writeFd(2, `${code === 1 ? NEEDS_LOGIN : UNREACHABLE}\n`);
+function fail(code, message = code === 1 ? NEEDS_LOGIN : UNREACHABLE) {
+  writeFd(2, `${message}\n`);
   process.exit(code);
 }
 
@@ -74,7 +90,7 @@ try {
   // those must cost zero network round trips.
   const cached = readCredentials();
   if (!cached) fail(1);
-  if (cached.endpoint !== endpoint) fail(1);
+  if (cached.endpoint !== endpoint) fail(1, WRONG_ENDPOINT);
 
   let accessToken;
   if (accessTokenUsable(cached)) {

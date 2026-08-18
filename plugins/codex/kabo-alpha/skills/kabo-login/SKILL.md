@@ -26,12 +26,14 @@ If no browser appeared (headless, SSH, or no opener installed), the printed URL 
 ## 2. Authorize the connection
 
 ```
-codex mcp login kabo
+codex mcp login kabo --scopes openid,offline_access,account:read,registry,telemetry,data
 ```
 
 A browser completes the OAuth authorization (OAuth 2.1 + PKCE on the platform side). `kabo` is the server name declared in this plugin's `.mcp.json`. Because they signed in at step 1, this should be a single consent click.
 
-Once authorization completes, Kabo's tools are callable. If the host says the session must be restarted to renegotiate the tool list, just do that.
+**The `--scopes` list is required, exactly as written.** Codex's own default scope request includes `email`, which Kabo's authorization server does not offer: it rejects the client registration with `invalid_scope` before any consent page appears, so a bare `codex mcp login kabo` dies with what reads like a sign-in failure but is only this scope mismatch. Do not "fix" it by trimming the list down (say, to `openid,profile`) either — a short list still produces a consent page and a green CLI message, then fails silently later: without `offline_access` the server issues no renewal token and the user is kicked out after ~30 minutes with no visible error, and without `registry`/`telemetry`/`data` the platform tools 403. The list above is the contract scope set, byte-identical to the `OAUTH_SCOPE` the Claude variant requests.
+
+Once authorization completes, the **host** holds the token — but a task's tool list is negotiated once, when the task starts. A task that was already running when authorization finished (this one, usually) will never see the Kabo tools, and that is not an authorization failure; step 3 says what to do about it.
 
 **If the browser never opens**: the CLI still prints the authorization URL — have the user copy it into a browser and finish the flow there; the callback returns to the waiting CLI. The Claude Code build hits the same failure as a known host bug (anthropics/claude-code#36307) and the manual-URL workaround is identical. It is not a Kabo failure and there is nothing on the platform side to fix.
 
@@ -42,7 +44,8 @@ Once authorization completes, Kabo's tools are callable. If the host says the se
 Confirm instead of claiming success: call Kabo's `registry_skill_search` with query `youtube`.
 
 - Results returned → tell the user they are authorized, name a couple of the skills that came back, and mention they can state a creator research need directly or use `$analyze`.
-- 401 or the tool is invisible → authorization did not complete; go back to step 2. **Do not** try any other authentication method.
+- The Kabo tools are not in this task's tool list at all → this task predates the authorization (see step 2) and the list will not refresh mid-task. **Do not** work around it by spawning a fresh non-interactive `codex exec` subprocess to make the call: non-interactive runs auto-cancel MCP tool approvals, so the call fails for reasons that have nothing to do with authorization and proves nothing about the user's own session. Instead tell the user authorization completed and to start a new task (or restart the session) — the first Kabo call there is the verification.
+- The tools are visible but answer 401 → authorization did not complete; go back to step 2. **Do not** try any other authentication method.
 
 ## Hard rules
 

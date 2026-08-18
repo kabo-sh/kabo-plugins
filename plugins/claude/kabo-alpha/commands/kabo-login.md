@@ -2,34 +2,42 @@
 description: Sign in to Kabo from the terminal (a short code, confirmed in a browser tab on any device)
 ---
 
-Get the user authorized. One step: run the bundled script, have them confirm the code it prints.
+Get the user authorized: run the bundled script's two-step sign-in, have them confirm the code it prints, then collect the approval.
 
 **Make this clear first**: sign-in happens in the terminal, and the browser tab only confirms a code. The plugin then holds a renewable credential in a `0600` file under `~/.kabo`, and reads it for you on every request. **You never touch it** — do not open it, print it, cat it, or assemble an Authorization header from anything; that is the plugin's job and doing it by hand is both a leak and a bug.
 
 Requires **Claude Code 2.1.195 or newer** — see the troubleshooting section, this is the first thing to check when sign-in succeeded but the tools stay invisible.
 
-## 1. Sign in
+## 1. Sign in — start, then wait
 
-Use Bash to run the bundled script (`bin/` is already on PATH; `${CLAUDE_PLUGIN_ROOT}/bin/kabo-auth` also works):
+The sign-in is two commands on purpose: the start step returns immediately, and the wait step can be killed and re-run without losing anything — which is exactly what happens when a Bash tool timeout cuts it off. Use Bash to run the bundled script (`bin/` is already on PATH; `${CLAUDE_PLUGIN_ROOT}/bin/kabo-auth` also works):
 
 ```
-kabo-auth login
+kabo-auth login --start
 ```
 
-It prints a URL and an 8-character code, opens the URL in a browser when it can, and then waits. Read the code back to the user and tell them two things:
+It prints a URL and an 8-character code, records the pending sign-in on disk, and exits at once. Read the code back to the user and tell them two things:
 
 - the page can be opened **on any device** — their phone works, and so does another machine; nothing has to open on this box;
 - the page shows a code too, and it must **match** the one in the terminal. That comparison is the only thing standing between them and approving somebody else's sign-in request, so never tell them to skip it.
 
-The command waits up to 15 minutes and exits 0 the moment they confirm. Ctrl-C cancels and stores nothing.
+Then collect the approval — set the Bash tool timeout as high as it goes (600000 ms):
+
+```
+kabo-auth login --wait
+```
+
+It waits and exits 0 the moment they confirm; the code stays valid for 15 minutes. **If the tool timeout kills `--wait`, run `kabo-auth login --wait` again.** That resumption is designed in, not a workaround: the pending sign-in survives on disk, and the next `--wait` picks up the same code — it is **not** a new sign-in, so never restart with `--start` and never tell the user their approval was lost. Re-running `--start` while a sign-in is pending is harmless anyway: it re-prints the same code rather than voiding it with a new one.
 
 If no browser appeared (headless, SSH, container, or no opener installed), that is **not an error**: the printed URL is the whole fallback and the flow was designed around it. This is also why the old browser-launch failure ([anthropics/claude-code#36307](https://github.com/anthropics/claude-code/issues/36307), merged into #11585) no longer blocks anyone — a terminal that cannot open a browser can still complete this.
 
-Exit codes are worth reading back accurately: `1` means declined, expired, or a deployment that does not offer terminal sign-in (the message says which); `2` means the network could not be reached, so retrying is the fix, not signing in differently.
+Exit codes are worth reading back accurately: `1` means declined, expired, no sign-in in progress, or a deployment that does not offer terminal sign-in (the message says which); `2` means the network could not be reached — the pending sign-in is kept, so the fix is to run `kabo-auth login --wait` again, not to sign in differently.
+
+(Plain `kabo-auth login` with no flag still runs both halves in one blocking process. It is for a human driving a terminal directly; from the Bash tool always use the split form, because the blocking form is what tool timeouts kill mid-wait.)
 
 ## 2. Activate in this session — no restart needed
 
-Sign-in takes effect in the running session; never tell the user to restart as the first move. On success, tell them explicitly: **run `/mcp reconnect kabo` to activate the Kabo tools in this session — no restart needed** (Claude Code 2.1.205 or newer; `/reload-plugins` also works). Reconnecting re-runs the plugin's credential helper, which now finds the fresh credential. You cannot run that slash command for them — it is theirs to type. On a Claude Code older than 2.1.205, `/reload-plugins` is the way in — a new session is only the last resort if the tools still do not appear.
+Sign-in takes effect in the running session; never tell the user to restart as the first move. On success, tell them explicitly: **run `/mcp reconnect plugin:kabo-alpha:kabo` to activate the Kabo tools in this session — no restart needed** (Claude Code CLI 2.1.205 or newer; on an older CLI, `/reload-plugins` does the same). The reconnect must use that full registered name: the host registers the bundled server as `plugin:kabo-alpha:kabo`, and a reconnect naming only `kabo` is answered with "There's no MCP server named ..." and activates nothing. Reconnecting re-runs the plugin's credential helper, which now finds the fresh credential. You cannot run that slash command for them — it is theirs to type. On the Claude Code desktop app neither command exists — there, and only there, tell the user to start a new session instead.
 
 If the Kabo tools were already visible (just failing with 401), you may not even need the reconnect: the host re-runs the credential helper and retries once when a tool call answers 401/403, so go straight to the verification call below and only fall back to the reconnect if it still fails.
 
@@ -38,15 +46,15 @@ If the Kabo tools were already visible (just failing with 401), you may not even
 Confirm instead of claiming success: call `mcp__plugin_kabo-alpha_kabo__registry_skill_search` with query `youtube`.
 
 - Results returned → tell the user they are authorized, name a couple of the skills that came back, and mention they can state a request directly or use `/kabo-analyze`.
-- Tools still invisible or 401 → the sign-in worked but the connection did not pick it up; have the user run `/mcp reconnect kabo`, then retry the call. Still stuck → troubleshooting.
+- Tools still invisible or 401 → the sign-in worked but the connection did not pick it up; have the user run `/mcp reconnect plugin:kabo-alpha:kabo` (older CLI: `/reload-plugins`; desktop app: start a new session), then retry the call. Still stuck → troubleshooting.
 
 `kabo-auth status` reports whether this machine is signed in, to which deployment, and how long that is good for. It never prints a token.
 
 ## Troubleshooting: signed in, but the tools are still not there
 
-1. **Host version.** The plugin points the `kabo` server at a helper via `${CLAUDE_PLUGIN_ROOT}`, and that substitution only works on **Claude Code 2.1.195 or newer**. On an older host the path is taken literally, the helper never runs, and every request 401s. The host's own OAuth fallback may then offer to authorize — do not send the user through it: it leaves a host-held token this plugin's sign-in, logout, and telemetry model does not manage. Have the user upgrade Claude Code; that is the only supported fix.
-2. **Stale connection.** A session that started before sign-in may still hold the failed server. `/mcp reconnect kabo` (Claude Code 2.1.205 or newer) or `/reload-plugins` re-runs the credential helper on the spot; hosts older than 2.1.205 use `/reload-plugins` alone, and a new session is only the last resort.
-3. **Wrong deployment.** If `KABO_API_ENDPOINT` was set to something other than the deployment they signed in to, the credential is deliberately refused. `kabo-auth status` says so explicitly; re-run `kabo-auth login` against the configured one.
+1. **Run `kabo-auth status` first.** It is the one step that tells the failure modes apart instead of guessing. `Signed in to X, but this session is configured for Y` means the credential and `KABO_API_ENDPOINT` disagree — the credential is deliberately refused, so fix the endpoint (or sign in to the configured deployment with `/kabo-login`); repeating the sign-in without looking here just mints another credential that mismatches the same way. `Not signed in on this machine` means the sign-in never landed — run `/kabo-login`. Signed in to the right deployment → keep going down this list.
+2. **Host version.** The plugin points the `kabo` server at a helper via `${CLAUDE_PLUGIN_ROOT}`, and that substitution only works on **Claude Code 2.1.195 or newer**. On an older host the path is taken literally, the helper never runs, and every request 401s. The host's own OAuth fallback may then offer to authorize — do not send the user through it: it leaves a host-held token this plugin's sign-in, logout, and telemetry model does not manage. Have the user upgrade Claude Code; that is the only supported fix.
+3. **Stale connection.** A session that started before sign-in may still hold the failed server. `/mcp reconnect plugin:kabo-alpha:kabo` (Claude Code CLI 2.1.205 or newer) or `/reload-plugins` (older CLI) re-runs the credential helper on the spot — use the full registered name, because a reconnect naming only `kabo` is answered with "There's no MCP server named ...". On the desktop app neither command exists: start a new session there.
 4. Still stuck → offer the connector path below. Do **not** start hunting for a token.
 
 ### Fallback outside Claude Code

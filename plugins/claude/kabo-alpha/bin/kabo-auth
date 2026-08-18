@@ -17,25 +17,38 @@
 // `auth_revoke_all`. There is deliberately no proof-key exchange here either: RFC 8628 has no
 // authorization code to protect, so one would imply a defence that is not operating.
 //
+// Why login is also split into --start / --wait (2026-08): the blocking `login` holds the terminal
+// for up to 15 minutes, and the coding hosts this plugin lives in run shell tools under a hard
+// timeout (120s by default, 600s at most) that ends in SIGKILL. A kill mid-poll was this flow's one
+// **silent** failure: the browser page said approved, the process that would have stored the
+// credential was already dead, and nothing anywhere said so. `--start` persists the pending sign-in
+// and returns immediately; `--wait` resumes the poll and can be killed and re-run any number of
+// times until the code expires - so a host timeout now costs one more `--wait`, not the sign-in.
+//
 // Usage:
 //   kabo-auth login [--no-open]  sign in from the terminal (prints the URL and the code, then waits)
+//   kabo-auth login --start      print the URL and code, record the pending sign-in, return at once
+//   kabo-auth login --wait       wait for approval of the pending sign-in (re-runnable; resumes)
 //   kabo-auth status             what this machine holds, and how long it is good for (never a token)
-//   kabo-auth logout             delete the local credential, skill cache, work dirs, keyset, guidance, buffer
+//   kabo-auth logout             delete the local credential, pending sign-in state, skill cache, work dirs, keyset, guidance, buffer
 
 import fs from 'node:fs';
+import path from 'node:path';
 import { spawn } from 'node:child_process';
 import {
-  apiEndpoint, cacheRoot, workRoot, publicKeyPaths, guidanceCachePaths, pendingReportsPath,
-  credentialsPath, credentialsLockPath, readCredentials, writeCredentials, deleteCredentials,
-  safeBrowserUrl,
+  apiEndpoint, cacheRoot, dataRoot, ensurePrivateDir, workRoot, publicKeyPaths, guidanceCachePaths,
+  pendingReportsPath, credentialsPath, credentialsLockPath, readCredentials, writeCredentials,
+  deleteCredentials, acquireCredentialLock, releaseCredentialLock, safeBrowserUrl,
 } from '../scripts/lib/common.js';
 import {
   credentialsFromTokens, discoverOAuthEndpoints, msUntil, redeemDeviceCode, requestDeviceCode,
-  POLL_JITTER_MS, SLOW_DOWN_STEP_MS,
+  OAUTH_CLIENT_ID, OAUTH_SCOPE, POLL_JITTER_MS, SLOW_DOWN_STEP_MS,
 } from '../scripts/lib/credentials.js';
 
 const USAGE = `Usage:
   kabo-auth login [--no-open]
+  kabo-auth login --start [--no-open]
+  kabo-auth login --wait
   kabo-auth status
   kabo-auth logout
 
@@ -44,12 +57,21 @@ Description:
           when it can, and waits for you to confirm the code (any device works - the confirmation
           page does not have to be on this machine). --no-open prints and waits without launching
           anything. The credential is written to ${credentialsPath()} with mode 0600. Once it
-          succeeds, /mcp reconnect kabo (Claude Code 2.1.205+) activates the tools in a running
-          session - no restart needed
+          succeeds, /mcp reconnect plugin:kabo-alpha:kabo activates the tools in a running
+          session - no restart needed (Claude Code CLI 2.1.205+; older CLI: /reload-plugins;
+          on the desktop app these commands do not exist - start a new session instead).
+          --start does everything up to the waiting: it prints the URL and the code, records the
+          pending sign-in on disk, and returns immediately. Approve the code, then run:
+          kabo-auth login --wait. Re-running --start while a sign-in is pending re-prints the
+          same code instead of voiding it with a new one.
+          --wait waits for approval of the pending sign-in and stores the credential. It is safe
+          to re-run at any time: a --wait that is killed, disconnected, or timed out loses
+          nothing - the next --wait resumes the same code until it expires.
   status  whether this machine is signed in, to which deployment, and how long that is good for.
           It never prints a token, not even a fragment of one
-  logout  deletes the local credential and clears the skill cache, the run work directories, the
-          pinned server keyset, the cached meta-guidance, and the verification failures awaiting relay
+  logout  deletes the local credential and any pending sign-in state, and clears the skill cache,
+          the run work directories, the pinned server keyset, the cached meta-guidance, and the
+          verification failures awaiting relay
           (to revoke platform-side access on every device, use /kabo-logout, which calls the
           platform's auth_revoke_all over the authorized MCP connection first)`;
 
@@ -99,9 +121,115 @@ function die(code, message) {
   process.exit(code);
 }
 
+// ---------------------------------------------------------------- pending sign-in state
+
+/** File format version of device-login.json; a file that does not say 1 is treated as absent */
+const DEVICE_LOGIN_STATE_VERSION = 1;
+
+/**
+ * --start reuse floor: a pending code with less than this left is treated as already expired.
+ * Approving still takes a human round trip - open the page, read the code, type it - so a code
+ * with seconds left dies mid-typing more often than it completes, and the reuse copy would promise
+ * "about 1 more minute" for something that cannot deliver it. Leasing a fresh code up front costs
+ * one request; resuming a nearly-dead one costs the user a failed approval plus a restart.
+ */
+const START_REUSE_MIN_REMAINING_MS = 60_000;
+
+/**
+ * The pending sign-in: <data root>/device-login.json.
+ *
+ * device_code is **sensitive material**: whoever holds it collects the tokens the moment the user
+ * approves the code in a browser. The file therefore lives in the same trust domain as
+ * credentials.json and gets the same treatment - the same 0700 directory (ensurePrivateDir), the
+ * same 0600 mode, the same atomic temp-file-and-rename write - and it is deleted the moment it
+ * stops being resumable (success, decline, expiry, logout). Only a network loss keeps it, because
+ * keeping it is the entire point of the --start/--wait split: a killed or disconnected --wait must
+ * resume this code instead of forcing a new one.
+ */
+function deviceLoginStatePath() {
+  return path.join(dataRoot(), 'device-login.json');
+}
+
+/**
+ * Read the pending sign-in, or null when there is none.
+ * A truncated, foreign-shaped, or otherwise unusable file is null too: "corrupt state" and "no
+ * sign-in in progress" must land on the same recovery path (run --start), never on a crash.
+ */
+function readDeviceLoginState() {
+  let raw = null;
+  try {
+    raw = JSON.parse(fs.readFileSync(deviceLoginStatePath(), 'utf8'));
+  } catch {
+    return null;
+  }
+  if (!raw || typeof raw !== 'object' || raw.version !== DEVICE_LOGIN_STATE_VERSION) return null;
+  for (const key of ['endpoint', 'issuer', 'token_endpoint', 'client_id', 'scope', 'device_code', 'user_code', 'obtained_at']) {
+    if (typeof raw[key] !== 'string' || raw[key] === '') return null;
+  }
+  if (!Number.isFinite(raw.deadline)) return null;
+  // The stored URL faces the same constraint as a freshly served one - it gets printed and may be
+  // handed to an opener - so a file that fails the check is treated as no state at all rather than
+  // trusted for being local: the file could have been rewritten by anything running as this user.
+  if (safeBrowserUrl(raw.verification_url) === null) return null;
+  return raw;
+}
+
+/** Atomic 0600 write, same shape as writeCredentials and for the same reasons (see that function) */
+function writeDeviceLoginState(state) {
+  const dir = dataRoot();
+  ensurePrivateDir(dir);
+  const target = deviceLoginStatePath();
+  const tmp = path.join(dir, `device-login.json.tmp-${process.pid}`);
+  try { fs.rmSync(tmp, { force: true }); } catch { /* the open below reports anything real */ }
+  const fd = fs.openSync(tmp, 'w', 0o600);
+  try {
+    fs.writeFileSync(fd, `${JSON.stringify(state, null, 2)}\n`);
+  } finally {
+    fs.closeSync(fd);
+  }
+  try {
+    fs.renameSync(tmp, target);
+  } catch (err) {
+    try { fs.rmSync(tmp, { force: true }); } catch { /* best effort */ }
+    throw err;
+  }
+  fs.chmodSync(target, 0o600);
+}
+
+/**
+ * Delete the pending sign-in state.
+ *
+ * `onlyForDeviceCode` closes a cross-session race: while one session's --wait polls an old code,
+ * another session's --start can lease a fresh code into this same file. When the first session then
+ * reaches a terminal verdict for its own code (expired, declined), an unconditional rm would take
+ * the second session's brand-new pending sign-in down with the dead one - reinstating the
+ * "approved in the browser, nothing on this machine" failure for the second session. So the state
+ * is re-read at the last moment and left alone when it no longer belongs to the code being cleaned
+ * up. logout passes nothing: clearing whatever is there is its whole job.
+ */
+function deleteDeviceLoginState(onlyForDeviceCode = null) {
+  if (onlyForDeviceCode !== null) {
+    const current = readDeviceLoginState();
+    if (current && current.device_code !== onlyForDeviceCode) return;
+  }
+  try { fs.rmSync(deviceLoginStatePath(), { force: true }); } catch { /* nothing else reads it */ }
+  // A run that died between "write the temp file" and "rename it" leaves a temp file holding a live
+  // device code; sweep it for the same reason deleteCredentials sweeps its own temp files.
+  try {
+    for (const name of fs.readdirSync(dataRoot())) {
+      if (name.startsWith('device-login.json.tmp-')) fs.rmSync(path.join(dataRoot(), name), { force: true });
+    }
+  } catch { /* no data root, nothing to sweep */ }
+}
+
 // ---------------------------------------------------------------- login
 
-async function cmdLogin(noOpen) {
+/**
+ * Everything a sign-in does before anyone waits: discovery plus the device-code request.
+ * Shared verbatim by the blocking login and --start - at this stage the two modes have not diverged
+ * yet, so every failure exits here with the same message either way.
+ */
+async function beginDeviceSignIn() {
   const endpoint = apiEndpoint();
 
   // 1. Discovery. Endpoints are discovered, never hardcoded - and this is where that rule pays for
@@ -143,15 +271,18 @@ async function cmdLogin(noOpen) {
   if (!verifyUrl) {
     die(1, `Kabo returned a verification URL this client will not open (it must be an http or https URL). Nothing was stored; report this against ${endpoint}.`);
   }
+  return { endpoint, discovered, device, verifyUrl, userCode };
+}
 
-  // 3. Print first, open second. The order is not cosmetic: if the opener throws, or the box is
-  // headless, or the host swallows the spawn, everything the user needs is already on screen. The
-  // whole argument for the device flow is that a terminal does not have to be able to open a browser.
+/**
+ * 3. Print first, open second. The order is not cosmetic: if the opener throws, or the box is
+ * headless, or the host swallows the spawn, everything the user needs is already on screen. The
+ * whole argument for the device flow is that a terminal does not have to be able to open a browser.
+ */
+function announceVerification({ verifyUrl, userCode, noOpen }) {
   console.log('To authorize Kabo, open:\n');
   console.log(`    ${verifyUrl}\n`);
   console.log(`and confirm the code:  ${userCode}\n`);
-  const minutes = Math.max(1, Math.round((Number(device.expires_in) || 900) / 60));
-  console.log(`Waiting for approval... (expires in ${minutes} minutes; Ctrl-C to cancel)`);
 
   const opener = noOpen ? null : browserOpener();
   if (opener) {
@@ -164,30 +295,32 @@ async function cmdLogin(noOpen) {
       spawn(opener.command, [...opener.args, verifyUrl], { detached: true, stdio: 'ignore' }).unref();
     } catch { /* the printed URL above is the whole fallback */ }
   }
+}
 
-  // 4. Poll. The interval comes from the server, plus jitter, because the server throttles on
-  // ">= interval" and polling exactly on the boundary produces avoidable slow_down responses.
-  // The cadence is the server's to choose (RFC 8628 §3.5); 5s only when it says nothing. A server may
-  // legitimately ask for 0 - the +250ms jitter below still floors the real rate - and honoring that
-  // is what keeps the test suite's polling cases fast without a test-only branch in this code.
-  const advertised = Number(device.interval);
-  let intervalMs = Number.isFinite(advertised) && advertised >= 0 ? advertised * 1000 : 5000;
-  const deadline = Date.now() + (Number(device.expires_in) || 900) * 1000;
+/**
+ * 4. Poll. The interval comes from the server, plus jitter, because the server throttles on
+ * ">= interval" and polling exactly on the boundary produces avoidable slow_down responses.
+ * The cadence is the server's to choose (RFC 8628 3.5); 5s only when it says nothing. A server may
+ * legitimately ask for 0 - the +250ms jitter below still floors the real rate - and honoring that
+ * is what keeps the test suite's polling cases fast without a test-only branch in this code.
+ *
+ * Returns an outcome instead of exiting, because the two callers disagree on what a failure costs:
+ * the blocking login has nothing to clean up, while --wait must decide whether the pending state
+ * survives (network loss: yes, resuming is the point; terminal verdicts: no, the code is dead).
+ */
+async function pollDeviceApproval({ tokenEndpoint, deviceCode, intervalMs, deadline, onIntervalIncrease = null }) {
   let networkFailures = 0;
-
   for (;;) {
-    if (Date.now() >= deadline) {
-      die(1, 'The code expired before it was confirmed. Run /kabo-login to start again.');
-    }
+    if (Date.now() >= deadline) return { outcome: 'deadline' };
     await sleep(intervalMs + POLL_JITTER_MS);
 
-    const result = await redeemDeviceCode(discovered.token_endpoint, device.device_code);
+    const result = await redeemDeviceCode(tokenEndpoint, deviceCode);
 
     if (result.outcome === 'network') {
       // A blip mid-poll is not a reason to abandon a code the user may be confirming right now; three
       // in a row is. Keeping this bounded is what makes an offline run fail in seconds, not minutes.
       networkFailures += 1;
-      if (networkFailures >= 3) die(2, `Lost contact with ${endpoint} while waiting for approval. Check the network and run /kabo-login again.`);
+      if (networkFailures >= 3) return { outcome: 'network_lost' };
       continue;
     }
     networkFailures = 0;
@@ -195,57 +328,266 @@ async function cmdLogin(noOpen) {
     if (result.outcome === 'error') {
       if (result.code === 'authorization_pending') continue;
       if (result.code === 'slow_down') {
-        intervalMs += SLOW_DOWN_STEP_MS; // RFC 8628 §3.5: the step is permanent, not per-response
+        intervalMs += SLOW_DOWN_STEP_MS; // RFC 8628 3.5: the step is permanent, not per-response
+        if (onIntervalIncrease) onIntervalIncrease(intervalMs);
         continue;
       }
-      if (result.code === 'expired_token') {
-        die(1, 'The code expired before it was confirmed. Run /kabo-login to start again.');
-      }
-      if (result.code === 'access_denied') {
-        die(1, 'The sign-in was declined in the browser. Nothing was stored on this machine.');
-      }
-      if (result.code === 'server_error') {
-        die(2, 'Kabo could not complete the sign-in (server error). Try again in a moment.');
-      }
-      die(1, `Kabo refused to complete the sign-in (${result.code}). Run /kabo-login to start again.`);
+      return { outcome: 'error', code: result.code };
     }
+    return { outcome: 'tokens', tokens: result.tokens };
+  }
+}
 
-    // 5. Persist, atomically and 0600. The refresh token is the only thing here worth protecting;
-    // the id_token that came with `openid` is dropped rather than stored.
-    const credentials = credentialsFromTokens({
-      endpoint,
-      issuer: discovered.issuer,
-      tokenEndpoint: discovered.token_endpoint,
-      tokens: result.tokens,
+const EXPIRED_MESSAGE = 'The code expired before it was confirmed. Run /kabo-login to start again.';
+
+/** Map a token-endpoint verdict to the exit code and the sentence the user reads; shared by both modes */
+function pollErrorOutcome(code) {
+  if (code === 'expired_token') return { exit: 1, message: EXPIRED_MESSAGE };
+  if (code === 'access_denied') return { exit: 1, message: 'The sign-in was declined in the browser. Nothing was stored on this machine.' };
+  if (code === 'server_error') return { exit: 2, message: 'Kabo could not complete the sign-in (server error). Try again in a moment.' };
+  return { exit: 1, message: `Kabo refused to complete the sign-in (${code}). Run /kabo-login to start again.` };
+}
+
+/**
+ * How long a fresh sign-in waits for the credential lock before writing anyway. Deliberately longer
+ * than kabo-headers can legitimately hold it (its renewal round trip is capped near 6s): giving up
+ * while a live renewal still holds the lock would reopen the exact last-writer-wins window the lock
+ * exists to close.
+ */
+const PERSIST_LOCK_MAX_WAIT_MS = 8000;
+
+/**
+ * 5./6. Persist and announce - the tail every successful sign-in shares.
+ *
+ * Persist atomically and 0600. The refresh token is the only thing here worth protecting; the
+ * id_token that came with `openid` is dropped rather than stored.
+ *
+ * The write happens under the same mkdir lock kabo-headers renews under. Without it this write
+ * races a concurrent renewal last-writer-wins: a helper that read the old credential just before
+ * this write lands would clobber the fresh sign-in with a rotation of the old lineage a moment
+ * later. Under the lock the orderings both come out right - a helper arriving after this write
+ * re-reads and finds a usable fresh token; a helper already mid-renewal finishes first and is then
+ * overwritten by the fresh grant, which is the correct winner. When the lock cannot be taken within
+ * the wait above, the write proceeds anyway rather than following the helpers' give-up rule
+ * (re-read and back off): a holder past that bound is dead or wedged, and discarding a completed
+ * sign-in over a stale lock would be strictly worse than the overwrite risk.
+ *
+ * `beforeAnnounce` runs after the credential is safely on disk and before anything is printed:
+ * --wait deletes its pending state there, so a crash between the two steps leaves at worst a stale
+ * pending file (harmless - its device code is already consumed), never a stored-then-lost credential.
+ */
+async function persistAndAnnounce({ endpoint, issuer, tokenEndpoint, tokens, beforeAnnounce = null }) {
+  const credentials = credentialsFromTokens({ endpoint, issuer, tokenEndpoint, tokens });
+  if (!credentials.refresh_token) {
+    // The one silent failure this flow can produce: no refresh token means the scope did not carry
+    // offline_access, and the user would be signed out every 30 minutes with no explanation. Fail
+    // loudly instead.
+    die(1, 'Kabo returned no renewable credential (the deployment did not grant offline_access). Nothing was stored; report this.');
+  }
+  const locked = await acquireCredentialLock(PERSIST_LOCK_MAX_WAIT_MS);
+  let writeError = null;
+  try {
+    writeCredentials(credentials);
+  } catch (err) {
+    writeError = err;
+  } finally {
+    // Released before any die() below, deliberately: process.exit does not run finally blocks, so
+    // exiting while still holding the lock would leave it to block the next renewal for 15s.
+    if (locked) releaseCredentialLock();
+  }
+  if (writeError) {
+    die(2, `Signed in, but the credential could not be written to ${credentialsPath()} (${writeError?.code || 'write failed'}). Fix the permissions on that directory and run /kabo-login again.`);
+  }
+  if (beforeAnnounce) beforeAnnounce();
+
+  // Success. Not one character of the token appears here, or anywhere else outside the file.
+  //
+  // The advice is reconnect, not restart: the host re-runs the headersHelper on every connection
+  // (session start, reconnect, and a one-shot retry after a tool call answers 401/403), so the
+  // reconnect picks the fresh credential up in the running session. The name must be the full
+  // registered one, plugin:kabo-alpha:kabo - a reconnect naming the bare `kabo` looks right and
+  // greps right, but the host answers it with "There's no MCP server named ..." at the one moment
+  // the user is following this copy. Only the reconnect subcommand needs CLI 2.1.205; CLIs
+  // on 2.1.195-2.1.204 still have /reload-plugins, which reconnects plugin servers and re-runs the
+  // helper just the same. The desktop app has neither command, so there - and only there - the
+  // advice is a new session; sending CLI users to one would reinstate the very restart this rework
+  // removed.
+  console.log('\nAuthorized. To activate the Kabo tools in a running Claude Code session, run:');
+  console.log('\n    /mcp reconnect plugin:kabo-alpha:kabo\n');
+  console.log('(Claude Code CLI 2.1.205 or newer; on an older CLI run /reload-plugins instead.)');
+  console.log('Reconnecting re-runs the credential helper, so no restart is needed. On the Claude');
+  console.log('Code desktop app these commands do not exist - start a new session there instead.');
+  process.exit(0);
+}
+
+/** The blocking sign-in: --start and --wait in one process, for a human sitting at the terminal */
+async function cmdLogin(noOpen) {
+  const { endpoint, discovered, device, verifyUrl, userCode } = await beginDeviceSignIn();
+
+  announceVerification({ verifyUrl, userCode, noOpen });
+  const minutes = Math.max(1, Math.round((Number(device.expires_in) || 900) / 60));
+  console.log(`Waiting for approval... (expires in ${minutes} minutes; Ctrl-C to cancel)`);
+
+  const advertised = Number(device.interval);
+  const intervalMs = Number.isFinite(advertised) && advertised >= 0 ? advertised * 1000 : 5000;
+  const deadline = Date.now() + (Number(device.expires_in) || 900) * 1000;
+
+  const result = await pollDeviceApproval({
+    tokenEndpoint: discovered.token_endpoint,
+    deviceCode: device.device_code,
+    intervalMs,
+    deadline,
+  });
+  if (result.outcome === 'deadline') die(1, EXPIRED_MESSAGE);
+  if (result.outcome === 'network_lost') {
+    die(2, `Lost contact with ${endpoint} while waiting for approval. Check the network and run /kabo-login again.`);
+  }
+  if (result.outcome === 'error') {
+    const verdict = pollErrorOutcome(result.code);
+    die(verdict.exit, verdict.message);
+  }
+  await persistAndAnnounce({
+    endpoint,
+    issuer: discovered.issuer,
+    tokenEndpoint: discovered.token_endpoint,
+    tokens: result.tokens,
+  });
+}
+
+// ---------------------------------------------------------------- login --start
+
+async function cmdLoginStart(noOpen) {
+  const endpoint = apiEndpoint();
+
+  // Idempotent reuse: while a pending sign-in for this deployment is inside its deadline, re-running
+  // --start re-prints the same code instead of requesting a new one. A new code here would silently
+  // void the one the user may be approving in a browser tab at this very moment - which is exactly
+  // the "approved in the browser, nothing on this machine" failure the split exists to end. The
+  // reuse path touches no network, and it does not re-open a browser either: --start is typically
+  // re-run by an agent, and the printed URL is the contract (a fresh tab per retry is just noise).
+  // A pending sign-in for a *different* deployment is not reused - --start's job is to begin a
+  // sign-in to the deployment this process is configured for, so it is overwritten below.
+  // The comparison against START_REUSE_MIN_REMAINING_MS (not merely "not yet expired") is the reuse
+  // floor: see that constant for why a code with seconds left is worth less than a fresh one.
+  const pending = readDeviceLoginState();
+  if (pending && pending.endpoint === endpoint && pending.deadline - Date.now() >= START_REUSE_MIN_REMAINING_MS) {
+    announceVerification({
+      verifyUrl: safeBrowserUrl(pending.verification_url), // non-null: readDeviceLoginState checked it
+      userCode: pending.user_code,
+      noOpen: true,
     });
-    if (!credentials.refresh_token) {
-      // The one silent failure this flow can produce: no refresh token means the scope did not carry
-      // offline_access, and the user would be signed out every 30 minutes with no explanation. Fail
-      // loudly instead.
-      die(1, 'Kabo returned no renewable credential (the deployment did not grant offline_access). Nothing was stored; report this.');
-    }
-    try {
-      writeCredentials(credentials);
-    } catch (err) {
-      die(2, `Signed in, but the credential could not be written to ${credentialsPath()} (${err?.code || 'write failed'}). Fix the permissions on that directory and run /kabo-login again.`);
-    }
-
-    // 6. Success. Not one character of the token appears here, or anywhere else outside the file.
-    //
-    // The advice is reconnect, not restart: the host re-runs the headersHelper on every connection
-    // (session start, reconnect, and a one-shot retry after a tool call answers 401/403), so
-    // `/mcp reconnect kabo` picks the fresh credential up in the running session. Only the `/mcp
-    // reconnect` subcommand needs 2.1.205; hosts on 2.1.195-2.1.204 still have /reload-plugins,
-    // which reconnects plugin servers and re-runs the helper just the same. So the advice for an
-    // older host is /reload-plugins first and a new session only as the last resort - sending them
-    // straight to a new session would reinstate the very restart this rework removed.
-    console.log('\nAuthorized. To activate the Kabo tools in a running Claude Code session, run:');
-    console.log('\n    /mcp reconnect kabo\n');
-    console.log('(Claude Code 2.1.205 or newer; /reload-plugins also works.) Reconnecting re-runs the');
-    console.log('credential helper, so no restart is needed. On an older Claude Code, run /reload-plugins');
-    console.log('instead, and start a new session only if the tools still do not appear.');
+    const minutes = Math.max(1, Math.round((pending.deadline - Date.now()) / 60000));
+    console.log(`A sign-in is already in progress; this is its code (a new one would void it), valid for about ${minutes} more minute${minutes === 1 ? '' : 's'}.`);
+    console.log('Approve it in the browser (any device works), then run: kabo-auth login --wait');
     process.exit(0);
   }
+
+  const { discovered, device, verifyUrl, userCode } = await beginDeviceSignIn();
+  const advertised = Number(device.interval);
+  const state = {
+    version: DEVICE_LOGIN_STATE_VERSION,
+    endpoint,
+    issuer: discovered.issuer,
+    token_endpoint: discovered.token_endpoint,
+    client_id: OAUTH_CLIENT_ID,
+    scope: OAUTH_SCOPE,
+    device_code: device.device_code,
+    user_code: userCode,
+    verification_url: verifyUrl,
+    // Seconds, as the server advertised (RFC 8628 3.2); --wait applies the same 5s default the
+    // blocking login uses when the server says nothing.
+    interval: Number.isFinite(advertised) && advertised >= 0 ? advertised : 5,
+    // Epoch milliseconds, not expires_in: this file exists to be read by a later process, for which
+    // a relative "in 900 seconds" has lost its anchor.
+    deadline: Date.now() + (Number(device.expires_in) || 900) * 1000,
+    obtained_at: new Date().toISOString(),
+  };
+  // Persist before printing: a code shown to the user that --wait cannot find would be worse than
+  // no code at all - they would approve it in the browser and then be told nothing is in progress.
+  try {
+    writeDeviceLoginState(state);
+  } catch (err) {
+    die(2, `Could not record the pending sign-in at ${deviceLoginStatePath()} (${err?.code || 'write failed'}). Fix the permissions on that directory and run kabo-auth login --start again.`);
+  }
+
+  announceVerification({ verifyUrl, userCode, noOpen });
+  const minutes = Math.max(1, Math.round((Number(device.expires_in) || 900) / 60));
+  console.log(`The code expires in ${minutes} minutes. Approve it in the browser (any device works),`);
+  console.log('then run: kabo-auth login --wait');
+  process.exit(0);
+}
+
+// ---------------------------------------------------------------- login --wait
+
+async function cmdLoginWait() {
+  const endpoint = apiEndpoint();
+  const pending = readDeviceLoginState();
+  if (!pending) {
+    die(1, 'No sign-in in progress. Run kabo-auth login --start first.');
+  }
+  if (pending.endpoint !== endpoint) {
+    // The state survives this exit: the mismatch is a configuration fact of THIS process
+    // (KABO_API_ENDPOINT), not evidence that the pending sign-in is bad - a session pointed back at
+    // the right deployment can still collect it. Same rule the credential follows in kabo-headers.
+    die(1, `The pending sign-in is for ${pending.endpoint}, but this session is configured for ${endpoint}.\nRe-run kabo-auth login --wait with KABO_API_ENDPOINT pointed at ${pending.endpoint}, or start over there with kabo-auth login --start.`);
+  }
+  if (Date.now() >= pending.deadline) {
+    // Every deletion below names the device code it is cleaning up after: another session's --start
+    // may have swapped a fresh pending sign-in into the file while this process was reading or
+    // polling, and this session's verdict says nothing about that code (see deleteDeviceLoginState).
+    deleteDeviceLoginState(pending.device_code);
+    die(1, EXPIRED_MESSAGE);
+  }
+
+  const minutes = Math.max(1, Math.round((pending.deadline - Date.now()) / 60000));
+  console.log(`Waiting for approval of code ${pending.user_code}... (valid for about ${minutes} more minute${minutes === 1 ? '' : 's'}; if this run is cut short, kabo-auth login --wait resumes it)`);
+
+  const result = await pollDeviceApproval({
+    tokenEndpoint: pending.token_endpoint,
+    deviceCode: pending.device_code,
+    intervalMs: Number.isFinite(pending.interval) && pending.interval >= 0 ? pending.interval * 1000 : 5000,
+    deadline: pending.deadline,
+    // The slow_down step is permanent (RFC 8628 3.5), and "permanent" must outlive this process to
+    // mean anything here: a --wait killed after backing off would otherwise resume at the old
+    // cadence and earn one guaranteed slow_down on every resume. Best-effort on purpose - failing
+    // to persist a politeness parameter must never kill a poll that may be seconds from collecting
+    // the user's approval - and guarded by device_code so a state another --start just swapped in
+    // is not clobbered with this code's interval.
+    onIntervalIncrease: (ms) => {
+      try {
+        const current = readDeviceLoginState();
+        if (current && current.device_code === pending.device_code) {
+          writeDeviceLoginState({ ...current, interval: ms / 1000 });
+        }
+      } catch { /* best effort, see above */ }
+    },
+  });
+  if (result.outcome === 'deadline') {
+    deleteDeviceLoginState(pending.device_code);
+    die(1, EXPIRED_MESSAGE);
+  }
+  if (result.outcome === 'network_lost') {
+    // The pending state is deliberately KEPT on this exit. This is the outcome a dropped network or
+    // a host-side timeout produces, and re-running --wait must resume the same code - deleting here
+    // would reintroduce the silent "approved in the browser, nothing stored" failure the
+    // --start/--wait split was built to remove.
+    die(2, `Lost contact with ${endpoint} while waiting for approval. The sign-in is still pending: check the network and run kabo-auth login --wait again to resume.`);
+  }
+  if (result.outcome === 'error') {
+    const verdict = pollErrorOutcome(result.code);
+    // Terminal verdicts (declined, expired, refused) kill the code server-side, so the pending
+    // state is dead weight and goes with them; the retryable server_error (exit 2) keeps it, same
+    // as a network loss - the next --wait retries the same code.
+    if (verdict.exit === 1) deleteDeviceLoginState(pending.device_code);
+    die(verdict.exit, verdict.message);
+  }
+  await persistAndAnnounce({
+    endpoint,
+    issuer: pending.issuer,
+    tokenEndpoint: pending.token_endpoint,
+    tokens: result.tokens,
+    beforeAnnounce: () => deleteDeviceLoginState(pending.device_code),
+  });
 }
 
 // ---------------------------------------------------------------- status
@@ -286,6 +628,9 @@ function cmdLogout() {
   for (const target of [
     { path: credentialsPath(), recursive: false, label: 'local credential' },
     { path: credentialsLockPath(), recursive: true, label: 'renewal lock' },
+    // A pending sign-in holds a live device code - sensitive material in the credential's own trust
+    // domain, so logout must not leave it behind either.
+    { path: deviceLoginStatePath(), recursive: false, label: 'pending sign-in state' },
     // Note: the <id>.disabled revocation markers also live inside cacheRoot. Clearing them is
     // acceptable - the next SessionStart resyncs from the public endpoint; but until then an offline
     // run loses its basis for blocking, so the semantics of logout must clearly be "clear local trust
@@ -306,9 +651,11 @@ function cmdLogout() {
     } catch { /* one failure does not affect the rest of the cleanup */ }
   }
   // Belt and braces for the one file that matters: deleteCredentials also removes a lock left behind
-  // by a process that was killed mid-renewal.
+  // by a process that was killed mid-renewal. deleteDeviceLoginState sweeps its own temp files the
+  // same way.
   deleteCredentials();
-  console.log(`Local Kabo data cleared (credential, skill cache, run work directories, server public keyset, meta-guidance cache, relay records${cleared === 0 ? '; it was already empty' : ''}).`);
+  deleteDeviceLoginState();
+  console.log(`Local Kabo data cleared (credential, pending sign-in, skill cache, run work directories, server public keyset, meta-guidance cache, relay records${cleared === 0 ? '; it was already empty' : ''}).`);
   console.log('This machine can no longer call Kabo. Access elsewhere is unaffected: revoking on every device is what /kabo-logout does first, through the platform\'s auth_revoke_all tool.');
 }
 
@@ -321,7 +668,25 @@ if (!cmd || cmd === '--help' || cmd === '-h' || cmd === 'help') {
 } else if (cmd === 'logout') {
   cmdLogout();
 } else if (cmd === 'login') {
-  await cmdLogin(rest.includes('--no-open'));
+  // Unknown flags are rejected before anything else happens. Without this gate a typo ('login
+  // --wiat') falls through into the blocking login: it runs discovery, leases a fresh device code -
+  // silently voiding a pending --start another session may be mid-approving - and then holds the
+  // terminal for up to 15 minutes. A typo must cost a usage line, never a network side effect.
+  const unknown = rest.filter((arg) => !['--start', '--wait', '--no-open'].includes(arg));
+  if (unknown.length > 0) {
+    die(1, `Unknown option for login: ${unknown.join(' ')}\n\n${USAGE}`);
+  }
+  const start = rest.includes('--start');
+  const wait = rest.includes('--wait');
+  if (start && wait) {
+    die(1, `--start and --wait are the two halves of one sign-in and cannot be combined.\n\n${USAGE}`);
+  } else if (wait) {
+    await cmdLoginWait();
+  } else if (start) {
+    await cmdLoginStart(rest.includes('--no-open'));
+  } else {
+    await cmdLogin(rest.includes('--no-open'));
+  }
 } else if (cmd === 'status') {
   cmdStatus();
 } else {
