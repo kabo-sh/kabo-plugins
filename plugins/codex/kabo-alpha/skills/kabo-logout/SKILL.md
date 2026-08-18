@@ -39,7 +39,7 @@ Name the work directories explicitly rather than folding them into "the cache". 
 Report the counts `auth_revoke_all` returned, then these three facts. The second one is what users get wrong, so do not bury it:
 
 - **It applies to every device.** All of the account's Kabo authorizations are gone, not just this session's. Anywhere else Kabo was authorized, the next renewal fails.
-- **It is not instant.** The access token the host already holds is a self-contained JWT and the platform runs no denylist, so this connection can keep working for up to **30 more minutes**. Nothing can be renewed after that.
+- **It is not instant.** The access token the host already holds is a self-contained JWT and the platform runs no denylist, so this connection can keep working for up to **2 more hours (120 minutes)**. Nothing can be renewed after that.
 - **To cut it off right now**: run `codex mcp logout kabo`. That drops the host's copy of the token immediately, and it is the only same-second cutoff available.
 
 Signing back in later means a fresh browser consent — `$kabo-login` walks them through it.

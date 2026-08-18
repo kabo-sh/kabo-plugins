@@ -380,7 +380,7 @@ async function persistAndAnnounce({ endpoint, issuer, tokenEndpoint, tokens, bef
   const credentials = credentialsFromTokens({ endpoint, issuer, tokenEndpoint, tokens });
   if (!credentials.refresh_token) {
     // The one silent failure this flow can produce: no refresh token means the scope did not carry
-    // offline_access, and the user would be signed out every 30 minutes with no explanation. Fail
+    // offline_access, and the user would be signed out every 2 hours with no explanation. Fail
     // loudly instead.
     die(1, 'Kabo returned no renewable credential (the deployment did not grant offline_access). Nothing was stored; report this.');
   }

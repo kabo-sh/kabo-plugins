@@ -6,6 +6,16 @@
 //
 //   stdout on success: {"Authorization":"Bearer <jwt>"}\n   - exactly that, one line, nothing else
 //   stdout on failure: 0 bytes
+//
+// Probe mode (`--probe`, the only argument this file recognizes): instead of emitting the header,
+// send one authenticated no-op request to this deployment's MCP path and report whether the server
+// still accepts the credential. stdout is ALWAYS 0 bytes in probe mode; the outcome is the exit
+// code alone - 0 the server accepted it, 1 sign-in unusable (same two stderr sentences as below),
+// 2 could not tell (network, timeout, or any unexpected condition; never treated as a sign-out).
+// The mode exists for the SessionStart hook: the default mode trusts the local expiry timestamp,
+// so a credential the server has stopped accepting (revoked family, consumed rotation) keeps being
+// served until every call 401s mid-session with no explanation - the probe surfaces that state at
+// session start instead, where the fix (/kabo-login) can be said out loud.
 //   exit 0  header emitted
 //   exit 1  the sign-in state is unusable, with two distinct stderr lines for its two situations:
 //           - no credential, or the refresh token is dead or expired -> the needs-login line,
@@ -92,14 +102,47 @@ try {
   if (!cached) fail(1);
   if (cached.endpoint !== endpoint) fail(1, WRONG_ENDPOINT);
 
+  const probeMode = process.argv.includes('--probe');
+
   let accessToken;
   if (accessTokenUsable(cached)) {
     accessToken = cached.access_token;
+  } else if (probeMode) {
+    // Probe mode NEVER renews. A renewal is a strict single-use rotation, and the probe's caller
+    // (SessionStart) enforces its own outer kill timeout - a rotation truncated between the
+    // server consuming the old refresh token and this process persisting the new one burns the
+    // credential, which is the very accident the probe exists to prevent. A locally stale access
+    // token also is not the probe's question: the question is "does the server still accept a
+    // credential that LOOKS fresh here", and a stale one will be renewed by the next default-mode
+    // call anyway. Exit 2 (could not tell), silently - nobody reads probe stderr on exit 2.
+    process.exit(2);
   } else {
     const resolved = await ensureFreshAccessToken(endpoint);
     if (resolved.status === 'needs_login') fail(1);
     if (resolved.status !== 'ok') fail(2);
     accessToken = resolved.access_token;
+  }
+
+  if (probeMode) {
+    // One POST against the MCP path this credential exists for. Auth runs before body parsing
+    // there, so the status splits cleanly: 401 = the server no longer accepts this credential
+    // (exit 1, needs-login sentence); any other HTTP status = the credential passed the gate
+    // (exit 0 - the request body being a non-MCP no-op is irrelevant); no response = exit 2.
+    // The timeout is deliberately shorter than the 9.5s budget: SessionStart runs this in
+    // parallel with its other requests and treats a slow probe as "could not tell", never as
+    // a sign-out.
+    try {
+      const response = await fetch(`${endpoint}/mcp-for-claude`, {
+        method: 'POST',
+        headers: { Authorization: `Bearer ${accessToken}`, 'content-type': 'application/json' },
+        body: '{}',
+        signal: AbortSignal.timeout(3500),
+      });
+      if (response.status === 401) fail(1);
+      process.exit(0);
+    } catch {
+      fail(2);
+    }
   }
 
   writeFd(1, `${JSON.stringify({ Authorization: `Bearer ${accessToken}` })}\n`);

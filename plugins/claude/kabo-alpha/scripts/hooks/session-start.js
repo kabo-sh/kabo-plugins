@@ -1,10 +1,14 @@
-// SessionStart hook - since 0.7.0 it is **completely credential-free**.
+// SessionStart hook - since 0.7.0 this **process** is credential-free: it never opens the
+// credential file, and no token byte ever enters it. Since 2026-08-18 its network surface is no
+// longer purely anonymous - when a credential file exists it spawns `bin/kabo-headers --probe`,
+// whose single authenticated no-op POST is the sanctioned exception documented below and in
+// CONTRACT (2.4/2.9); the hook itself still learns nothing but an exit code.
 //
 // At SessionStart the MCP server is not yet connected (confirmed by the host docs), so no token is
-// available; yet the revocation list is the pre-execution gate for bin/skill-verify and must be
-// obtainable at this moment.
-// So this script issues only two **public read-only** GETs, with no arguments, no identity, and zero
-// user data going up:
+// available to the hook; yet the revocation list is the pre-execution gate for bin/skill-verify and
+// must be obtainable at this moment.
+// So this script itself issues only two **public read-only** GETs, with no arguments, no identity,
+// and zero user data going up:
 //
 //   (1) GET <endpoint>/api/sync         the revocation list (kill-switch) + the full catalog
 //      -> each revocation passes isSafeName, then the cache is deleted and a .disabled marker written
@@ -23,18 +27,24 @@
 // additionalContext is emitted, with the relay section first (it has its own header and is not
 // confused with the guidance fence).
 //
-// One deliberate nuance since the two-phase login rework (2026-08): the hook probes whether the
-// credential file EXISTS - fs.existsSync and nothing more - to tell a signed-out user so at session
-// start; before this, the first sign of "not signed in" was a 401 in the middle of a task. The probe
-// does not weaken credential-free: the file is never opened, parsed, or validated, no token byte is
-// touched, no identity is derived, and the two GETs above still carry nothing. The Codex variant
-// deliberately has no such line - its sign-in is the host's own OAuth (codex mcp login kabo), and
-// there is no plugin-held credential file whose absence this hook could meaningfully report.
+// Two deliberate nuances since the two-phase login rework (2026-08). First, the hook checks whether
+// the credential file EXISTS - fs.existsSync and nothing more - to tell a signed-out user so at
+// session start; before this, the first sign of "not signed in" was a 401 in the middle of a task.
+// Second (2026-08-18), when the file DOES exist the hook spawns `bin/kabo-headers --probe`, which
+// asks the server whether it still accepts the credential: a locally-fresh-looking credential the
+// server has stopped accepting (revoked family, consumed rotation) otherwise surfaces as every tool
+// call failing mid-session with no explanation, and on some hosts as an unrecoverable re-auth loop.
+// Neither weakens this process's credential-free property: the file is never opened or parsed HERE,
+// no token byte enters this process (the probe child inherits the same one-file discipline and
+// reports only an exit code plus its canonical stderr sentence), and the hook's own two GETs still
+// carry nothing. The Codex variant deliberately has neither line - its sign-in is the host's own
+// OAuth (codex mcp login kabo), and there is no plugin-held credential file to check or probe.
 //
 // WARNING - hard rule: this script must not read or report the prompt, tool_input, tool_response, or
 //   the contents pointed at by transcript_path; neither request sends any local data.
 // Any exception exits 0; the session is never blocked.
 
+import { spawn } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -47,6 +57,69 @@ import {
 } from '../lib/common.js';
 
 const REQUEST_TIMEOUT_MS = 3000; // session startup path: better to come back empty-handed than to hold the user up
+
+// The probe child gets a little more than REQUEST_TIMEOUT_MS: its own in-child request timeout is
+// 3.5s and spawning costs some. A probe that overruns is killed and treated as "could not tell" -
+// silence, never a sign-out message. Sized so the whole hook still finishes well inside the host's
+// hook budget even when the two GETs run the full 3s in parallel.
+const PROBE_TIMEOUT_MS = 4500;
+
+/**
+ * Ask the server whether it still accepts this machine's credential, without a single token byte
+ * entering this process: the check lives in bin/kabo-headers (`--probe`), which reports exit 0
+ * (accepted), 1 (sign-in unusable; its stderr carries the canonical recovery sentence), or 2
+ * (could not tell). Resolves to the sentence to surface, or null for "say nothing" - exit 0, exit
+ * 2, spawn failure, and timeout all deliberately collapse to null: the only state worth a line at
+ * session start is "the server said no", everything uncertain stays quiet.
+ */
+function probeCredential(pluginRoot) {
+  return new Promise((resolve) => {
+    let settled = false;
+    const done = (value) => {
+      if (!settled) {
+        settled = true;
+        resolve(value);
+      }
+    };
+    try {
+      const child = spawn(
+        process.execPath,
+        [path.join(pluginRoot, 'bin', 'kabo-headers'), '--probe'],
+        // stdout ignored by design: probe mode emits none, and ignoring it keeps even a
+        // misbehaving child from feeding this process anything but the exit code and stderr.
+        { stdio: ['ignore', 'ignore', 'pipe'], env: process.env },
+      );
+      let stderr = '';
+      child.stderr.on('data', (chunk) => {
+        if (stderr.length < 1024) stderr += chunk.toString('utf8');
+      });
+      const timer = setTimeout(() => {
+        try {
+          child.kill('SIGKILL');
+        } catch {
+          /* already gone */
+        }
+        done(null);
+      }, PROBE_TIMEOUT_MS);
+      child.on('error', () => {
+        clearTimeout(timer);
+        done(null);
+      });
+      child.on('close', (code) => {
+        clearTimeout(timer);
+        if (code !== 1) return done(null);
+        // Exit 1 alone is not proof of a sign-in verdict: node itself exits 1 on a crashed child
+        // (syntax error, missing module), with a stack trace on stderr. Both canonical exit-1
+        // sentences name /kabo-login, so that substring is the signature that the child spoke,
+        // not crashed - anything else is uncertainty and stays silent.
+        const sentence = stderr.split('\n', 1)[0].trim();
+        done(sentence.includes('/kabo-login') ? sentence : null);
+      });
+    } catch {
+      done(null);
+    }
+  });
+}
 
 /**
  * Write the plugin install root to ~/.kabo/plugin-root so the Bash-only skill-runner can locate the
@@ -264,10 +337,15 @@ async function main() {
   recordPluginRoot();
   const endpoint = apiEndpoint();
 
-  // The two public GETs are issued in parallel: independent of each other, with independent failure domains
-  const [registry, envelope] = await Promise.all([
+  // The two public GETs and the credential probe are issued in parallel: independent of each
+  // other, with independent failure domains. The probe only exists when there is a credential
+  // file to speak for - a signed-out machine keeps this hook's network surface at exactly the
+  // two public endpoints.
+  const pluginRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..');
+  const [registry, envelope, probeSentence] = await Promise.all([
     fetchJsonSilent(`${endpoint}/api/sync`, {}, REQUEST_TIMEOUT_MS),
     resolveGuidance(endpoint),
+    fs.existsSync(credentialsPath()) ? probeCredential(pluginRoot) : Promise.resolve(null),
   ]);
 
   const parts = [];
@@ -345,11 +423,18 @@ async function main() {
         : `${allPending.length} event(s) awaiting relay (${pending.length} injected this time)`,
     );
   }
-  // Existence probe ONLY - see the header comment. Reading or parsing the file here would end this
-  // hook's credential-free property; the file's absence is the one fact about it that is not
-  // credential material. Last in the list so the sync results above keep their position.
+  // Existence check ONLY in this process - see the header comment. Reading or parsing the file
+  // here would end this hook's credential-free property; the file's absence is the one fact about
+  // it that is not credential material. Last in the list so the sync results above keep their
+  // position.
   if (!fs.existsSync(credentialsPath())) {
     parts.push('Kabo is not signed in on this machine - run /kabo-login to enable platform tools');
+  } else if (probeSentence) {
+    // The server said no to a credential that exists locally. Without this line the user's first
+    // sign of trouble is every platform call failing mid-task - and on hosts that fall back to
+    // their own re-auth on 401, an unrecoverable loop (2026-08-18 incident). The sentence is the
+    // probe child's own canonical recovery line, which already names /kabo-login.
+    parts.push(probeSentence);
   }
 
   output.systemMessage = parts.join('; ');

@@ -44,9 +44,9 @@ Report the counts `auth_revoke_all` returned, then be exact about *when* each su
 |---|---|---|
 | This machine's next call | **the same second** | the credential file is gone, so the plugin emits no header and the request 401s |
 | A call already in flight here | when it finishes | nothing interrupts a request already on the wire |
-| An access token cached **on another machine** | **up to 30 minutes** | it is a self-contained JWT and the platform runs no denylist |
+| An access token cached **on another machine** | **up to 2 hours (120 minutes)** | it is a self-contained JWT and the platform runs no denylist |
 | Renewal, anywhere | **the same second** | the refresh token is revoked, so every renewal fails immediately |
 
-So: revocation plus step 2 means *this* machine is cut off instantly, and any other machine keeps working for at most 30 minutes before it can no longer renew.
+So: revocation plus step 2 means *this* machine is cut off instantly, and any other machine keeps working for at most 2 hours before it can no longer renew.
 
 Signing back in later takes one command — `/kabo-login` walks them through it.

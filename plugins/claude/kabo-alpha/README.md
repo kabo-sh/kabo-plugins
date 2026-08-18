@@ -109,7 +109,7 @@ Slash commands (three):
 | `/kabo-analyze` | Analysis entry point: start the flow directly with whatever you want analyzed (`/kabo-analyze why has this channel been taking off lately <url>`). Internally it uses meta-guidance's routing rather than a separate one |
 | `/kabo-logout` | A real logout, in two halves and in this order: it calls the platform's `auth_revoke_all` over the authorized MCP connection — revoking **every device's** authorization, not just this machine's — and then deletes this machine's credential along with the cache and trust material. Swapping the order breaks it: deleting the credential first leaves nothing to call the platform with |
 
-How fast each surface actually stops: **this machine, the same second** (the credential is gone, so no header is produced and the request 401s); **renewal anywhere, the same second** (the refresh token is revoked); an access token already cached **on another machine, up to 30 minutes** — it is a self-contained JWT and the platform runs no denylist.
+How fast each surface actually stops: **this machine, the same second** (the credential is gone, so no header is produced and the request 401s); **renewal anywhere, the same second** (the refresh token is revoked); an access token already cached **on another machine, up to 2 hours** — it is a self-contained JWT and the platform runs no denylist.
 
 `/kabo-analyze` is the explicit entry point; you do not have to use it — meta-guidance routes automatically when you simply state your need, and both paths run the same flow.
 

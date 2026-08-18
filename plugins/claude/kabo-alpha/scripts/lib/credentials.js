@@ -28,7 +28,7 @@ export const OAUTH_CLIENT_ID = 'kabo-cli';
 /**
  * The scope set, byte-identical to what the host OAuth path requests today.
  * `offline_access` is the highest-risk item: without it the server issues no renewal token at all and
- * nothing errors - the user is simply kicked out every 30 minutes for no visible reason.
+ * nothing errors - the user is simply kicked out every 2 hours for no visible reason.
  */
 export const OAUTH_SCOPE = 'openid offline_access account:read registry telemetry data';
 
@@ -42,7 +42,7 @@ export const AS_METADATA_PATH = '/api/auth/.well-known/oauth-authorization-serve
  * Renew when the access token has less than this left.
  * Not 0 and not 60s: an MCP request takes time of its own, and a token with three seconds left
  * expires during server-side verification - producing a 401 that looks exactly like "never
- * authorized". The cost is at most one extra renewal per 30 minutes.
+ * authorized". The cost is at most one extra renewal per 2 hours.
  */
 export const ACCESS_TOKEN_SKEW_MS = 120_000;
 
@@ -238,7 +238,7 @@ export async function refreshTokens(tokenEndpoint, refreshToken, timeoutMs = TOK
  * token itself when the server chose not to rotate it).
  */
 export function credentialsFromTokens({ endpoint, issuer, tokenEndpoint, tokens, previous = null, now = Date.now() }) {
-  const accessTtlMs = Number.isFinite(tokens.expires_in) ? tokens.expires_in * 1000 : 30 * 60 * 1000;
+  const accessTtlMs = Number.isFinite(tokens.expires_in) ? tokens.expires_in * 1000 : 120 * 60 * 1000;
   const refreshTtlMs = Number.isFinite(tokens.refresh_expires_in)
     ? tokens.refresh_expires_in * 1000
     : REFRESH_TOKEN_TTL_MS;

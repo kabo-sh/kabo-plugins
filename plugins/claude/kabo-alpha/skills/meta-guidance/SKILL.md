@@ -7,7 +7,7 @@ description: Skill routing entry point for the Kabo platform. Any task involving
 user-invocable: false
 # This file is the fallback for when dynamic guidance fails signature verification or the client is offline; its body is a verbatim snapshot of that server-side version.
 # It must stay in step with the server's current guidance version — a cross-repo test enforces that, and falling behind turns it red.
-kabo_guidance_snapshot: 14
+kabo_guidance_snapshot: 15
 ---
 
 # Kabo skill routing (meta-guidance)
@@ -16,7 +16,7 @@ Routing and orchestration only; details live in each downloaded SKILL.md.
 
 ## A. Triggering and dispatch
 
-Always route these creator-data needs through this flow — never answer from prior knowledge: public evidence collection (YouTube search, public channel/video metrics, comments, time-window trending), breakout analysis and ideation (channel-relative outliers, Hook/structure/CTA breakdowns, evidence-backed topics), channel research and benchmarking, cross-platform creator discovery (breakout lists, Instagram Reels reverse-engineering).
+Always route these creator-data needs through this flow — never answer from prior knowledge: public evidence collection (YouTube search, public channel/video metrics, comments, time-window trending), breakout analysis and ideation (channel-relative outliers, Hook/structure/CTA breakdowns, evidence-backed topics), channel research and benchmarking, cross-platform creator discovery (Instagram Reels reverse-engineering).
 
 Capability directions, not a skill list — what exists is solely what `registry_skill_search` returns.
 
@@ -62,11 +62,11 @@ Every fetch runs **on the platform**: Kabo holds the credentials, the user confi
 
 **Readiness first.** Call `data_connector_catalog` once. Each connector reports `ready`, each operation `implemented`; short of both → stop that evidence path with the response's `setup_hint`, not at fetch time.
 
-**Path mapping.** `../../config/`, `../../schemas/`, `../../scripts/`, `../../wrappers/` resolve under `${CLAUDE_PLUGIN_ROOT}/creator-research/` (root in `~/.kabo/plugin-root`), **not** two levels above the skill cache. Missing → the plugin is outdated: say so, don't guess.
+**Path mapping.** `../../config/`, `../../schemas/`, `../../scripts/` resolve under `${CLAUDE_PLUGIN_ROOT}/creator-research/` (root in `~/.kabo/plugin-root`), **not** two levels above the skill cache. Missing → the plugin is outdated: say so, don't guess.
 
 **Skip preflight.** `scripts/preflight.py` no longer ships and must never be run — it probed local provider keys and binaries; none remain. `required.tools` plus the catalog check already gate dependencies.
 
-**Don't run run_connector.py** — it no longer ships. Call `data_connector_run` instead: `connector_id`/`operation` come from `../../wrappers/<skill>/contract.json` and `../../config/connectors.v1.json`, `params` from that operation's `params_schema` in the catalog; `max_provider_requests` is not an input. Never hand-write a connector request file.
+**Don't run run_connector.py** — it no longer ships. Call `data_connector_run` instead: resolve `connector_id`/`operation` from `../../config/connectors.v1.json` (each connector's `used_by` names the skills it feeds) plus the catalog, `params` from that operation's `params_schema`; `max_provider_requests` is not an input. No wrapper contract ships per skill. Never hand-write a connector request file.
 
 **Envelope semantics unchanged**: keep `status`/`limitations`/`provider`; report `limitations` verbatim in the summary. `blocked_setup` = **the platform** is missing that credential — the user cannot fix it, never send them to configure a key; `unsupported` = not implemented server-side yet. Neither is a tool failure: name what's unavailable, deliver the rest under SKILL.md's partial semantics, never substitute another source.
 
