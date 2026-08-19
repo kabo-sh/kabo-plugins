@@ -1,9 +1,10 @@
 #!/usr/bin/env bash
 # Kabo plugin installer — the one-shot entry point behind `curl -fsSL … | bash`.
 #
-# This script does four things and deliberately only these four: register (or refresh) the marketplace,
-# install (or update) the plugin, (on the Claude side, with consent) start the plugin's own sign-in
-# command for you, and tell you what to do next.
+# This script does five things and deliberately only these five: register (or refresh) the marketplace,
+# install (or update) the plugin, (on the Claude side) detect a pre-plugin direct MCP registration of
+# the same endpoint and clear it with consent, (on the Claude side, with consent) start the plugin's
+# own sign-in command for you, and tell you what to do next.
 # It does **not** install Claude Code or Codex for you, write any config file, use sudo, or
 # ever read or write credential material. Signing in is done end to end by the plugin's own
 # kabo-auth device flow (on the Codex side it is host OAuth: `codex mcp login kabo --scopes …`,
@@ -86,9 +87,10 @@ Environment:
   KABO_INSTALL_REPO, KABO_INSTALL_REF  Same as --repo / --ref.
 
 The installer never installs Claude Code or Codex for you, never uses sudo, and never
-reads or writes your credentials. After installing the Claude plugin it offers to start
-the plugin's own terminal sign-in (kabo-auth login) for you; decline, and signing in
-stays a separate step it prints at the end.
+reads or writes your credentials. After installing the Claude plugin it checks for a
+pre-plugin direct MCP registration of the Kabo endpoint (removal is offered, never
+automatic), and offers to start the plugin's own terminal sign-in (kabo-auth login)
+for you; decline either, and the step it prints at the end covers it.
 USAGE
 }
 
@@ -428,6 +430,70 @@ offer_claude_signin() {
   fi
 }
 
+# ====== Stale direct MCP registration cleanup (Claude; destructive action only with consent) ======
+# Born from a 2026-08-18 desktop support case: pre-plugin guidance once had users connect the
+# platform directly with `claude mcp add kabo …`. After the plugin is installed that old entry is
+# pure downside — the host dedupes servers by endpoint, the old entry registers the tools under the
+# direct-name prefix (mcp__kabo__*, while the bundled server is plugin:kabo-alpha:kabo), which
+# collides with skill-runner's tool allowlist; worse, the host keeps its own OAuth token for it,
+# which this plugin's /kabo-logout cannot revoke. The installer is the one moment anything can
+# discover it for the user.
+# Boundaries, all three deliberate:
+#   - Detection takes two matches: the name is the bare `kabo` (a get hit on the bare name proves a
+#     direct registration - the bundled server registers under the plugin: prefixed name), AND the
+#     get output shows this plugin's endpoint (kabo.sh, or the self-hosted deployment named by
+#     KABO_API_ENDPOINT). A server that merely shares the name but points elsewhere is not ours,
+#     and not one byte of it gets touched.
+#   - Deleting the user's own configuration is destructive: it runs only after interactive consent;
+#     --yes / no-tty runs report and print the manual commands, never delete - the same discipline
+#     as the sign-in offer.
+#   - Sessions already running are out of reach, a host-documented boundary: connection state
+#     belongs to the session process, an external process only edits configuration, and only new
+#     sessions read the result. The wording says so honestly and promises nothing immediate.
+cleanup_claude_stale_mcp() {
+  [ "${CLAUDE_DONE:-0}" -eq 1 ] || return 0
+  if [ "$DRY_RUN" -eq 1 ]; then
+    # The detection itself is a host command. Dry-run's promise is to execute nothing, so even the
+    # read-only get does not run - only the check that would happen is shown; removal has the
+    # interactive-consent gate on top in a real run, and the wording carries that honestly.
+    printf '%s    [dry-run] claude mcp get kabo  (checks for a stale pre-plugin registration; removal is offered interactively)%s\n' "$C_DIM" "$C_OFF"
+    return 0
+  fi
+  local details=''
+  details="$(claude mcp get kabo 2>/dev/null)" || return 0
+  if ! printf '%s' "$details" | grep -q 'kabo\.sh'; then
+    if [ -z "${KABO_API_ENDPOINT:-}" ] || ! printf '%s' "$details" | grep -qF "$KABO_API_ENDPOINT"; then
+      return 0
+    fi
+  fi
+
+  warn "Found a direct MCP registration named 'kabo' pointing at the Kabo endpoint. It predates the plugin and now duplicates the bundled server: its tools register under a different prefix (breaking skill-runner), and the host holds an OAuth token for it that /kabo-logout cannot revoke."
+  if [ "$HAS_TTY" -eq 0 ] || [ "$ASSUME_YES" -eq 1 ]; then
+    warn "Remove it yourself with: claude mcp logout kabo && claude mcp remove kabo"
+    return 0
+  fi
+  local reply=''
+  prompt reply "Remove that old registration now? Sessions already open keep it until they end. [Y/n] " "Y"
+  case "$reply" in
+    [nN]*)
+      warn "Kept. Remove it later with: claude mcp logout kabo && claude mcp remove kabo"
+      return 0
+      ;;
+  esac
+  # logout before remove: logout clears the OAuth token the host stores for this entry; deleting
+  # the registration first would leave the token with no named way to clear it. logout failing
+  # when there is no token is the normal case, not an error.
+  run_cli claude mcp logout kabo || true
+  run_cli claude mcp remove kabo || true
+  if claude mcp get kabo >/dev/null 2>&1; then
+    # A remove without -s only deletes the first entry found in scope order; a name registered in
+    # several scopes leaves the others behind.
+    warn "A registration named 'kabo' is still there (another scope). Remove it with: claude mcp remove kabo -s user (or -s project / -s local), then re-check with: claude mcp get kabo"
+  else
+    ok "old direct registration removed (new sessions use the plugin's bundled server)"
+  fi
+}
+
 CODEX_SIGNED_IN=0
 
 offer_codex_signin() {
@@ -540,6 +606,10 @@ CODEX_DONE=0
 # the hardest thing to read.
 want claude && install_claude
 want codex  && { [ "$CLAUDE_DONE" -eq 1 ] && printf '\n'; install_codex; }
+
+# The stale-registration cleanup runs before the sign-in offer: with the duplicate handled first,
+# the first new session after signing in does not see two copies of kabo.
+cleanup_claude_stale_mcp
 
 # The Claude sign-in offer comes after both installs are done: the device flow blocks waiting for
 # a browser confirmation, and putting it in the middle would split the Codex install output with
