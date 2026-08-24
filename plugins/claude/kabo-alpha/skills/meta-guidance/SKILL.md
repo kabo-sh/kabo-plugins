@@ -44,7 +44,7 @@ One well-defined need → single-skill flow; independently deliverable sub-goals
 
 ## Platform tools unavailable
 
-Platform MCP tools (`mcp__plugin_kabo-alpha_kabo__*`) invisible or all failing → have the user run `/kabo-login` in Claude Code (terminal device login; a browser tab confirms the code), or `/mcp` → `kabo` elsewhere. Never read, print, or shell-assemble an Authorization header — the plugin reads the local credential for you.
+Platform MCP tools (`mcp__plugin_kabo-alpha_kabo__*`) invisible or all failing → have the user run `/kabo-login` (terminal device login; a browser tab confirms the code); if Kabo is still unavailable afterwards, a new session picks the sign-in up on every host. Never route them to the host's own OAuth prompt for `kabo`. Never read, print, or shell-assemble an Authorization header — the plugin reads the local credential for you.
 
 ## Red lines
 

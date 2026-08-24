@@ -17,6 +17,7 @@ Flow outline (meta-guidance is authoritative on the details; if they conflict, f
 
 ## Boundaries
 
-- When $ARGUMENTS is empty, **do not** guess what the user wants analyzed — ask for the target and the goal (channel / niche / specific video, and what conclusion they want).
+- When $ARGUMENTS is empty and `~/.kabo/onboarding-profile.json` does not exist (or exists with `onboarded_at` empty), **run the onboarding flow in `commands/kabo-start.md`** instead of asking an open question — a user with no profile and no stated target is a first-time user.
+- When $ARGUMENTS is empty and the profile exists, **do not** guess what the user wants analyzed — ask for the target and the goal (channel / niche / specific video, and what conclusion they want), informed by their profile.
 - When the search finds **no** matching skill, say so plainly and describe what the catalog currently covers. **Do not** fall back to native web search or existing knowledge to invent an analysis and deliver it as Kabo output — that is the exact opposite of why this entry point exists.
 - Platform tools invisible or all returning 401 → tell the user to run `/kabo-login` first.

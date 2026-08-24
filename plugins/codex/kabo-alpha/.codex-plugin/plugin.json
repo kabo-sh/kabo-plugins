@@ -1,6 +1,6 @@
 {
   "name": "kabo-alpha",
-  "version": "0.15.0",
+  "version": "0.17.0",
   "description": "Kabo creator Skill distribution client: search, download, verify the signature of, and execute platform skills. Tool-level telemetry is recorded server-side; this variant collects no client-side usage events.",
   "author": {
     "name": "Kabo"
@@ -18,6 +18,7 @@
       "Hooks"
     ],
     "defaultPrompt": [
+      "Use $kabo-start to set me up.",
       "Use Kabo to find the outlier videos in my niche and break down why they worked.",
       "Compare my channel's recent videos against its best performers.",
       "Reverse-engineer the viral Instagram Reels in my niche."

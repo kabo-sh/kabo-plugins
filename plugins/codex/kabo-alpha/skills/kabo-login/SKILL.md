@@ -1,6 +1,6 @@
 ---
 name: kabo-login
-description: Connect and authorize the Kabo platform. Open the sign-in page in a browser, complete the OAuth authorization of `codex mcp login kabo`, and verify it with one real call; no token is stored on this machine, and no credentials file is read or written.
+description: Connect and authorize the Kabo platform. Open the sign-in page in a browser, complete the host's OAuth authorization, and verify it with one real call; no token is stored on this machine, and no credentials file is read or written.
 ---
 
 # Connect to Kabo
@@ -43,7 +43,10 @@ Once authorization completes, the **host** holds the token — but a task's tool
 
 Confirm instead of claiming success: call Kabo's `registry_skill_search` with query `youtube`.
 
-- Results returned → tell the user they are authorized, name a couple of the skills that came back, and mention they can state a creator research need directly or use `$analyze`.
+- Results returned → the user is authorized. **Do not recite the skill list** — what happens next depends on whether this machine has an onboarding profile at `<data root>/onboarding-profile.json` (data root `$KABO_CODEX_DATA`, falling back to `~/.kabo/codex`; never `~/.kabo/` itself, which is the Claude variant's root):
+  - The profile **does not exist** → this is a first sign-in. Go directly into `$kabo-start` (read `../kabo-start/SKILL.md` in the sibling directory and follow it in this task): open with its welcome line and start its questionnaire. The onboarding is the authorized-confirmation message. Its cost — real analysis time and a meaningful share of the user's quota; the figures live in `$kabo-start`'s Estimates block — is disclosed inside that flow before anything runs, and its consent popup is where they can decline.
+  - The profile **exists but `onboarded_at` is empty** → an interrupted onboarding. Hand off to `$kabo-start` (read `../kabo-start/SKILL.md` and follow it in this task), which offers Continue / Start over and never re-runs a finished analysis.
+  - The profile **is complete** (`onboarded_at` set) → welcome them back by handle, remind them of their plan (goal and cadence from the profile), and offer the next step from it. They can also state a request directly or use `$analyze`.
 - The Kabo tools are not in this task's tool list at all → this task predates the authorization (see step 2) and the list will not refresh mid-task. **Do not** work around it by spawning a fresh non-interactive `codex exec` subprocess to make the call: non-interactive runs auto-cancel MCP tool approvals, so the call fails for reasons that have nothing to do with authorization and proves nothing about the user's own session. Instead tell the user authorization completed and to start a new task (or restart the session) — the first Kabo call there is the verification.
 - The tools are visible but answer 401 → authorization did not complete; go back to step 2. **Do not** try any other authentication method.
 

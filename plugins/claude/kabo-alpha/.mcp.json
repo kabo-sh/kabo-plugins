@@ -3,7 +3,7 @@
     "kabo": {
       "type": "http",
       "url": "https://kabo.sh/mcp-for-claude",
-      "headersHelper": "${CLAUDE_PLUGIN_ROOT}/bin/kabo-headers"
+      "headersHelper": "${CLAUDE_PLUGIN_ROOT}/bin/kabo-headers.sh"
     }
   }
 }

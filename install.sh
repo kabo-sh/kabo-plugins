@@ -423,11 +423,99 @@ offer_claude_signin() {
   case "$reply" in
     [nN]*) return 0 ;;
   esac
-  if run_cli node "$plugin_root/bin/kabo-auth" login; then
+  # KABO_AUTH_QUIET_NEXT_STEPS=1: on success kabo-auth prints its own "next steps" block (start a new
+  # session / reconnect in the CLI), while the installer prints its own at the end based on what the probe
+  # found. Two of them in one terminal and the user skips both.
+  # An environment variable rather than a --quiet-next-steps flag: the kabo-auth running here belongs to
+  # the already-installed plugin, which may still be an older build (`claude plugin update` only warns when
+  # it fails), and an older build meeting an unknown flag dies(1) before sign-in even starts. An unknown
+  # environment variable it simply ignores.
+  if KABO_AUTH_QUIET_NEXT_STEPS=1 run_cli node "$plugin_root/bin/kabo-auth" login; then
     CLAUDE_SIGNED_IN=1
+    verify_claude_mcp "$plugin_root"
   else
     warn "Sign-in did not complete. Run /kabo-login inside Claude Code to try again."
   fi
+}
+
+# Right after a successful sign-in, make one real probe with the plugin's own headersHelper: send a no-op
+# request to the MCP endpoint carrying the credential that was just written (kabo-headers --probe: stdout is
+# always 0 bytes, the verdict lives in the exit code alone — 0 the server accepted it, 1 the credential is
+# not usable, 2 network/timeout so no verdict is possible, 3 the access token has already expired locally
+# (the probe never renews; renewal happens on first use, so this cannot occur right after a sign-in and is
+# handled only for completeness over the exit codes).
+# This comes from repeated desktop reports: a successful device flow does not mean the host can connect. If
+# anything in the credential file, the endpoint, or node resolution is wrong, the user only finds out after
+# opening a session and having the first tool call answer 401 — and at that point the host offers its own
+# /mcp flow instead. Probing here says it plainly and points back at /kabo-login or kabo-auth status.
+#
+# Since 2026-08-23 the probe goes through bin/kabo-headers.sh, the same shim the host points at in
+# .mcp.json: it finds node via $KABO_NODE, then ~/.kabo/node-path (the node recorded at sign-in), then PATH,
+# then common install locations, and execs the real helper. Using the same shim exercises exactly the
+# resolution path the host will take, and prints the node it resolved (--which). An older plugin without the
+# shim falls back to node <helper> --probe.
+# One thing this still cannot prove: a desktop app launched from the GUI may have a different PATH/HOME than
+# we do here — which is why the shim reads the recorded node-path and the closing text mentions KABO_NODE.
+verify_claude_mcp() {
+  local plugin_root="$1"
+  local helper="$plugin_root/bin/kabo-headers"
+  local shim="$plugin_root/bin/kabo-headers.sh"
+  if [ ! -f "$helper" ]; then
+    # An older plugin has no headersHelper: nothing to probe, so skip silently and let the closing
+    # text fall back to the "not verified" wording.
+    return 0
+  fi
+  local probe_err='' rc=0
+  if [ -f "$shim" ]; then
+    local resolved=''
+    resolved="$(sh "$shim" --which 2>/dev/null)" || resolved=''
+    if [ -n "$resolved" ]; then
+      info "The credential helper will run under $resolved (recorded for the desktop app, which is launched without your shell PATH; override with KABO_NODE)."
+    fi
+    printf '%s    sh %s --probe%s\n' "$C_DIM" "$shim" "$C_OFF"
+    # Under set -e a failing command substitution aborts the script outright, so the exit code is
+    # captured with || rather than read from $?.
+    probe_err="$(sh "$shim" --probe 2>&1 >/dev/null </dev/null)" || rc=$?
+  else
+    printf '%s    node %s --probe%s\n' "$C_DIM" "$helper" "$C_OFF"
+    probe_err="$(node "$helper" --probe 2>&1 >/dev/null </dev/null)" || rc=$?
+  fi
+  case "$rc" in
+    0)
+      CLAUDE_MCP_VERIFIED=1
+      info "Kabo accepted the sign-in: the MCP endpoint answered a request made with this credential."
+      ;;
+    1)
+      CLAUDE_MCP_VERIFIED=2
+      warn "Signed in, but the Kabo MCP endpoint rejected the credential."
+      [ -n "$probe_err" ] && warn "$probe_err"
+      warn "Run /kabo-login inside Claude Code to sign in again (or kabo-auth status if the endpoint differs)."
+      ;;
+    3)
+      # The probe never renews, so it cannot report the server's opinion; the credential is there and
+      # the first call will renew it. Use the "not verified" wording.
+      CLAUDE_MCP_VERIFIED=3
+      info "Signed in; the access token has already expired locally and will be renewed on first use."
+      ;;
+    *)
+      case "$probe_err" in
+        *KABO_NODE*)
+          # Exit code 2 from the shim itself: not a network problem but node not being found at all —
+          # and node is demonstrably on PATH here (offer_claude_signin gates on it), so the shim itself
+          # must be broken. Pass its own words through; they already spell out the fix.
+          CLAUDE_MCP_VERIFIED=3
+          warn "Signed in, but the credential helper could not start."
+          warn "$probe_err"
+          ;;
+        *)
+          CLAUDE_MCP_VERIFIED=3
+          warn "Signed in, but could not reach the Kabo MCP endpoint to confirm it (network error or timeout)."
+          [ -n "$probe_err" ] && warn "$probe_err"
+          warn "The credential is saved; Claude Code will verify it when the first session starts."
+          ;;
+      esac
+      ;;
+  esac
 }
 
 # ====== Stale direct MCP registration cleanup (Claude; destructive action only with consent) ======
@@ -600,6 +688,10 @@ fi
 
 CLAUDE_DONE=0
 CODEX_DONE=0
+# Result of the one real connection check made after signing in: 0 not verified (not signed in, or
+# dry-run), 1 the server accepted the credential, 2 the server rejected it (credential unusable),
+# 3 no verdict possible (network). Affects the closing text only, never the exit code.
+CLAUDE_MCP_VERIFIED=0
 
 # The order is fixed as claude → codex, matching the list above; a failure in the first aborts the
 # second (set -e), which is intended: a failed install followed by a block of success output is
@@ -629,19 +721,53 @@ printf '\n'
 if [ "$CLAUDE_DONE" -eq 1 ]; then
   printf '%sClaude Code%s\n' "$C_BLUE" "$C_OFF"
   if [ "$CLAUDE_SIGNED_IN" -eq 1 ]; then
-    # /reload-plugins and /mcp's reconnect subcommand exist only in the CLI; the desktop app
-    # has neither, and the only path that works there is a new session. This line must carry
-    # the same split as the not-signed-in branch, or desktop users get told to run a missing command.
-    printf '  You are signed in — that was the once-per-machine step. Start a `claude` session\n'
-    printf '  (or run /reload-plugins in a CLI session that is already open; on the desktop app\n'
-    printf '  that command does not exist — start a new session instead) and the tools are ready.\n'
+    # The first sentence must contain no slash command at all: desktop users follow it literally, and
+    # "start a new session" is the only activation path that works on every host — terminal, IDE
+    # extension, and the desktop app alike. Because a new session always works, the CLI's reconnect
+    # subcommand and /reload-plugins are demoted to a parenthetical second sentence and labelled CLI:
+    # people on the desktop app used to copy the slash command out of the first sentence and get taken
+    # over by the host's own OAuth prompt, which is exactly the loop this text exists to kill.
+    # The opening sentence branches on what the post-sign-in probe actually found (case rather than
+    # if/else: the tests pin the text between this branch and the first else). When the endpoint
+    # rejected the credential we must not say the tools are ready — the user would open a session,
+    # hit a 401, and be handed the host's own /mcp flow, so point back at the plugin's own commands.
+    case "$CLAUDE_MCP_VERIFIED" in
+      1)
+        printf '  You are signed in and the Kabo endpoint accepted the credential — that was the\n'
+        printf '  once-per-machine step. Start a new Claude Code session and the tools are ready.\n'
+        ;;
+      2)
+        printf '  Signed in, but the Kabo endpoint rejected the credential (see the warning above).\n'
+        printf '  Start a new Claude Code session and run /kabo-login to sign in again; if kabo-auth\n'
+        printf '  status shows a different endpoint, fix KABO_API_ENDPOINT first. Then start another\n'
+        printf '  new session and Kabo will work once the sign-in is fixed.\n'
+        ;;
+      3)
+        printf '  You are signed in (the endpoint could not be reached to confirm it just now; the\n'
+        printf '  first session re-checks). That was the once-per-machine step. Start a new Claude\n'
+        printf '  Code session and the tools are ready.\n'
+        ;;
+      *)
+        printf '  You are signed in — that was the once-per-machine step. Start a new Claude Code\n'
+        printf '  session and the tools are ready.\n'
+        ;;
+    esac
+    printf '  (Already in a Claude Code CLI session? /mcp reconnect plugin:kabo-alpha:kabo — CLI\n'
+    printf '  2.1.205+ — or /reload-plugins on an older CLI reconnects without a restart. The\n'
+    printf '  desktop app needs neither: a new session is the whole step there.)\n'
+    printf '  The desktop app is launched without your shell PATH, so the sign-in recorded the node\n'
+    printf '  it ran under (~/.kabo/node-path) for the app to use. If the app still reports Kabo as\n'
+    printf '  unavailable, set KABO_NODE=/path/to/node in its environment, or install node\n'
+    printf '  system-wide (or symlink it into /usr/local/bin); then quit and relaunch the desktop\n'
+    printf '  app and start a new session.\n'
   else
-    printf '  1. In a running CLI session run /reload-plugins, or start a new `claude` session.\n'
+    printf '  1. Start a new Claude Code session (any host: terminal, IDE extension, or the desktop\n'
+    printf '     app). Already in a CLI session? /reload-plugins loads the plugin in place.\n'
     printf '  2. Run /kabo-login. It prints a URL and an 8-character code; confirm the code in a\n'
     printf '     browser on any device. You only do this once per machine.\n'
-    printf '  3. If Kabo already showed as unavailable in that session, run\n'
-    printf '     /mcp reconnect plugin:kabo-alpha:kabo (Claude Code CLI 2.1.205+; older CLI:\n'
-    printf '     /reload-plugins). On the desktop app, start a new session instead.\n'
+    printf '  3. If Kabo is still unavailable in that session afterwards, start a new session.\n'
+    printf '     (CLI only: /mcp reconnect plugin:kabo-alpha:kabo — Claude Code CLI 2.1.205+ —\n'
+    printf '     or /reload-plugins on an older CLI reconnects without a restart.)\n'
   fi
 fi
 

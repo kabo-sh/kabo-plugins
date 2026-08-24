@@ -32,6 +32,7 @@ Report what it deleted:
 - `~/.kabo/credentials.lock`: the renewal lock, if one was left behind
 - `~/.kabo/skill-cache/`: downloaded and unpacked skills plus revocation markers
 - `~/.kabo/work/`: **the run work directories** — every past run's assembled snapshots, analyses and rendered reports on this machine. Name them separately rather than folding them into "the cache": a cleared cache costs a refetch, while this is output the user may have wanted to keep, and hearing about it later from an empty directory is worse than hearing it now
+- `~/.kabo/onboarding-profile.json`: **the onboarding profile** — the questionnaire answers, diagnosis, baseline and 90-day plan from `/kabo-start`. No secrets in it, but it is the account's own diagnosis, so it goes with the work directories; the next sign-in starts onboarding over
 - the pinned server signing keyset (fetched again next time)
 - the signature-verified meta-guidance cache
 - the buffered skill-verification failure records still awaiting relay

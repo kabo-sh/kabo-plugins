@@ -57,12 +57,15 @@ Why `bearer_token_env_var` was removed: Codex's `auth` already defaults to `oaut
 ## Usage
 
 - `$analyze`: the analysis entry point. Start the flow with whatever you want analyzed (channel / niche / specific video); internally it follows `meta-guidance`'s routing rules rather than a separate one.
+- `$kabo-start`: first-run onboarding — a tap-through questionnaire (22 questions in 6 groups, every popup via `request_user_input`), one real analysis of your own account, and a 90-day plan you commit to. `$kabo-login` hands off to it after a first successful sign-in, and `$analyze` with no arguments does too, when no profile exists yet. It is explicit-only (`allow_implicit_invocation: false`): the analysis takes real time and a meaningful share of your own quota (the figures live in one Estimates block in `skills/kabo-start/SKILL.md`), and the flow says so before asking consent. Skip or *Not now* is always honored without a second ask.
 - `$kabo-login`: opens Kabo's sign-in page in your browser so the web session is warm, then sends you to `codex mcp login kabo --scopes …` (the full command is in the Authorization section) for a one-click consent, then verifies with one real call. It never touches any credential itself.
 - `$kabo-logout`: revokes every device's authorization through the platform's `auth_revoke_all` tool, then clears the Codex skill cache, the run work directories, and trust material.
 
 `meta-guidance` is still there, but demoted to the **routing rules** that `$analyze` reads; it is no longer a user-facing command. It also triggers automatically when you simply state a creator research need.
 
 The Codex data root is `$KABO_CODEX_DATA`, defaulting to `~/.kabo/codex`. Downloaded skills live in that directory's `skill-cache/`, and everything a run produces — assembled snapshots, analyses, rendered reports — in `work/<run-id>/`, one directory per run, created `0700` with `0600` files.
+
+The onboarding profile `$kabo-start` writes lives at `<data root>/onboarding-profile.json` (`0600`; schema `kabo-onboarding-profile.v1`: your questionnaire answers, the diagnosis, the measured baseline with its coverage, the plan, and run provenance — no credentials). It is deliberately under the Codex data root and not `~/.kabo/` directly: the Claude variant keeps its own profile there, and both plugins can be installed on one machine. Delete the file to start onboarding over; `$kabo-logout` deletes it too, together with the run work directories.
 
 `work/` is a sibling of `skill-cache/` and never a child of it: `bin/skill-verify` recomputes the checksum of every non-dot file under a cached skill directory, so an output written there would make that skill fail `checksum_mismatch` on its next run. Run directories are reclaimed by `bin/skill-gc` on the same 14-day TTL as the cache (judged by the directory's own mtime, since there is no `.meta.json` under `work/`), and `$kabo-logout` deletes them outright — copy anything you want to keep out of `work/` first.
 

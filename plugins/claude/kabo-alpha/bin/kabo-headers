@@ -10,12 +10,23 @@
 // Probe mode (`--probe`, the only argument this file recognizes): instead of emitting the header,
 // send one authenticated no-op request to this deployment's MCP path and report whether the server
 // still accepts the credential. stdout is ALWAYS 0 bytes in probe mode; the outcome is the exit
-// code alone - 0 the server accepted it, 1 sign-in unusable (same two stderr sentences as below),
-// 2 could not tell (network, timeout, or any unexpected condition; never treated as a sign-out).
+// code plus one canonical stderr sentence per outcome - 0 the server accepted it, 1 sign-in
+// unusable (same two stderr sentences as below; in probe mode a refresh token whose
+// refresh_expires_at is already in the past is this verdict too, read off the file without a
+// request and without deleting anything), 2 could not tell (network, timeout, or any unexpected
+// condition; never treated as a sign-out), 3 the access token is expired locally (probe mode never
+// renews, so it cannot ask the server; the next default-mode call renews it - a credential in this
+// state is PRESENT and expected to work, which is why it must not share exit 2 with "unreachable").
+// Exit 3 exists in probe mode only; the default mode never returns it.
+// On exit 0 the probe may additionally print one informational stderr line when the refresh token
+// expires within REFRESH_WARN_MS (7 days): the date, so the user can re-sign-in before a session
+// starts with a dead credential. That line never changes the exit code.
 // The mode exists for the SessionStart hook: the default mode trusts the local expiry timestamp,
 // so a credential the server has stopped accepting (revoked family, consumed rotation) keeps being
 // served until every call 401s mid-session with no explanation - the probe surfaces that state at
-// session start instead, where the fix (/kabo-login) can be said out loud.
+// session start instead, where the fix (/kabo-login) can be said out loud. Until 2026-08-23 the
+// hook folded exit 2 and the locally-expired case into silence; now every outcome has a sentence,
+// so the hook can always say something true.
 //   exit 0  header emitted
 //   exit 1  the sign-in state is unusable, with two distinct stderr lines for its two situations:
 //           - no credential, or the refresh token is dead or expired -> the needs-login line,
@@ -45,7 +56,7 @@
 
 import fs from 'node:fs';
 import { apiEndpoint, readCredentials } from '../scripts/lib/common.js';
-import { accessTokenUsable, ensureFreshAccessToken } from '../scripts/lib/credentials.js';
+import { accessTokenUsable, ensureFreshAccessToken, msUntil } from '../scripts/lib/credentials.js';
 
 /** Recovery line for exit 1, needs-login case. It must name /kabo-login: this is the only text the stuck user gets. */
 const NEEDS_LOGIN =
@@ -61,6 +72,16 @@ const WRONG_ENDPOINT =
 /** Recovery line for exit 2. It must NOT send anyone through a login they do not need. */
 const UNREACHABLE =
   'Could not reach the Kabo authorization server (network error or timeout). Your sign-in is still valid; retry in a moment.';
+/**
+ * Recovery line for exit 3, probe mode only: the access token is expired by the local clock and
+ * the probe is forbidden from renewing it. Nothing is wrong - the next real request renews it - so
+ * the line must NOT name /kabo-login (that substring is the hook's signature for a sign-in verdict)
+ * and must not read like a network failure.
+ */
+const LOCALLY_EXPIRED =
+  'Kabo credential present; the access token has expired locally and will be renewed on first use (the probe never renews).';
+/** Refresh tokens expiring within this window get an informational line on exit 0 (probe mode only). */
+const REFRESH_WARN_MS = 7 * 24 * 60 * 60 * 1000;
 
 /**
  * Blocking write to a file descriptor.
@@ -104,6 +125,20 @@ try {
 
   const probeMode = process.argv.includes('--probe');
 
+  if (probeMode) {
+    // The refresh token's own expiry is read off the file, never sent anywhere. A dead refresh
+    // token is the needs-login verdict no matter what the access token looks like: the next
+    // renewal is guaranteed to fail. The default mode deletes the file in this state; the probe
+    // only reports (it must never mutate the credential - see the renewal rule below).
+    if (msUntil(cached.refresh_expires_at) <= 0) fail(1);
+    const refreshLeft = msUntil(cached.refresh_expires_at);
+    if (refreshLeft <= REFRESH_WARN_MS) {
+      // Date only (no token bytes, no timestamps precise enough to fingerprint a login).
+      const day = new Date(Date.now() + refreshLeft).toISOString().slice(0, 10);
+      writeFd(2, `Kabo sign-in expires on ${day}; run /kabo-login before then to stay signed in.\n`);
+    }
+  }
+
   let accessToken;
   if (accessTokenUsable(cached)) {
     accessToken = cached.access_token;
@@ -114,8 +149,9 @@ try {
     // credential, which is the very accident the probe exists to prevent. A locally stale access
     // token also is not the probe's question: the question is "does the server still accept a
     // credential that LOOKS fresh here", and a stale one will be renewed by the next default-mode
-    // call anyway. Exit 2 (could not tell), silently - nobody reads probe stderr on exit 2.
-    process.exit(2);
+    // call anyway. Exit 3 with its own sentence: this is a present, expected-to-work credential,
+    // and the hook must be able to say so rather than lumping it with "unreachable" (exit 2).
+    fail(3, LOCALLY_EXPIRED);
   } else {
     const resolved = await ensureFreshAccessToken(endpoint);
     if (resolved.status === 'needs_login') fail(1);
@@ -139,6 +175,7 @@ try {
         signal: AbortSignal.timeout(3500),
       });
       if (response.status === 401) fail(1);
+      writeFd(2, 'Kabo sign-in accepted by the server.\n');
       process.exit(0);
     } catch {
       fail(2);

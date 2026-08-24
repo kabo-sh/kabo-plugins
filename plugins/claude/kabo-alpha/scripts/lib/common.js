@@ -40,7 +40,7 @@ import os from 'node:os';
 import crypto from 'node:crypto';
 import { fileURLToPath } from 'node:url';
 
-export const PLUGIN_VERSION = '0.15.0';
+export const PLUGIN_VERSION = '0.17.0';
 export const SUPPORTED_API_VERSION = '1.0.0';
 export const DEFAULT_ENDPOINT = 'https://kabo.sh';
 export const CACHE_TTL_MS = 14 * 24 * 60 * 60 * 1000; // skill cache TTL: 14 days
@@ -101,6 +101,15 @@ export function workRoot() {
 }
 
 /**
+ * The onboarding profile `/kabo-start` writes (schema kabo-onboarding-profile.v1): questionnaire
+ * answers, the diagnosis, the baseline and the 90-day plan. No secrets, but it is the account's own
+ * diagnosis on disk, so logout removes it along with the run work directories (decided 2026-08-23).
+ */
+export function onboardingProfilePath() {
+  return path.join(dataRoot(), 'onboarding-profile.json');
+}
+
+/**
  * Where the plugin install root is recorded.
  *
  * The SKILL.md of creator-research skills keeps the upstream delivery verbatim, and it refers to
@@ -115,6 +124,62 @@ export function workRoot() {
  */
 export function pluginRootMarkerPath() {
   return path.join(dataRoot(), 'plugin-root');
+}
+
+/**
+ * Where the node binary that ran `kabo-auth login` is recorded (one absolute path, one line).
+ *
+ * Read by the two POSIX sh entry points the host runs directly - bin/kabo-headers.sh (the
+ * headersHelper) and scripts/hooks/session-start.sh (the SessionStart hook) - through
+ * scripts/lib/node-resolve.sh. A GUI-launched host (the desktop app) does not inherit the shell
+ * PATH, so nvm/volta/Homebrew node is invisible to it; a node that just completed a sign-in is a
+ * node that exists, so the sign-in records it here and the shims read it back. Same directory as the
+ * credential, deliberately NOT a field inside credentials.json: the shims must never open that file.
+ * Not a secret, but it goes with the sign-in it was recorded by - logout removes it, and the next
+ * login (or the next SessionStart that finds it missing) writes it again.
+ */
+export function nodePathMarkerPath() {
+  return path.join(dataRoot(), 'node-path');
+}
+
+/**
+ * Record process.execPath in the node-path marker: 0600, written to a temp file and renamed, like
+ * the credential itself. Best-effort - failing to record it only costs the desktop app a shortcut
+ * (the shims fall back to PATH and the usual install locations), so nothing here may throw.
+ * No subprocess: kabo-auth's single permitted spawn is the browser opener.
+ */
+export function writeNodePathMarker() {
+  try {
+    const dir = dataRoot();
+    ensurePrivateDir(dir);
+    const tmp = path.join(dir, `node-path.tmp-${process.pid}`);
+    try { fs.rmSync(tmp, { force: true }); } catch { /* the open below reports anything real */ }
+    const fd = fs.openSync(tmp, 'w', 0o600);
+    try {
+      fs.writeFileSync(fd, `${process.execPath}\n`);
+    } finally {
+      fs.closeSync(fd);
+    }
+    try {
+      fs.renameSync(tmp, nodePathMarkerPath());
+    } catch (err) {
+      try { fs.rmSync(tmp, { force: true }); } catch { /* best effort */ }
+      throw err;
+    }
+    fs.chmodSync(nodePathMarkerPath(), 0o600);
+  } catch {
+    /* best effort, see above */
+  }
+}
+
+/** The recorded node path (first line, trimmed), or null when nothing usable is recorded. */
+export function readNodePathMarker() {
+  try {
+    const first = fs.readFileSync(nodePathMarkerPath(), 'utf8').split('\n', 1)[0].trim();
+    return first || null;
+  } catch {
+    return null;
+  }
 }
 
 /** Cache location of the server signing public key, TOFU: pinned on first fetch */

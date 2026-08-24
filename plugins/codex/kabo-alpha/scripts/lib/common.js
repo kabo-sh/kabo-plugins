@@ -17,7 +17,7 @@ import path from 'node:path';
 import os from 'node:os';
 import crypto from 'node:crypto';
 import { fileURLToPath } from 'node:url';
-export const PLUGIN_VERSION = '0.15.0';
+export const PLUGIN_VERSION = '0.17.0';
 export const SUPPORTED_API_VERSION = '1.0.0';
 export const DEFAULT_ENDPOINT = 'https://kabo.sh';
 export const CACHE_TTL_MS = 14 * 24 * 60 * 60 * 1000; // skill cache TTL: 14 days
@@ -65,6 +65,15 @@ export function cacheRoot() {
  */
 export function workRoot() {
   return path.join(dataRoot(), 'work');
+}
+
+/**
+ * The onboarding profile `$kabo-start` writes (schema kabo-onboarding-profile.v1): questionnaire
+ * answers, the diagnosis, the baseline and the 90-day plan. No secrets, but it is the account's own
+ * diagnosis on disk, so logout removes it along with the run work directories (decided 2026-08-23).
+ */
+export function onboardingProfilePath() {
+  return path.join(dataRoot(), 'onboarding-profile.json');
 }
 /**
  * Legacy single-key cache location.

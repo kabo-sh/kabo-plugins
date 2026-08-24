@@ -1,6 +1,6 @@
 ---
 name: kabo-logout
-description: Use explicitly when the user asks to log out of Kabo or revoke its access. Revokes every OAuth grant the account has issued to Kabo through the platform's auth_revoke_all tool, then clears the local skill cache and trust material. There is no credentials file on this machine to delete.
+description: Use explicitly when the user asks to log out of Kabo or revoke its access. Revokes every OAuth grant the account has issued to Kabo through the platform's auth_revoke_all tool, then clears the local skill cache, run outputs, onboarding profile and trust material. There is no credentials file on this machine to delete.
 ---
 
 # Log out of Kabo
@@ -30,7 +30,7 @@ Resolve the plugin root two levels up from this `SKILL.md` path, then run:
 <plugin-root>/bin/kabo-auth logout
 ```
 
-Report what it cleared: the Codex skill cache (including revocation markers), the **run work directories** under `<data root>/work/`, the pinned server public keyset, the meta-guidance cache, and the verification failure events still awaiting relay. There is no credentials file on this machine — it was removed wholesale in 0.9.0.
+Report what it cleared: the Codex skill cache (including revocation markers), the **run work directories** under `<data root>/work/`, the **onboarding profile** `<data root>/onboarding-profile.json` (the questionnaire answers, diagnosis, baseline and 90-day plan from `$kabo-start` — no secrets, but the account's own diagnosis, so it goes with the work directories; the next sign-in starts onboarding over), the pinned server public keyset, the meta-guidance cache, and the verification failure events still awaiting relay. There is no credentials file on this machine — it was removed wholesale in 0.9.0.
 
 Name the work directories explicitly rather than folding them into "the cache". A cache being cleared costs a refetch; the work directories hold the assembled snapshots, analyses and rendered reports of every past run on this machine, and they are gone. A user who is only told "cache cleared" learns about that loss later, from an empty directory.
 

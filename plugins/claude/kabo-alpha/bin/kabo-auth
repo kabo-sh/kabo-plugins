@@ -29,16 +29,20 @@
 //   kabo-auth login [--no-open]  sign in from the terminal (prints the URL and the code, then waits)
 //   kabo-auth login --start      print the URL and code, record the pending sign-in, return at once
 //   kabo-auth login --wait       wait for approval of the pending sign-in (re-runnable; resumes)
+//   --quiet-next-steps           (login / --wait) print only "Authorized." - no reconnect hint; for
+//                                callers that print their own next steps (the installer). Also
+//                                KABO_AUTH_QUIET_NEXT_STEPS=1
 //   kabo-auth status             what this machine holds, and how long it is good for (never a token)
-//   kabo-auth logout             delete the local credential, pending sign-in state, skill cache, work dirs, keyset, guidance, buffer
+//   kabo-auth logout             delete the local credential, pending sign-in state, skill cache, work dirs, onboarding profile, keyset, guidance, buffer
 
 import fs from 'node:fs';
 import path from 'node:path';
 import { spawn } from 'node:child_process';
 import {
-  apiEndpoint, cacheRoot, dataRoot, ensurePrivateDir, workRoot, publicKeyPaths, guidanceCachePaths,
+  apiEndpoint, cacheRoot, dataRoot, ensurePrivateDir, workRoot, onboardingProfilePath, publicKeyPaths, guidanceCachePaths,
   pendingReportsPath, credentialsPath, credentialsLockPath, readCredentials, writeCredentials,
   deleteCredentials, acquireCredentialLock, releaseCredentialLock, safeBrowserUrl,
+  nodePathMarkerPath, writeNodePathMarker, readNodePathMarker,
 } from '../scripts/lib/common.js';
 import {
   credentialsFromTokens, discoverOAuthEndpoints, msUntil, redeemDeviceCode, requestDeviceCode,
@@ -46,9 +50,9 @@ import {
 } from '../scripts/lib/credentials.js';
 
 const USAGE = `Usage:
-  kabo-auth login [--no-open]
+  kabo-auth login [--no-open] [--quiet-next-steps]
   kabo-auth login --start [--no-open]
-  kabo-auth login --wait
+  kabo-auth login --wait [--quiet-next-steps]
   kabo-auth status
   kabo-auth logout
 
@@ -57,9 +61,12 @@ Description:
           when it can, and waits for you to confirm the code (any device works - the confirmation
           page does not have to be on this machine). --no-open prints and waits without launching
           anything. The credential is written to ${credentialsPath()} with mode 0600. Once it
-          succeeds, /mcp reconnect plugin:kabo-alpha:kabo activates the tools in a running
-          session - no restart needed (Claude Code CLI 2.1.205+; older CLI: /reload-plugins;
-          on the desktop app these commands do not exist - start a new session instead).
+          succeeds, a new Claude Code session has the Kabo tools on every host (desktop app
+          included); a Claude Code CLI session that is already open can instead run
+          /mcp reconnect plugin:kabo-alpha:kabo (CLI 2.1.205+; older CLI: /reload-plugins) to
+          reconnect without a restart.
+          --quiet-next-steps (or KABO_AUTH_QUIET_NEXT_STEPS=1) leaves those next-steps lines
+          out - for a caller such as the installer that prints its own.
           --start does everything up to the waiting: it prints the URL and the code, records the
           pending sign-in on disk, and returns immediately. Approve the code, then run:
           kabo-auth login --wait. Re-running --start while a sign-in is pending re-prints the
@@ -70,8 +77,8 @@ Description:
   status  whether this machine is signed in, to which deployment, and how long that is good for.
           It never prints a token, not even a fragment of one
   logout  deletes the local credential and any pending sign-in state, and clears the skill cache,
-          the run work directories, the pinned server keyset, the cached meta-guidance, and the
-          verification failures awaiting relay
+          the run work directories, the onboarding profile, the pinned server keyset, the cached
+          meta-guidance, and the verification failures awaiting relay
           (to revoke platform-side access on every device, use /kabo-logout, which calls the
           platform's auth_revoke_all over the authorized MCP connection first)`;
 
@@ -376,7 +383,7 @@ const PERSIST_LOCK_MAX_WAIT_MS = 8000;
  * --wait deletes its pending state there, so a crash between the two steps leaves at worst a stale
  * pending file (harmless - its device code is already consumed), never a stored-then-lost credential.
  */
-async function persistAndAnnounce({ endpoint, issuer, tokenEndpoint, tokens, beforeAnnounce = null }) {
+async function persistAndAnnounce({ endpoint, issuer, tokenEndpoint, tokens, beforeAnnounce = null, quietNextSteps = false }) {
   const credentials = credentialsFromTokens({ endpoint, issuer, tokenEndpoint, tokens });
   if (!credentials.refresh_token) {
     // The one silent failure this flow can produce: no refresh token means the scope did not carry
@@ -398,30 +405,41 @@ async function persistAndAnnounce({ endpoint, issuer, tokenEndpoint, tokens, bef
   if (writeError) {
     die(2, `Signed in, but the credential could not be written to ${credentialsPath()} (${writeError?.code || 'write failed'}). Fix the permissions on that directory and run /kabo-login again.`);
   }
+  // The node that completed this sign-in is a node that exists: record it (<data root>/node-path,
+  // 0600, next to the credential and never inside it) for the sh shims the host runs directly -
+  // bin/kabo-headers.sh and scripts/hooks/session-start.sh. A GUI-launched desktop app does not
+  // inherit the shell PATH, so without this line an nvm/volta/Homebrew node is invisible to it and
+  // the helper never starts (S4 of the 2026-08-23 desktop investigation). Best-effort by design.
+  writeNodePathMarker();
   if (beforeAnnounce) beforeAnnounce();
 
   // Success. Not one character of the token appears here, or anywhere else outside the file.
   //
-  // The advice is reconnect, not restart: the host re-runs the headersHelper on every connection
-  // (session start, reconnect, and a one-shot retry after a tool call answers 401/403), so the
-  // reconnect picks the fresh credential up in the running session. The name must be the full
+  // The first line is host-agnostic on purpose: a new session re-runs the headersHelper on every
+  // host (terminal, IDE extension, desktop app), and nothing in this process can tell which one the
+  // user is in. The reconnect is the second line and labeled CLI: the host re-runs the helper on
+  // every connection (session start, reconnect, and a one-shot retry after a 401/403), so in an open
+  // CLI session it picks the fresh credential up without a restart. Leading with it was the desktop
+  // bug - desktop users copied a slash command as the first instruction. The name must be the full
   // registered one, plugin:kabo-alpha:kabo - a reconnect naming the bare `kabo` looks right and
-  // greps right, but the host answers it with "There's no MCP server named ..." at the one moment
-  // the user is following this copy. Only the reconnect subcommand needs CLI 2.1.205; CLIs
-  // on 2.1.195-2.1.204 still have /reload-plugins, which reconnects plugin servers and re-runs the
-  // helper just the same. The desktop app has neither command, so there - and only there - the
-  // advice is a new session; sending CLI users to one would reinstate the very restart this rework
-  // removed.
-  console.log('\nAuthorized. To activate the Kabo tools in a running Claude Code session, run:');
-  console.log('\n    /mcp reconnect plugin:kabo-alpha:kabo\n');
-  console.log('(Claude Code CLI 2.1.205 or newer; on an older CLI run /reload-plugins instead.)');
-  console.log('Reconnecting re-runs the credential helper, so no restart is needed. On the Claude');
-  console.log('Code desktop app these commands do not exist - start a new session there instead.');
+  // greps right, but the host answers it with "There's no MCP server named ...". Only the reconnect
+  // subcommand needs CLI 2.1.205; CLIs on 2.1.195-2.1.204 still have /reload-plugins, which
+  // reconnects plugin servers and re-runs the helper just the same. "CLI" is literal, not caution:
+  // the desktop app refuses even the argument form ("Reconnect, enable, and disable aren't
+  // available in this session.", field-tested 2026-08-24) - there the first line is the whole advice.
+  //
+  // --quiet-next-steps / KABO_AUTH_QUIET_NEXT_STEPS=1 drops both lines: the installer prints its own
+  // next steps at the end, and showing them twice in one terminal is what made users skim past both.
+  console.log('\nAuthorized. Open a new Claude Code session and the Kabo tools are ready.');
+  if (!quietNextSteps) {
+    console.log('Already in a CLI session? /mcp reconnect plugin:kabo-alpha:kabo (Claude Code CLI 2.1.205+)');
+    console.log('or /reload-plugins (older CLI) reconnects without a restart.');
+  }
   process.exit(0);
 }
 
 /** The blocking sign-in: --start and --wait in one process, for a human sitting at the terminal */
-async function cmdLogin(noOpen) {
+async function cmdLogin(noOpen, quietNextSteps) {
   const { endpoint, discovered, device, verifyUrl, userCode } = await beginDeviceSignIn();
 
   announceVerification({ verifyUrl, userCode, noOpen });
@@ -451,6 +469,7 @@ async function cmdLogin(noOpen) {
     issuer: discovered.issuer,
     tokenEndpoint: discovered.token_endpoint,
     tokens: result.tokens,
+    quietNextSteps,
   });
 }
 
@@ -519,7 +538,7 @@ async function cmdLoginStart(noOpen) {
 
 // ---------------------------------------------------------------- login --wait
 
-async function cmdLoginWait() {
+async function cmdLoginWait(quietNextSteps) {
   const endpoint = apiEndpoint();
   const pending = readDeviceLoginState();
   if (!pending) {
@@ -587,6 +606,7 @@ async function cmdLoginWait() {
     tokenEndpoint: pending.token_endpoint,
     tokens: result.tokens,
     beforeAnnounce: () => deleteDeviceLoginState(pending.device_code),
+    quietNextSteps,
   });
 }
 
@@ -612,6 +632,9 @@ function cmdStatus() {
   console.log(`  access expires: ${relative(credentials.access_expires_at)} (renewed automatically)`);
   console.log(`  sign-in expires: ${relative(credentials.refresh_expires_at)}`);
   console.log(`  credential:     ${credentialsPath()} (mode 0600)`);
+  // The node the sh shims will run the helper under when the host's PATH has none (desktop app).
+  const recordedNode = readNodePathMarker();
+  console.log(`  node for helper: ${recordedNode ?? `(not recorded at ${nodePathMarkerPath()}; the shims fall back to PATH and the usual install locations - or set KABO_NODE)`}`);
   process.exit(0);
 }
 
@@ -641,9 +664,15 @@ function cmdLogout() {
     // after it because logout means "clear this machine's Kabo data and trust material": leaving
     // them behind ends the flow with the account's own diagnosis still sitting on disk.
     { path: workRoot(), recursive: true, label: 'run work directories' },
+    // The onboarding profile holds no secrets, but it is the account's own diagnosis, baseline and
+    // 90-day plan - the same kind of output as the work directories, so it goes with them.
+    { path: onboardingProfilePath(), recursive: false, label: 'onboarding profile' },
     ...publicKeyPaths().map((p) => ({ path: p, recursive: false, label: 'server public keyset cache' })),
     ...guidanceCachePaths().map((p) => ({ path: p, recursive: false, label: 'meta-guidance cache' })),
     { path: pendingReportsPath(), recursive: false, label: 'verification failure records awaiting relay' },
+    // The node path recorded at sign-in is not a secret, but it belongs to the sign-in that wrote it:
+    // logout means "this machine's Kabo sign-in is gone", and the next login records it afresh.
+    { path: nodePathMarkerPath(), recursive: false, label: 'recorded node path' },
   ]) {
     try {
       if (fs.existsSync(target.path)) cleared += 1;
@@ -655,7 +684,7 @@ function cmdLogout() {
   // same way.
   deleteCredentials();
   deleteDeviceLoginState();
-  console.log(`Local Kabo data cleared (credential, pending sign-in, skill cache, run work directories, server public keyset, meta-guidance cache, relay records${cleared === 0 ? '; it was already empty' : ''}).`);
+  console.log(`Local Kabo data cleared (credential, pending sign-in, skill cache, run work directories, onboarding profile, server public keyset, meta-guidance cache, relay records${cleared === 0 ? '; it was already empty' : ''}).`);
   console.log('This machine can no longer call Kabo. Access elsewhere is unaffected: revoking on every device is what /kabo-logout does first, through the platform\'s auth_revoke_all tool.');
 }
 
@@ -672,20 +701,22 @@ if (!cmd || cmd === '--help' || cmd === '-h' || cmd === 'help') {
   // --wiat') falls through into the blocking login: it runs discovery, leases a fresh device code -
   // silently voiding a pending --start another session may be mid-approving - and then holds the
   // terminal for up to 15 minutes. A typo must cost a usage line, never a network side effect.
-  const unknown = rest.filter((arg) => !['--start', '--wait', '--no-open'].includes(arg));
+  const unknown = rest.filter((arg) => !['--start', '--wait', '--no-open', '--quiet-next-steps'].includes(arg));
   if (unknown.length > 0) {
     die(1, `Unknown option for login: ${unknown.join(' ')}\n\n${USAGE}`);
   }
   const start = rest.includes('--start');
   const wait = rest.includes('--wait');
+  // Either spelling: the installer passes the flag, a wrapper that cannot edit argv sets the env.
+  const quietNextSteps = rest.includes('--quiet-next-steps') || process.env.KABO_AUTH_QUIET_NEXT_STEPS === '1';
   if (start && wait) {
     die(1, `--start and --wait are the two halves of one sign-in and cannot be combined.\n\n${USAGE}`);
   } else if (wait) {
-    await cmdLoginWait();
+    await cmdLoginWait(quietNextSteps);
   } else if (start) {
     await cmdLoginStart(rest.includes('--no-open'));
   } else {
-    await cmdLogin(rest.includes('--no-open'));
+    await cmdLogin(rest.includes('--no-open'), quietNextSteps);
   }
 } else if (cmd === 'status') {
   cmdStatus();

@@ -40,6 +40,25 @@
 // carry nothing. The Codex variant deliberately has neither line - its sign-in is the host's own
 // OAuth (codex mcp login kabo), and there is no plugin-held credential file to check or probe.
 //
+// Third (2026-08-23), the hook checks that the HOST can run the credential helper at all. Since
+// this change the host spawns bin/kabo-headers.sh, a POSIX sh shim that finds a node binary the
+// GUI-launched desktop app cannot see on its PATH (scripts/lib/node-resolve.sh) and execs the real
+// helper with it; this hook is itself started through the same resolver (session-start.sh). Here it
+// runs `bin/kabo-headers.sh --which` in its own environment - the environment the host's helper
+// spawn will get - and when the shim answers "no node" (exit 2) that sentence becomes its own
+// systemMessage line, reported even when signed out and never folded into the probe's "could not
+// tell": the two states have different fixes, and the first sign of this one used to be the host's
+// 401 prompt. The hook also records process.execPath into <data root>/node-path when the marker is
+// missing - a hook that is running has, by definition, a node that works.
+//
+// Fourth (2026-08-23), the probe is never silent any more. Exit 0, exit 2, the locally-expired
+// access token (now the probe's own exit 3) and a timeout used to collapse into "say nothing", so
+// on a network blip or after a day away the first signal was the host's 401 prompt - on the
+// desktop app, the host's own OAuth flow, which must never be answered for kabo. Every outcome
+// now has one neutral sentence, and the uncertain ones say "not a sign-out" out loud. The hook
+// also names the host (from CLAUDE_CODE_ENTRYPOINT, when set) and the registered MCP server name,
+// so the activation wording the model gives after /kabo-login fits the host.
+//
 // WARNING - hard rule: this script must not read or report the prompt, tool_input, tool_response, or
 //   the contents pointed at by transcript_path; neither request sends any local data.
 // Any exception exits 0; the session is never blocked.
@@ -50,6 +69,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import {
   apiEndpoint, cacheRoot, credentialsPath, disabledMarkerPath, ensurePrivateDir, guidanceCachePath, pluginRootMarkerPath,
+  nodePathMarkerPath, writeNodePathMarker,
   readStdinJson, readJsonSilent, writeJsonSilent, fetchJsonSilent,
   isSafeName, compareSemver, ensureVerified, verifyGuidanceEnvelope,
   readAndPrunePendingReports, PENDING_REPORT_INJECT_MAX,
@@ -59,18 +79,27 @@ import {
 const REQUEST_TIMEOUT_MS = 3000; // session startup path: better to come back empty-handed than to hold the user up
 
 // The probe child gets a little more than REQUEST_TIMEOUT_MS: its own in-child request timeout is
-// 3.5s and spawning costs some. A probe that overruns is killed and treated as "could not tell" -
-// silence, never a sign-out message. Sized so the whole hook still finishes well inside the host's
-// hook budget even when the two GETs run the full 3s in parallel.
+// 3.5s and spawning costs some. A probe that overruns is killed and reported as "timed out" - a
+// could-not-tell, never a sign-out message. Sized so the whole hook still finishes well inside the
+// host's hook budget even when the two GETs run the full 3s in parallel.
 const PROBE_TIMEOUT_MS = 4500;
+
+/** The one substring that marks a probe stderr line as a sign-in verdict (see probeCredential). */
+const VERDICT_SIGNATURE = '/kabo-login';
+/** Prefix of the probe's informational "refresh token expires soon" line (exit 0 only). */
+const EXPIRES_SOON_PREFIX = 'Kabo sign-in expires on ';
 
 /**
  * Ask the server whether it still accepts this machine's credential, without a single token byte
  * entering this process: the check lives in bin/kabo-headers (`--probe`), which reports exit 0
- * (accepted), 1 (sign-in unusable; its stderr carries the canonical recovery sentence), or 2
- * (could not tell). Resolves to the sentence to surface, or null for "say nothing" - exit 0, exit
- * 2, spawn failure, and timeout all deliberately collapse to null: the only state worth a line at
- * session start is "the server said no", everything uncertain stays quiet.
+ * (accepted), 1 (sign-in unusable; its stderr carries the canonical recovery sentence), 2 (could
+ * not reach the server), or 3 (access token expired locally; renewed on first use). Resolves to
+ * the one-line status to surface - NEVER null. Until 2026-08-23 exit 0, exit 2, exit 3 (then
+ * folded into 2), spawn failure and timeout all collapsed to silence, so the first sign of a
+ * network blip or an expired token was the host's own 401 prompt; every outcome now has its own
+ * neutral sentence, and the uncertain ones say explicitly that they are not a sign-out.
+ * Lines are chosen by exit code, not by position: on exit 0 the child may print an informational
+ * "expires on <date>" line, and on exit 1 that line can precede the verdict.
  */
 function probeCredential(pluginRoot) {
   return new Promise((resolve) => {
@@ -99,26 +128,75 @@ function probeCredential(pluginRoot) {
         } catch {
           /* already gone */
         }
-        done(null);
+        done('Kabo sign-in: could not be verified (the credential probe timed out; not a sign-out - the first tool call re-checks)');
       }, PROBE_TIMEOUT_MS);
       child.on('error', () => {
         clearTimeout(timer);
-        done(null);
+        done('Kabo sign-in: could not be verified (the credential probe could not start; not a sign-out)');
       });
       child.on('close', (code) => {
         clearTimeout(timer);
-        if (code !== 1) return done(null);
-        // Exit 1 alone is not proof of a sign-in verdict: node itself exits 1 on a crashed child
-        // (syntax error, missing module), with a stack trace on stderr. Both canonical exit-1
-        // sentences name /kabo-login, so that substring is the signature that the child spoke,
-        // not crashed - anything else is uncertainty and stays silent.
-        const sentence = stderr.split('\n', 1)[0].trim();
-        done(sentence.includes('/kabo-login') ? sentence : null);
+        const lines = stderr.split('\n').map((l) => l.trim()).filter(Boolean);
+        const expiresSoon = lines.find((l) => l.startsWith(EXPIRES_SOON_PREFIX)) || null;
+        if (code === 0) {
+          return done(expiresSoon ? `Kabo sign-in accepted by the server; ${expiresSoon}` : 'Kabo sign-in accepted by the server');
+        }
+        if (code === 1) {
+          // Exit 1 alone is not proof of a sign-in verdict: node itself exits 1 on a crashed child
+          // (syntax error, missing module), with a stack trace on stderr. Both canonical exit-1
+          // sentences name /kabo-login, so that substring is the signature that the child spoke,
+          // not crashed - anything else is uncertainty, said as such.
+          const verdict = lines.find((l) => l.includes(VERDICT_SIGNATURE));
+          return done(verdict || 'Kabo sign-in: could not be verified (the credential probe failed; not a sign-out)');
+        }
+        if (code === 2) {
+          return done('Kabo sign-in: could not be verified - the Kabo server was unreachable (network error or timeout; not a sign-out)');
+        }
+        if (code === 3) {
+          return done('Kabo sign-in: credential present, access token expired locally - it will be renewed on first use');
+        }
+        done(`Kabo sign-in: could not be verified (credential probe exit ${code}; not a sign-out)`);
       });
     } catch {
-      done(null);
+      done('Kabo sign-in: could not be verified (the credential probe could not start; not a sign-out)');
     }
   });
+}
+
+/**
+ * The bundled MCP server's registered name. Static on purpose: the host derives it from the
+ * marketplace/plugin/server names (plugin:<plugin>:<server>), and a reconnect naming only `kabo`
+ * is answered with "There's no MCP server named ...". Said in every session so the model never
+ * has to guess it.
+ */
+const KABO_MCP_SERVER_NAME = 'plugin:kabo-alpha:kabo';
+
+/**
+ * Which host is this session running in? The host sets CLAUDE_CODE_ENTRYPOINT before spawning the
+ * engine and passes it through to hooks (it is only stripped from nested claude sessions). It is
+ * undocumented - the env-vars page does not list it; only the OTEL `app.entrypoint` attribute and
+ * the desktop-ownership note ("claude-desktop", "claude-desktop-3p", "local-agent") document its
+ * values - so it is used for exactly one thing: choosing activation copy (whether `/reload-plugins`
+ * is worth mentioning, whether "new session" means Cmd/Ctrl+N). Never a gate on behaviour. No
+ * engine version is available to a hook (the `claude` on PATH is not the desktop's engine), so
+ * the CLI line carries none. Returns null when the variable is unset or unfamiliar: then the hook
+ * says nothing about the host rather than guessing from TERM/tty, which hooks never have anyway.
+ *
+ * The desktop line calls the reconnect CLI-only as a field-tested fact, not caution: on the desktop
+ * app even the argument form `/mcp reconnect plugin:kabo-alpha:kabo` is refused with "Reconnect,
+ * enable, and disable aren't available in this session." (tested 2026-08-24), although the engine
+ * itself supports it from 2.1.205 - the thin client does not dispatch it.
+ */
+function hostLine() {
+  const entry = typeof process.env.CLAUDE_CODE_ENTRYPOINT === 'string' ? process.env.CLAUDE_CODE_ENTRYPOINT.trim() : '';
+  if (!entry) return null;
+  if (entry === 'claude-desktop' || entry === 'claude-desktop-3p' || entry === 'remote_desktop') {
+    return 'Host: Claude Code desktop app (activate Kabo tools with a new session, Cmd/Ctrl+N; /mcp reconnect plugin:kabo-alpha:kabo and /reload-plugins are CLI-only and do not apply here - never the host\'s own Authenticate prompt)';
+  }
+  if (entry === 'claude-vscode') return 'Host: Claude Code IDE extension';
+  if (entry === 'cli') return 'Host: Claude Code CLI';
+  if (entry.startsWith('sdk-')) return `Host: Claude Code SDK (${entry})`;
+  return null; // unfamiliar value: no guess
 }
 
 /**
@@ -139,6 +217,92 @@ function recordPluginRoot() {
   } catch {
     // Failing to write it only costs the runner a shortcut; it must not affect the session
   }
+  // Self-healing for sign-ins that predate the node-path marker: a hook that is running has a node
+  // that works, so record it for the sh shims. Only when missing - login's own record wins.
+  try {
+    if (!fs.existsSync(nodePathMarkerPath())) writeNodePathMarker();
+  } catch {
+    /* same rule: never affects the session */
+  }
+}
+
+// The shim only does file tests before its exec; on --which it prints one path. Well under the
+// probe budget, and a hung sh means "could not tell", which stays silent (the probe line covers
+// the credential side; this check only ever speaks on a definite "no node").
+const WHICH_TIMEOUT_MS = 1500;
+
+/**
+ * Can the host run the credential helper at all? The host spawns bin/kabo-headers.sh, which must
+ * find a node binary in the host's environment - which is this process's environment. Runs the
+ * shim in `--which` mode (prints the node it would use, never touches the credential file) and
+ * resolves to a sentence when the answer is a definite no, or null for "fine / could not tell":
+ *   - shim or helper present but not executable  -> its own sentence (chmod is the fix)
+ *   - shim exits 2                                -> the shim's first stderr line, the canonical
+ *                                                    "no node" sentence with the fix in it
+ *   - exit 0, spawn error, timeout, anything else -> null
+ * Skipped on native Windows: there is no POSIX sh to run the shim with, and the host runs the helper
+ * through node on PATH (documented limitation).
+ */
+function checkHelperRunnable(pluginRoot) {
+  if (process.platform === 'win32') return Promise.resolve(null);
+  const shim = path.join(pluginRoot, 'bin', 'kabo-headers.sh');
+  const helper = path.join(pluginRoot, 'bin', 'kabo-headers');
+  // The shim must be executable (the host spawns it); the JS helper only needs to be readable - the
+  // shim runs it as `node bin/kabo-headers`, so a lost exec bit on the JS file (zip/marketplace copy)
+  // is not a fault and must not be nagged about with a wrong fix.
+  for (const [file, mode] of [[shim, fs.constants.X_OK], [helper, fs.constants.R_OK]]) {
+    try {
+      fs.accessSync(file, mode);
+    } catch (err) {
+      if (err && err.code === 'ENOENT') return Promise.resolve(null); // not this layout; nothing to say
+      return Promise.resolve(mode === fs.constants.X_OK
+        ? `Kabo's credential helper is not executable (run: chmod +x "${file}"); Kabo tools will not connect until it is`
+        : `Kabo's credential helper is not readable (check permissions on "${file}"); Kabo tools will not connect until it is`);
+    }
+  }
+  return new Promise((resolve) => {
+    let settled = false;
+    const done = (value) => {
+      if (!settled) {
+        settled = true;
+        resolve(value);
+      }
+    };
+    try {
+      const child = spawn('/bin/sh', [shim, '--which'], { stdio: ['ignore', 'pipe', 'pipe'], env: process.env });
+      let stdout = '';
+      let stderr = '';
+      child.stdout.on('data', (chunk) => {
+        if (stdout.length < 1024) stdout += chunk.toString('utf8');
+      });
+      child.stderr.on('data', (chunk) => {
+        if (stderr.length < 1024) stderr += chunk.toString('utf8');
+      });
+      const timer = setTimeout(() => {
+        try {
+          child.kill('SIGKILL');
+        } catch {
+          /* already gone */
+        }
+        done(null);
+      }, WHICH_TIMEOUT_MS);
+      child.on('error', () => {
+        clearTimeout(timer);
+        done(null);
+      });
+      child.on('close', (code) => {
+        clearTimeout(timer);
+        if (code === 0 && stdout.trim()) return done(null);
+        if (code !== 2) return done(null);
+        // Exit 2 is the shim's own "no node" verdict, and its first stderr line names the fix. It
+        // deliberately never contains /kabo-login, so it cannot be mistaken for a sign-in verdict.
+        const sentence = stderr.split('\n', 1)[0].trim();
+        done(sentence && !sentence.includes('/kabo-login') ? sentence : null);
+      });
+    } catch {
+      done(null);
+    }
+  });
 }
 
 /** Scan the local skill cache to get {id -> highest local version} (for diffing against the catalog) */
@@ -342,10 +506,11 @@ async function main() {
   // file to speak for - a signed-out machine keeps this hook's network surface at exactly the
   // two public endpoints.
   const pluginRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..');
-  const [registry, envelope, probeSentence] = await Promise.all([
+  const [registry, envelope, probeSentence, helperSentence] = await Promise.all([
     fetchJsonSilent(`${endpoint}/api/sync`, {}, REQUEST_TIMEOUT_MS),
     resolveGuidance(endpoint),
     fs.existsSync(credentialsPath()) ? probeCredential(pluginRoot) : Promise.resolve(null),
+    checkHelperRunnable(pluginRoot),
   ]);
 
   const parts = [];
@@ -423,21 +588,33 @@ async function main() {
         : `${allPending.length} event(s) awaiting relay (${pending.length} injected this time)`,
     );
   }
+  // Can the host even start the helper? Reported before the credential state, and regardless of
+  // it: a signed-out user who cannot run the helper would otherwise sign in and hit the same wall
+  // one session later. Its own line, never folded into the probe's silence - the fix is different.
+  if (helperSentence) parts.push(helperSentence);
   // Existence check ONLY in this process - see the header comment. Reading or parsing the file
   // here would end this hook's credential-free property; the file's absence is the one fact about
   // it that is not credential material. Last in the list so the sync results above keep their
   // position.
   if (!fs.existsSync(credentialsPath())) {
     parts.push('Kabo is not signed in on this machine - run /kabo-login to enable platform tools');
-  } else if (probeSentence) {
-    // The server said no to a credential that exists locally. Without this line the user's first
-    // sign of trouble is every platform call failing mid-task - and on hosts that fall back to
-    // their own re-auth on 401, an unrecoverable loop (2026-08-18 incident). The sentence is the
-    // probe child's own canonical recovery line, which already names /kabo-login.
+  } else {
+    // One line for EVERY probe outcome, never silence (2026-08-23). A rejected credential says the
+    // probe child's own canonical recovery line (names /kabo-login; the 2026-08-18 incident:
+    // without it the first sign was every call failing mid-task, and on hosts that run their own
+    // re-auth on 401, an unrecoverable loop). Accepted / locally expired / unreachable / timed out
+    // each get their neutral sentence so the model can tell "not signed in" from "network blip"
+    // without waiting for the host's 401 prompt.
     parts.push(probeSentence);
   }
+  // Host + server-name markers, so the activation wording after /kabo-login fits the host and
+  // always uses the registered server name. The host line is omitted when the (undocumented)
+  // entrypoint variable is unset - see hostLine().
+  const host = hostLine();
+  if (host) parts.push(host);
+  parts.push(`Kabo MCP server name: ${KABO_MCP_SERVER_NAME} (CLI only: a reconnect must name it in full: /mcp reconnect plugin:kabo-alpha:kabo, never the bare "kabo"; other hosts start a new session)`);
 
-  output.systemMessage = parts.join('; ');
+  output.systemMessage = parts.filter(Boolean).join('; ');
   // Do not console.log and immediately process.exit: when stdout points at a pipe the write is async,
   // and exit discards whatever has not been flushed, so a large injection would emit truncated JSON,
   // the host would fail to parse it, and additionalContext and systemMessage would both be silently
