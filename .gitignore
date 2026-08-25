@@ -7,3 +7,8 @@ node_modules/
 # "both variants must ship the same creator-research support tree" - an error naming the wrong cause.
 __pycache__/
 *.py[cod]
+
+# Claude Code's local working state, including .claude/worktrees/ - full checkouts of this repo at
+# arbitrary refs. This tree is a published mirror, so one `git add -A` on an unignored .claude/
+# would commit whatever those checkouts happen to contain.
+.claude/

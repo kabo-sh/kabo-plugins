@@ -4,9 +4,9 @@ description: First-run onboarding — the kabo app's guided setup, replicated in
 
 # /kabo-start — first-run onboarding
 
-Give a newly signed-in creator the same guided first session as the kabo mobile app's onboarding (which replicates Blowup's flow): a short questionnaire, one real analysis of their own account, and a 90-day plan they commit to. The design intent is **faithful replication of the app flow** — same questions, same options, same order, same psychological beats — adapted only where the medium physically differs, and extended with the profile fields the creator-app PRD (rev 13, M1) requires that the app's questionnaire does not collect. Do not re-minimize it, do not skip questionnaire steps, do not rephrase questions.
+Give a newly signed-in creator the same guided first session as the kabo mobile app's onboarding: a short questionnaire, one real analysis of their own account, and a 90-day plan they commit to. The design intent is **faithful replication of the app flow** — same questions, same options, same order, same psychological beats — adapted only where the medium physically differs, and extended with the profile fields the product spec requires that the app's questionnaire does not collect. Do not re-minimize it, do not skip questionnaire steps, do not rephrase questions.
 
-The question set (copy, options, order, grouping) is pinned in `tests/fixtures/onboarding-questions.json`; this file and the Codex variant both follow it. If the two ever disagree, the fixture wins.
+The question set below (copy, options, order, grouping) is authoritative — read it from this file and replicate it. It is shared with the Codex variant, and a regression test in the source repo holds the two in step, so a question that differs between the variants is a bug in the source repo, not a choice you make at run time.
 
 ## When to run
 
@@ -156,7 +156,7 @@ Save → append `"dream"`.
 | Entertainment & creative | Comedy & skits / Gaming / Music & dance / Art & design |
 | Business & professional | Marketing & growth / Entrepreneurship / Real estate / Career & productivity |
 
-**A free-text entry must always be available at both levels** — this is the one hard warning in the PRD (closed niche lists are the complaint that has followed the comparable apps for years). AskUserQuestion's automatic Other covers it; if the host ever stops adding it, add an explicit "Something else" option and ask for the text. If B1 was answered in free text, ask B2 with no preset list: same question, free text only. If B1 was skipped, skip B2 too without comment.
+**A free-text entry must always be available at both levels** — this is the one hard warning in the product spec (closed niche lists are a long-standing complaint about comparable apps). AskUserQuestion's automatic Other covers it; if the host ever stops adding it, add an explicit "Something else" option and ask for the text. If B1 was answered in free text, ask B2 with no preset list: same question, free text only. If B1 was skipped, skip B2 too without comment.
 
 Save → append `"niche_area"`, then `"niche_sub"`.
 
@@ -333,7 +333,7 @@ The profile is written after every group, so an interrupted run is a normal case
 - **notify** (push-notification permission): no medium equivalent; the return-visit close in step 16 carries that function.
 - **intro carousel** ("250,000 accounts analyzed"): fabricated social proof — fails the evidence rules.
 - **save / Apple / Google sign-in**: `/kabo-login` already happened; the profile file is the save.
-- **paywall / blurred report** (PRD principle 1: the free tier gets the shape of the report and the paywall lands the second the diagnosis finishes): deliberately not replicated. The internal alpha plugin is not monetized, so the report is delivered in full. This is a recorded deviation from the PRD, not an oversight.
+- **paywall / blurred report** (the product spec's principle 1: the free tier gets the shape of the report and the paywall lands the second the diagnosis finishes): deliberately not replicated. The internal alpha plugin is not monetized, so the report is delivered in full. This is a recorded deviation from the product spec, not an oversight.
 
 ## Hard rules
 

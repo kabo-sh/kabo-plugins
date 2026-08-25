@@ -72,6 +72,8 @@ However you installed it, authorization is a separate step, and the two hosts do
 
 **Your first session.** A successful `/kabo-login` hands off to `/kabo-start`: a short questionnaire, one real analysis of your own account, and a 90-day plan. Run `/kabo-start` again whenever you like — it reads what is already on file and offers to pick up where you stopped or start over.
 
+**Which skills you receive.** `/kabo-channel` (`$kabo-channel` on Codex) shows the Skill Registry channel your account is on. Every account can select Production; an account the platform has granted Internal access can select either and defaults to Internal. Switching channels does not sign you in again and does not change the grant — the server is the sole authority on who has one.
+
 Signing in from inside a running session works too. If Kabo is still unavailable afterwards, **start a new session** — that path works on every host (terminal, IDE extension, desktop app), and on the desktop app it is the only one.
 
 In the CLI you can skip the restart: run `/mcp reconnect plugin:kabo-alpha:kabo` (Claude Code CLI 2.1.205 or newer; on an older CLI `/reload-plugins` also reconnects plugin servers). The full name matters: the host registers the bundled server as `plugin:kabo-alpha:kabo`, and a reconnect naming only `kabo` is answered with "There's no MCP server named ...". The host re-runs the credential helper on every connection — session start, reconnect, and once more when a tool call answers 401/403 — so a reconnect is all it takes for the fresh credential to be picked up. CLIs older than 2.1.205 lack the reconnect subcommand but still have `/reload-plugins`; the desktop app has neither, which is why a new session is the advice that leads this section.

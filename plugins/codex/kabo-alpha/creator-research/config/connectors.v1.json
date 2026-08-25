@@ -1,14 +1,14 @@
 {
   "schema_version": "1.2",
-  "policy": "Every fetch runs on the Kabo platform through the data_connector_run tool: the platform holds every provider credential, the user configures nothing, and no credential name, value or local binary requirement belongs in this file, in a request JSON or in a user prompt. Since the 2026-08-16 V2 changeover no wrapper contract ships per skill: each connector's used_by below names the current skills whose evidence it feeds, and together with the server catalog's per-operation params_schema that is how a runner resolves connector_id and operation (one skill package additionally bundles a field-level map in its own references/). This file remains the plugin-side record of the platform data plane.",
+  "policy": "Every fetch runs on the Kabo platform through the data_connector_run tool: the platform holds every provider credential, the user configures nothing, and no credential name, value or local binary requirement belongs in this file, in a request JSON or in a user prompt. Since the 2026-08-16 V2 changeover no wrapper contract ships per skill: each connector's used_by below names the current skills whose evidence it feeds, and together with the server catalog's per-operation params_schema that is how a runner resolves connector_id and operation (one skill package additionally bundles a field-level map in its own references/). This file remains the plugin-side record of the platform data plane. Each connector also carries a `capability` label: that label - never a connector id, never any upstream name - is what a summary, a limitation or a report says the evidence came from.",
   "runner": "data_connector_run",
   "readiness_source": "This file resolves connector_id and operation names only; it makes no claim that a call will succeed. The Kabo server catalog owns readiness: call data_connector_catalog for each connector's ready state, each operation's implemented state and its params_schema, before promising any evidence.",
   "request_schema": "schemas/connector-request.schema.json",
   "result_schema": "schemas/connector-result.schema.json",
   "connectors": {
-    "youtube-pp-connector": {
+    "youtube-public": {
       "kind": "local_cli_adapter",
-      "provider": "YouTube Data API",
+      "capability": "youtube-public",
       "callable": true,
       "implementation_state": "platform_data_plane; check data_connector_catalog",
       "entrypoint": "data_connector_run",
@@ -24,15 +24,15 @@
         "search_channels",
         "get_channel",
         "get_video",
+        "list_channel_uploads",
         "list_comments"
       ],
       "block_reason": null,
-      "runtime_note": "Runs server-side; the platform owns the YouTube credential and the quota accounting. A blocked_setup response means the platform is missing that credential, which the user cannot fix.",
-      "source": "https://github.com/mvanhorn/printing-press-library"
+      "runtime_note": "Runs server-side; the platform owns the YouTube credential and the quota accounting. A blocked_setup response means the platform is missing that credential, which the user cannot fix."
     },
     "mock-owner-connector": {
       "kind": "fixture_adapter",
-      "provider": "Kabo Mock (synthetic)",
+      "capability": "owner-analytics-sample",
       "callable": true,
       "implementation_state": "platform_data_plane; check data_connector_catalog",
       "entrypoint": "data_connector_run",
@@ -44,16 +44,16 @@
         "get_owner_instagram_insights"
       ],
       "block_reason": null,
-      "runtime_note": "Serves synthetic owner sample data from the platform while real owner OAuth ingestion is still a platform gap; it needs no credential and is always ready. Every response carries a limitations entry stating the data is synthetic - carry it verbatim into the output summary, and never present these figures as the account's real performance.",
-      "source": "kabo-sh/kabo packages/creator/src/application/connector-catalog.ts"
+      "runtime_note": "Serves synthetic owner sample data from the platform while real owner OAuth ingestion is still a platform gap; it needs no credential and is always ready. Every response carries a limitations entry stating the data is synthetic: relabel its source like every other limitation, but the synthetic-data fact itself reaches the output summary stated plainly and in full - never dropped, softened or generalised into \"sample figures\" - and these numbers are never presented as the account's real performance."
     },
-    "tubelab-connector": {
+    "youtube-outlier": {
       "kind": "http_adapter",
-      "provider": "TubeLab",
+      "capability": "youtube-outlier",
       "callable": true,
       "implementation_state": "platform_data_plane; check data_connector_catalog",
       "entrypoint": "data_connector_run",
-      "used_by": [
+      "used_by": [],
+      "standby_used_by": [
         "research-content-trends"
       ],
       "operations": [
@@ -61,12 +61,11 @@
         "get_channel_videos"
       ],
       "block_reason": null,
-      "runtime_note": "Runs server-side over HTTPS. The catalog carries the region limitation and the per-operation request cap; report the response's limitations verbatim.",
-      "source": "https://tubelab.net"
+      "runtime_note": "Research-only standby for the youtube-outlier capability: manual comparison or a declared fallback. The default YouTube Trend workflow runs on the youtube-public path, so outlier evidence is never silently mixed into the primary path."
     },
-    "gemini-video-adapter": {
+    "video-understanding": {
       "kind": "model_adapter",
-      "provider": "Google Gemini",
+      "capability": "video-understanding",
       "callable": true,
       "implementation_state": "not_implemented_server_side; check data_connector_catalog",
       "entrypoint": "data_connector_run",
@@ -80,12 +79,11 @@
         "budget"
       ],
       "block_reason": null,
-      "runtime_note": "Deep video analysis is not implemented on the Kabo server yet, so this path returns unsupported. No published V2 skill routes into it: its V1 route (head-youtube-research via the head-video-analyzer internal skill) was retired in the 2026-08-16 changeover, and analyze-content-video draws frames and transcripts from public-video-media with verdicts computed by its own bundled deterministic analyzer. If a future skill does route here, treat it as an optional segment: say the analysis is unavailable platform-side, deliver the collection results without it, and never substitute prior knowledge for a watched video.",
-      "source": "https://ai.google.dev/gemini-api"
+      "runtime_note": "Deep video understanding (the video-understanding capability) is not implemented on the Kabo server yet, so this path returns unsupported. No published V2 skill routes into it: its V1 route (head-youtube-research via the head-video-analyzer internal skill) was retired in the 2026-08-16 changeover, and analyze-content-video draws frames and transcripts from public-video-media with verdicts computed by its own bundled deterministic analyzer. If a future skill does route here, treat it as an optional segment: say the analysis is unavailable platform-side, deliver the collection results without it, and never substitute prior knowledge for a watched video."
     },
-    "scrapecreators-connector": {
+    "instagram-discovery": {
       "kind": "local_cli_adapter",
-      "provider": "ScrapeCreators",
+      "capability": "instagram-discovery",
       "callable": true,
       "implementation_state": "platform_data_plane; check data_connector_catalog",
       "entrypoint": "data_connector_run",
@@ -100,8 +98,11 @@
         "resolve_profile",
         "list_posts",
         "list_reels",
+        "search_accounts",
         "search_profiles",
         "discover_trending",
+        "search_popular",
+        "get_post",
         "list_comments",
         "get_transcript"
       ],
@@ -109,12 +110,11 @@
         "scope_and_credit_budget"
       ],
       "block_reason": null,
-      "runtime_note": "Runs server-side against the pinned official ScrapeCreators CLI contract, one upstream request per call. Cursors come back verbatim in the response; multi-page orchestration stays an upper-layer loop over atomic calls.",
-      "source": "https://github.com/ScrapeCreators/social-media-research-skills"
+      "runtime_note": "Runs server-side against the pinned instagram-discovery source contract, one upstream request per call. Cursors come back verbatim in the response; multi-page orchestration stays an upper-layer loop over atomic calls."
     },
     "public-video-media": {
       "kind": "local_media_adapter",
-      "provider": "Public video media",
+      "capability": "public-video-media",
       "callable": true,
       "implementation_state": "platform_data_plane; check data_connector_catalog",
       "entrypoint": "data_connector_run",
@@ -132,8 +132,7 @@
         "extract_keyframes"
       ],
       "block_reason": null,
-      "runtime_note": "Runs server-side in a private Kabo media worker with pinned yt-dlp/ffmpeg; nothing runs on the user's machine and no credential is involved. All three operations are asynchronous: the call returns a job resource rather than an evidence envelope; poll that job with the data_connector_job tool until it reaches a terminal state, and report a job still running at reporting time as pending, never as absent. Readiness is the part that varies: a deployment with no media execution host reports ready false in the catalog and answers unsupported, and availability otherwise depends on upstream access from that worker's egress and can degrade without notice. Either way it is a platform-side condition the user cannot configure away, so check data_connector_catalog first, report which evidence is unavailable, deliver the rest under the skill's partial semantics, and never fall back to web search or prior knowledge.",
-      "source": "https://github.com/yt-dlp/yt-dlp"
+      "runtime_note": "Runs server-side in a private Kabo media worker with pinned media tooling; nothing runs on the user's machine and no credential is involved. All three operations are asynchronous: the call returns a job resource rather than an evidence envelope; poll that job with the data_connector_job tool until it reaches a terminal state, and report a job still running at reporting time as pending, never as absent. Readiness is the part that varies: a deployment with no media execution host reports ready false in the catalog and answers unsupported, and availability otherwise depends on upstream access from that worker's egress and can degrade without notice. Either way it is a platform-side condition the user cannot configure away, so check data_connector_catalog first, report which evidence is unavailable, deliver the rest under the skill's partial semantics, and never fall back to web search or prior knowledge."
     }
   },
   "internal_skills": {
@@ -151,12 +150,12 @@
         "head-instagram"
       ],
       "connector_ids": [
-        "gemini-video-adapter"
+        "video-understanding"
       ],
       "input_contract": "Normalized selected-video rows containing platform, media/page URL, caption/title and source evidence.",
       "output_contract": "Per-video Hook, content structure, delivery style, CTA strategy and explicit error state.",
       "block_reason": null,
-      "runtime_note": "Nothing is built or run locally: the analyzer lives on the platform behind gemini-video-adapter, whose operation is not implemented yet. Its V1 consumer (head-youtube-research) was retired in the 2026-08-16 V2 changeover; no current skill routes into it."
+      "runtime_note": "Nothing is built or run locally: the analyzer lives on the platform behind the video-understanding source, whose operation is not implemented yet. Its V1 consumer (head-youtube-research) was retired in the 2026-08-16 V2 changeover; no current skill routes into it."
     }
   },
   "runtime_services": {

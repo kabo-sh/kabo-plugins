@@ -59,7 +59,7 @@ Local development / self-hosted server: change the URL in this directory's `.mcp
 
 ## Data fetching (nothing to configure — as of 0.12.0)
 
-**There are no provider keys any more.** Every creator research fetch runs on Kabo's servers: the platform holds the third-party credentials, runs the connectors, and returns normalized rows. This plugin declares **no config fields**, bundles **no local MCP server**, and needs **no local binaries** (`yt-dlp`, `ffmpeg`, `youtube-pp-cli`, the `scrapecreators` CLI are all gone with the local pipeline).
+**There are no provider keys any more.** Every creator research fetch runs on Kabo's servers: the platform holds the third-party credentials, runs the connectors, and returns normalized rows. This plugin declares **no config fields**, bundles **no local MCP server**, and needs **no local binaries and no API keys** — the whole local fetch/transcode pipeline is gone, so there is nothing left to install, license, or keep up to date on your machine.
 
 Two tools on the platform's `kabo` server are the whole data plane:
 
@@ -101,13 +101,14 @@ These skills' bodies are **used verbatim from upstream with no rewriting** — u
 
 `creator-research/` is nested in a subdirectory rather than spread across the plugin root because the root's `scripts/` already holds `hooks/` and `lib/` — dropping upstream's `scripts/` straight on top would delete the hook entry points.
 
-Slash commands (four):
+Slash commands (five):
 
 | Command | What it does |
 |---|---|
 | `/kabo-login` | Terminal sign-in: prints a URL and a short code, waits for you to confirm it in a browser tab (any device), stores the credential `0600`, then verifies with one real call. On a machine with no creator profile the verified sign-in flows straight into `/kabo-start` |
 | `/kabo-start` | First-run onboarding, replicating the kabo mobile app's guided setup: a tap-through questionnaire (AskUserQuestion popups), one real check-up of the creator's own account, and a 90-day plan saved to `~/.kabo/onboarding-profile.json`. Discloses the run's cost before asking consent (the time and token figures live in one Estimates block in `commands/kabo-start.md`), lets the creator choose how to spend the wait, saves after every question group so an interrupted run resumes, and never re-pitches a skipped question. Runs automatically after the first sign-in; can be re-run explicitly to redo the questionnaire (the analysis is only re-run when the baseline is older than 30 days, and only after the cost is confirmed again) |
 | `/kabo-analyze` | Analysis entry point: start the flow directly with whatever you want analyzed (`/kabo-analyze why has this channel been taking off lately <url>`). Internally it uses meta-guidance's routing rather than a separate one |
+| `/kabo-channel` | Shows the active Skill Registry channel. Any account can select Production; an account with a server-side Internal grant can select Internal or Production and defaults to Internal. Switching does not change the grant or sign in again |
 | `/kabo-logout` | A real logout, in two halves and in this order: it calls the platform's `auth_revoke_all` over the authorized MCP connection — revoking **every device's** authorization, not just this machine's — and then deletes this machine's credential along with the cache and trust material. Swapping the order breaks it: deleting the credential first leaves nothing to call the platform with |
 
 How fast each surface actually stops: **this machine, the same second** (the credential is gone, so no header is produced and the request 401s); **renewal anywhere, the same second** (the refresh token is revoked); an access token already cached **on another machine, up to 2 hours** — it is a self-contained JWT and the platform runs no denylist.
@@ -204,5 +205,5 @@ plugins/claude/kabo-alpha/
 ├── scripts/lib/credentials.js    # the device-flow and renewal wire protocol (discovery, device code, token exchange) — holds no request header
 ├── scripts/lib/node-resolve.sh   # shared node lookup for the two sh shims ($KABO_NODE → ~/.kabo/node-path → PATH → usual install locations); builtins only
 ├── bin/                          # skill-verify / skill-unpack / skill-gc / kabo-auth (executables, on the Bash PATH) + kabo-headers (run by the host, not by you) and kabo-headers.sh (the sh shim the host actually spawns: finds node, execs kabo-headers)
-└── commands/                     # /kabo-login /kabo-start /kabo-analyze /kabo-logout
+└── commands/                     # /kabo-login /kabo-start /kabo-analyze /kabo-channel /kabo-logout
 ```

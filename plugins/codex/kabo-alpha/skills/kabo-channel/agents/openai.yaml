@@ -1,0 +1,6 @@
+interface:
+  display_name: "Kabo Channel"
+  short_description: "Show or switch between Internal and Production Kabo skills"
+  default_prompt: "Use $kabo-channel to show or change my Kabo skill registry channel."
+policy:
+  allow_implicit_invocation: false

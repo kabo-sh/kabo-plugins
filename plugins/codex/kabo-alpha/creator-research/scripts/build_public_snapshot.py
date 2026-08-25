@@ -12,7 +12,8 @@ Why this file exists, and where its line is:
   It reshapes; it never judges. No ranking, no multiples, no outlier verdicts - those belong
   to the frozen analyzers, and computing them here would quietly replace them.
 
-`items[].format` is narrowed to youtube_short / youtube_long / instagram_reel even though the
+`items[].format` is narrowed to youtube_short / youtube_long / instagram_reel /
+instagram_feed even though the
 snapshot schema declares plain {"type": "string"} for it. The narrowing is deliberate and is
 Kabo's, not upstream's: it is exactly the content-format enum the Kabo server uses for creator
 observations, so the day these items are normalized into observations there is nothing left to
@@ -59,12 +60,12 @@ SHORT_MAX_SECONDS = 180
 METRIC_ALIASES: dict[str, tuple[str, ...]] = {
     "views": ("views", "viewCount", "view_count", "play_count", "video_play_count", "video_view_count"),
     "likes": ("likes", "likeCount", "like_count"),
-    "comments": ("comments", "commentCount", "comment_count"),
+    "comments": ("commentCount", "comment_count", "comments"),
 }
 
 # Where rows live inside an envelope's `data`. The three shapes the data plane ships today:
-# the normalized `rows` block (YouTube / ScrapeCreators), a bare `items` list, and TubeLab's
-# channel response, whose rows hang under the channel object.
+# the normalized `rows` block (youtube-public / instagram-discovery), a bare `items` list, and the
+# youtube-outlier channel response, whose rows hang under the channel object.
 ROW_PATHS: tuple[tuple[str, ...], ...] = (
     ("data", "rows"),
     ("data", "items"),
@@ -156,9 +157,9 @@ def iso(moment: datetime) -> str:
 def duration_seconds(row: dict[str, Any]) -> float | None:
     """Seconds, from whichever shape the provider used, or None if it said nothing.
 
-    ("snippet", "duration") is TubeLab: plain integer seconds, nested where its identity
-    fields live. Its absence once marked 115 real items youtube_long "without a duration
-    signal" while every row carried one - when a provider nests identity under a key,
+    ("snippet", "duration") is the youtube-outlier shape: plain integer seconds, nested where
+    its identity fields live. Its absence once marked 115 real items youtube_long "without a
+    duration signal" while every row carried one - when a source nests identity under a key,
     expect its numbers under that key too.
     """
     for path in (("duration_seconds",), ("duration",), ("video_duration",), ("length_seconds",),
@@ -192,30 +193,43 @@ def metrics_of(row: dict[str, Any]) -> dict[str, dict[str, Any]]:
     the provider answered while refusing to hand a bad number to the analyzer.
     """
     metrics: dict[str, dict[str, Any]] = {}
-    # Providers disagree on where the counters nest: youtube-pp style rows use "metrics",
-    # TubeLab puts the same viewCount/likeCount/commentCount names under "statistics".
+    # Sources disagree on where the counters nest: youtube-public style rows use "metrics",
+    # while youtube-outlier puts the same viewCount/likeCount/commentCount names under
+    # "statistics".
     # Consulting only one of them silently downgraded 65/75 real rows to `unavailable`
     # while the numbers sat right there - the identity lookups already read the snippet
     # nest, and the counters get the same treatment.
     nested_sources = [row[key] for key in ("metrics", "statistics") if isinstance(row.get(key), dict)]
     for name, aliases in METRIC_ALIASES.items():
         native = None
-        raw: Any = None
+        saw_null = False
+        saw_invalid = False
+        number: float | None = None
         for alias in aliases:
             for source in (*nested_sources, row):
                 if alias in source:
-                    native, raw = alias, source[alias]
+                    candidate = source[alias]
+                    if candidate is None:
+                        native = native or alias
+                        saw_null = True
+                        continue
+                    parsed = as_number(candidate)
+                    if parsed is None or parsed < 0 or parsed != parsed \
+                            or parsed in (float("inf"), float("-inf")):
+                        native = native or alias
+                        saw_invalid = True
+                        continue
+                    native, number = alias, parsed
                     break
-            if native is not None:
+            if number is not None:
                 break
         if native is None:
             metrics[name] = {"status": "unavailable", "value": None, "native_name": name}
             continue
-        if raw is None:
+        if number is None and saw_null and not saw_invalid:
             metrics[name] = {"status": "unavailable", "value": None, "native_name": native}
             continue
-        number = as_number(raw)
-        if number is None or number < 0 or number != number or number in (float("inf"), float("-inf")):
+        if number is None:
             metrics[name] = {"status": "error", "value": None, "native_name": native}
             continue
         metrics[name] = {
@@ -227,7 +241,7 @@ def metrics_of(row: dict[str, Any]) -> dict[str, dict[str, Any]]:
 
 
 def unwrap(row: dict[str, Any]) -> dict[str, Any]:
-    """ScrapeCreators reel rows arrive wrapped as {"media": {...}}; unwrap once, never deeper."""
+    """instagram-discovery reel rows arrive wrapped as {"media": {...}}; unwrap once, never deeper."""
     media = row.get("media")
     if isinstance(media, dict) and "id" not in row and "pk" not in row and "code" not in row:
         return media
@@ -262,6 +276,15 @@ def content_id_of(row: dict[str, Any], platform: str) -> str | None:
     return first_text(row, (("code",), ("shortcode",), ("content_id",), ("pk",), ("id",), ("media_id",)))
 
 
+def instagram_format_of(row: dict[str, Any]) -> str:
+    """Keep Reels and Feed posts as separate comparable cohorts."""
+    product = (first_text(row, (("product_type",), ("media_product_type",))) or "").lower()
+    media_type = as_number(dig(row, ("media_type",)))
+    if product in ("clips", "reels", "reel", "igtv") or media_type == 2.0:
+        return "instagram_reel"
+    return "instagram_feed"
+
+
 def url_of(row: dict[str, Any], platform: str, content_id: str) -> str:
     """The row's own URL, or the platform's canonical form of the id the provider returned.
 
@@ -274,32 +297,20 @@ def url_of(row: dict[str, Any], platform: str, content_id: str) -> str:
         return given
     if platform == "youtube":
         return f"https://www.youtube.com/watch?v={content_id}"
-    return f"https://www.instagram.com/reel/{content_id}/"
+    path = "reel" if instagram_format_of(row) == "instagram_reel" else "p"
+    return f"https://www.instagram.com/{path}/{content_id}/"
 
 
 def format_of(row: dict[str, Any], platform: str, url: str) -> tuple[str, bool]:
     """(format, inferred_without_duration). See the module docstring for why the enum is narrow."""
     if platform == "instagram":
-        return "instagram_reel", False
+        return instagram_format_of(row), False
     seconds = duration_seconds(row)
     if seconds is not None:
         return ("youtube_short" if seconds <= SHORT_MAX_SECONDS else "youtube_long"), False
     if "/shorts/" in url:
         return "youtube_short", False
     return "youtube_long", True
-
-
-def is_non_reel(row: dict[str, Any]) -> bool:
-    """Instagram rows the provider itself marks as something other than a reel.
-
-    A photo or carousel counted inside a reel cohort moves the median it is compared against,
-    so it is dropped and reported rather than relabelled.
-    """
-    product = (first_text(row, (("product_type",), ("media_product_type",))) or "").lower()
-    if product and product not in ("clips", "reels", "reel", "igtv"):
-        return True
-    media_type = as_number(dig(row, ("media_type",)))
-    return media_type is not None and media_type not in (2.0,)  # 2 = video, the only reel carrier
 
 
 def rows_of(envelope: dict[str, Any]) -> list[dict[str, Any]]:
@@ -310,7 +321,9 @@ def rows_of(envelope: dict[str, Any]) -> list[dict[str, Any]]:
     return []
 
 
-def coverage_incomplete_signals(envelope: dict[str, Any]) -> bool:
+def coverage_incomplete_signals(
+    envelope: dict[str, Any], complete_operations: set[str]
+) -> bool:
     if envelope.get("status") == "completed_partial":
         return True
     for text in envelope.get("limitations") or []:
@@ -319,11 +332,16 @@ def coverage_incomplete_signals(envelope: dict[str, Any]) -> bool:
             return True
     data = envelope.get("data")
     if isinstance(data, dict):
-        if data.get("more_available") is True:
+        operation_complete = envelope.get("operation") in complete_operations
+        if data.get("more_available") is True and not operation_complete:
             return True
         for key in ("cursor", "next_cursor", "next_max_id", "nextPageToken"):
-            if as_text(data.get(key)) is not None:
+            if as_text(data.get(key)) is not None and not operation_complete:
                 return True
+        # Discovery providers often return a bounded sample without a pagination attestation.
+        # `null` / absent is unknown coverage, not proof that the niche or market was exhausted.
+        if envelope.get("operation") == "discover_trending" and data.get("more_available") is not False:
+            return True
     return False
 
 
@@ -364,7 +382,35 @@ def window_bounds(raw: str) -> tuple[datetime, datetime]:
 
 def build(args: argparse.Namespace) -> dict[str, Any]:
     envelopes = [load_envelope(path) for path in args.envelope]
-    start, end = window_bounds(args.window)
+    complete_operations = set(getattr(args, "complete_operation", None) or [])
+    available_operations = {
+        str(envelope.get("operation")) for envelope in envelopes if envelope.get("operation")
+    }
+    unknown_complete_operations = complete_operations - available_operations
+    if unknown_complete_operations:
+        raise ValueError(
+            "--complete-operation names operations absent from the supplied envelopes: "
+            + ", ".join(sorted(unknown_complete_operations))
+        )
+    for operation in complete_operations:
+        operation_envelopes = [
+            envelope for envelope in envelopes if envelope.get("operation") == operation
+        ]
+        if not any(
+            isinstance(envelope.get("data"), dict)
+            and envelope["data"].get("more_available") is False
+            for envelope in operation_envelopes
+        ):
+            raise ValueError(
+                f"--complete-operation {operation} requires a terminal envelope with more_available=false"
+            )
+    queries = list(getattr(args, "query", None) or [])
+    if queries and len(queries) != len(envelopes):
+        raise ValueError("--query must be omitted or repeated exactly once per --envelope, in the same order")
+    if not queries:
+        queries = [None] * len(envelopes)
+    automatic_window = args.window == "auto"
+    start, end = (None, None) if automatic_window else window_bounds(args.window)
 
     connector_ids: list[str] = []
     limitations: list[str] = []
@@ -376,11 +422,17 @@ def build(args: argparse.Namespace) -> dict[str, Any]:
             connector_ids.append(connector_id)
         limitations.extend(str(text) for text in (envelope.get("limitations") or []))
         retrieved.append(parse_timestamp(envelope["retrieved_at"], "retrieved_at"))
-        if coverage_incomplete_signals(envelope):
+        if coverage_incomplete_signals(envelope, complete_operations):
             coverage_complete = False
+            if envelope.get("operation") == "discover_trending" \
+                    and isinstance(envelope.get("data"), dict) \
+                    and envelope["data"].get("more_available") is not False:
+                note = "Provider did not attest complete discover_trending coverage"
+                if note not in limitations:
+                    limitations.append(note)
 
     observed_at = max(retrieved)
-    if end > observed_at:
+    if end is not None and end > observed_at:
         # The analyzer rejects a window that ends after observed_at, and rightly so: it would
         # claim coverage of time the fetch never saw. Clamp and say so, instead of failing on
         # the common "--window ...\today" call.
@@ -400,21 +452,30 @@ def build(args: argparse.Namespace) -> dict[str, Any]:
 
     creators: dict[str, dict[str, Any]] = {}
     items: dict[str, dict[str, Any]] = {}
+    input_rows = 0
     skipped_unidentifiable = 0
+    skipped_missing_content_id = 0
+    skipped_missing_creator = 0
+    skipped_missing_publish_time = 0
     skipped_non_reel = 0
+    duplicate_rows_merged = 0
     format_inferred = 0
 
-    for envelope in envelopes:
+    for envelope, query in zip(envelopes, queries):
         for raw_row in rows_of(envelope):
+            input_rows += 1
             row = unwrap(raw_row)
-            if args.platform == "instagram" and is_non_reel(row):
-                skipped_non_reel += 1
-                continue
             content_id = content_id_of(row, args.platform)
             creator = creator_of(row, args.platform)
             published = dig(row, ("published_at",)) or dig(row, ("publishedAt",)) \
                 or dig(row, ("snippet", "publishedAt")) or dig(row, ("taken_at",)) \
                 or dig(row, ("taken_at_timestamp",)) or dig(row, ("timestamp",))
+            if content_id is None:
+                skipped_missing_content_id += 1
+            if creator is None:
+                skipped_missing_creator += 1
+            if published is None:
+                skipped_missing_publish_time += 1
             if content_id is None or creator is None or published is None:
                 skipped_unidentifiable += 1
                 continue
@@ -432,10 +493,13 @@ def build(args: argparse.Namespace) -> dict[str, Any]:
                 "format": content_format,
                 "metrics": metrics_of(row),
             }
+            if query:
+                item["query_refs"] = [query]
             seconds = duration_seconds(row)
             if seconds is not None:
                 item["duration_seconds"] = seconds
             if content_id in items:
+                duplicate_rows_merged += 1
                 # The same content reached us through two connectors. The analyzer raises on
                 # duplicates that disagree, so they are merged here: first envelope wins, later
                 # ones only fill metrics the first could not report.
@@ -444,6 +508,8 @@ def build(args: argparse.Namespace) -> dict[str, Any]:
                     if existing["metrics"][name]["status"] in ("unavailable", "error") \
                             and entry["status"] in ("available", "zero"):
                         existing["metrics"][name] = entry
+                if query:
+                    existing["query_refs"] = sorted(set(existing.get("query_refs", []) + [query]))
                 continue
             if inferred:
                 format_inferred += 1
@@ -465,6 +531,13 @@ def build(args: argparse.Namespace) -> dict[str, Any]:
             "check that they are data_connector_run responses for the platform given"
         )
 
+    if automatic_window:
+        published = [parse_timestamp(item["published_at"], "published_at") for item in items.values()]
+        start, end = min(published), max(published)
+
+    if start is None or end is None:
+        raise ValueError("window bounds could not be determined")
+
     # Aggregated in the order the envelopes were given, and hashed even when there is only one,
     # so the value always means "digest over this snapshot's inputs, in order" and never
     # doubles as a single provider payload's digest.
@@ -475,18 +548,38 @@ def build(args: argparse.Namespace) -> dict[str, Any]:
         f"{args.platform}:{iso(start)}:{iso(end)}:{raw_sha256}".encode("utf-8")
     ).hexdigest()[:16]
 
+    scope: dict[str, Any] = {"window": {"start": iso(start), "end": iso(end)}}
+    unique_queries = list(dict.fromkeys(query for query in queries if query))
+    if unique_queries:
+        scope["queries"] = unique_queries
+    if getattr(args, "region", None) is not None:
+        scope["region"] = args.region
+    if getattr(args, "language", None) is not None:
+        scope["language"] = args.language
+
     return {
         "schema_version": SCHEMA_VERSION,
         "snapshot_id": snapshot_id,
         "observed_at": iso(observed_at),
         "platform": args.platform,
-        "scope": {"window": {"start": iso(start), "end": iso(end)}},
+        "scope": scope,
         "source": {
             "source_mode": SOURCE_MODE,
             "connector_id": primary,
             "retrieved_at": iso(min(retrieved)),
             "raw_sha256": raw_sha256,
             "coverage_complete": coverage_complete,
+            "pagination": {
+                "input_rows": input_rows,
+                "normalized_items": len(items),
+                "duplicate_rows_merged": duplicate_rows_merged,
+                "skipped_unidentifiable": skipped_unidentifiable,
+                "skipped_missing_content_id": skipped_missing_content_id,
+                "skipped_missing_creator": skipped_missing_creator,
+                "skipped_missing_publish_time": skipped_missing_publish_time,
+                "skipped_non_reel": skipped_non_reel,
+                "format_inferred": format_inferred,
+            },
             "limitations": limitations,
         },
         "creators": sorted(creators.values(), key=lambda row: row["creator_id"]),
@@ -499,10 +592,28 @@ def main() -> int:
     parser.add_argument("--envelope", type=Path, action="append", required=True,
                         help="a data_connector_run envelope, as JSON; repeatable, order is the aggregation order")
     parser.add_argument("--platform", choices=PLATFORMS, required=True)
-    parser.add_argument("--window", required=True, help="<start>/<end>, dates or timestamps")
+    parser.add_argument(
+        "--window",
+        required=True,
+        help="<start>/<end>, dates or timestamps; use auto only when the user did not request a window",
+    )
+    parser.add_argument("--query", action="append",
+                        help="query that produced the matching --envelope; repeat in envelope order")
+    parser.add_argument("--region", help="requested region, preserved in snapshot scope")
+    parser.add_argument("--language", help="requested language, preserved in snapshot scope")
     parser.add_argument("--primary-connector", help="defaults to the first envelope's connector_id")
     parser.add_argument("--coverage-incomplete", action="store_true",
                         help="force coverage_complete false; there is deliberately no flag that forces it true")
+    parser.add_argument(
+        "--complete-operation",
+        action="append",
+        choices=("list_posts", "list_reels", "list_channel_uploads"),
+        help=(
+            "repeat only when every pagination chain for this operation reached a persisted "
+            "terminal envelope with more_available=false; intermediate cursors then do not "
+            "make coverage incomplete"
+        ),
+    )
     parser.add_argument("--output", type=Path, required=True)
     args = parser.parse_args()
     try:

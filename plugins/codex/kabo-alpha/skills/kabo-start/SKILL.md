@@ -7,7 +7,7 @@ description: First-run onboarding — the kabo app's guided setup, replicated in
 
 Give a newly signed-in creator the same guided first session as the kabo mobile app's onboarding: a short questionnaire, one real analysis of their own account, and a 90-day plan they commit to. The design intent is **faithful replication of the app flow** — same questions, same options, same order, same psychological beats — adapted only where the medium physically differs. Do not re-minimize it, do not skip questionnaire steps, do not rephrase questions.
 
-This file is step-for-step the Codex counterpart of the Claude variant's `/kabo-start`. The **question set** (copy, options, order, groups) and the **profile schema** are shared with it and frozen in `tests/fixtures/onboarding-questions.json`; only three things differ here, and each is called out in the text: the data root, the entry point, and how a first sign-in is detected.
+This file is step-for-step the Codex counterpart of the Claude variant's `/kabo-start`. The **question set** (copy, options, order, groups) and the **profile schema** are shared with it and written out in full below — read them from this file. A regression test in the source repo holds the two variants in step. Only three things differ here, and each is called out in the text: the data root, the entry point, and how a first sign-in is detected.
 
 ## Tone — how the whole flow speaks
 
@@ -46,7 +46,7 @@ There is **no credentials file on Codex** — `$kabo-login` says so in its hard 
 - The group `intro` line goes in chat **immediately before** the call, prefixed with the group's stepper label where it has one (`Step N of 6`).
 - Free-text input (the channel link) is asked in chat, not in a popup.
 - After **every** popup group is answered, write the profile with what exists so far and append the group name to `completed_steps` (this is what makes resume possible; a flow this long gets interrupted).
-- If `request_user_input` is unavailable in this mode (it is not offered in non-interactive `codex exec`), ask the same questions one group at a time in chat — same copy, same options, numbered — and accept a number or the option text.
+- If `request_user_input` is unavailable, ask the same questions one group at a time in chat — same copy, same options, numbered — and accept a number or the option text. See "Tool contract" below for why this is common, not exceptional.
 
 ## Estimates — the single source for time and cost figures
 
@@ -335,7 +335,8 @@ Verified against the Codex binary and real session logs (2026-08):
 - **Several questions per call are supported**: the tool describes itself as "one to three short questions", and a real call with 2 questions answered in one result exists. **Three is the documented ceiling.** The 4-question groups above (`basics`, `baseline`, `dream`, `commitment`, `style`) therefore go out as **two calls: 3 questions + 1 question**, under the same stepper label and a single intro line. Do not re-announce the step between the two calls.
 - The result is `{"answers": {"<id>": {"answers": ["<label>", ...]}}}`. Unanswered questions are absent from the map — treat absence as a skip, silently.
 - **Free text is automatic in the interactive TUI**: the host appends a "None of the above" choice to every question and offers a notes field; typed text comes back as an extra array element prefixed `user_note: `. So **do not add your own "Other" option** where that is the surface; strip the `user_note: ` prefix when saving.
-- Availability: interactive / collaborative modes only. It is **not offered in `codex exec`** and needs an interactive terminal — fall back to chat there (see Mechanics).
+- **Availability is gated by collaboration mode, not by interactivity.** `request_user_input` only renders its popup UI in **Plan Mode**. In **Default mode** — what an interactive session (Desktop app, VS Code extension, CLI) runs unless the user switched modes — the tool is still listed among the task's tools, but a call to it is rejected; degrade to chat immediately, in the same turn, without retrying the call (see Mechanics). This is an upstream Codex limitation: [openai/codex#30150](https://github.com/openai/codex/issues/30150) (open, Desktop-specific reproduction, last update 2026-07-23), [#24750](https://github.com/openai/codex/issues/24750) and [#29104](https://github.com/openai/codex/issues/29104) (both open, VS Code / CLI), and [#15293](https://github.com/openai/codex/issues/15293) (closed, but its repro text is byte-for-byte the fallback pattern this skill produces). It is *also* unavailable in non-interactive `codex exec` (no host to render any UI at all), which is a separate, narrower reason for the same fallback.
+  There is an undocumented opt-in that lifts the Default-mode gate: a `[features]` table with `default_mode_request_user_input = true` in `~/.codex/config.toml` (or a trusted project's `.codex/config.toml`), confirmed working on the VS Code extension and CLI in issue comments (#24750, #29104, 2026-05/06) but **not confirmed on the Desktop app** — the one Desktop-specific report (#30150, 2026-07-23) still saw Plan-Mode-only behavior and did not say whether the flag was set. It is absent from the official `[features]` reference table entirely (that page documents `apps`, `goals`, `hooks`, `multi_agent` and similar, never this one), so treat it as unstable: mention it to a user who asks why no popup appears, never assume it is on, and never write it into the user's config yourself — it is machine-wide and outside this skill's data root.
 
 Assumed, and therefore handled defensively (a later maintainer with the schema in hand can tighten these):
 
@@ -346,7 +347,7 @@ Assumed, and therefore handled defensively (a later maintainer with the schema i
 
 ## Hard rules
 
-- Question copy and options are fixed — replicate, don't improvise. They are frozen in `tests/fixtures/onboarding-questions.json`.
+- Question copy and options are fixed — replicate, don't improvise. The tables above are the source you replicate from.
 - **Never invent numbers**: no fake scores, no invented social proof, no follower projections. Every figure comes from the run or is absent.
 - The skill run itself follows `meta-guidance` unchanged (verification, Section E delivery, failure semantics). Onboarding changes the framing around the run, never the evidence rules.
 - Never promise virality; the pact's measurable target derives from the creator's own history only.

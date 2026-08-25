@@ -3,7 +3,12 @@
 // Usage: skill-verify <skill-dir>
 // Steps:
 //   1. Read <skill-dir>/.meta.json ({id, version, checksum, signature, format_version?, ...})
-//   2. Revocation check: a <data root>/skill-cache/<id>.disabled marker means reject
+//   2. Revocation check (kill-switch), in this order:
+//      a. a local <data root>/skill-cache/<id>.disabled marker hit means reject
+//      b. then query the public GET <endpoint>/api/sync live (no token needed) - a revocation the
+//         platform issued after SessionStart must take effect before this execution, and a hit is
+//         written back as a .disabled marker so the next run rejects even offline; if the network
+//         is unreachable, the local marker from (a) is the whole answer
 //   3. Recompute the checksum (algorithm verbatim identical to the server's, see computeChecksum in
 //      common.js) and compare it against .meta.json
 //   4. Verify the signature with the locally pinned server Ed25519 keyset, refreshing once via a
