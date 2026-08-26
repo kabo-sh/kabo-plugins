@@ -1,5 +1,5 @@
 ---
-description: Kabo creator research entry point — search platform skills and run them (YouTube evidence, breakout-video breakdown, channel benchmarking, cross-platform creator discovery)
+description: Kabo creator research entry point — search platform skills and run them (public account review, engagement-rate calculation, YouTube evidence, breakout-video breakdown, channel benchmarking, cross-platform creator discovery)
 argument-hint: "[what to analyze, e.g. why has this channel been growing lately https://youtube.com/@xxx]"
 ---
 

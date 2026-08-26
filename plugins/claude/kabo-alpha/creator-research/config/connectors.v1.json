@@ -15,6 +15,7 @@
       "used_by": [
         "analyze-content-video",
         "analyze-creator-competitors",
+        "optimize-creator-brand",
         "recommend-publish-timing",
         "research-content-trends",
         "review-creator-account"
@@ -29,6 +30,21 @@
       ],
       "block_reason": null,
       "runtime_note": "Runs server-side; the platform owns the YouTube credential and the quota accounting. A blocked_setup response means the platform is missing that credential, which the user cannot fix."
+    },
+    "tiktok-public": {
+      "kind": "http_adapter",
+      "capability": "tiktok-public-profile",
+      "callable": true,
+      "implementation_state": "platform_data_plane; check data_connector_catalog",
+      "entrypoint": "data_connector_run",
+      "used_by": [
+        "optimize-creator-brand"
+      ],
+      "operations": [
+        "check_handle"
+      ],
+      "block_reason": null,
+      "runtime_note": "Checks a selected TikTok username against the public profile page. It needs no account authorization, fails closed when the page cannot be verified, and never reserves a username."
     },
     "mock-owner-connector": {
       "kind": "fixture_adapter",

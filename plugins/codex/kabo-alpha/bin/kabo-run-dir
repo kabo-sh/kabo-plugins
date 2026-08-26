@@ -1,0 +1,51 @@
+#!/usr/bin/env node
+// kabo-run-dir - atomically reserve one private, isolated Skill run directory.
+//
+// stdout is deliberately only the opaque run id. The runner already knows the data-root
+// convention, and keeping the absolute path out of stdout prevents a machine account name from
+// leaking into a relayed summary.
+import crypto from 'node:crypto';
+import fs from 'node:fs';
+import path from 'node:path';
+import { workRoot } from '../scripts/lib/common.js';
+
+const USAGE = `Usage: kabo-run-dir
+  Atomically creates one private work/<run-id>/{owner,snapshot,analysis,report} tree and prints the run id`;
+const args = process.argv.slice(2);
+if (args.includes('--help') || args.includes('-h')) {
+  console.log(USAGE);
+  process.exit(0);
+}
+if (args.length > 0) {
+  console.error(`Unknown argument: ${args.join(' ')}\n\n${USAGE}`);
+  process.exit(1);
+}
+
+function compactUtc(date) {
+  return date.toISOString().replace(/[-:]/g, '').replace(/\.\d{3}Z$/, 'Z');
+}
+
+const root = workRoot();
+fs.mkdirSync(root, { recursive: true, mode: 0o700 });
+fs.chmodSync(root, 0o700);
+
+for (let attempt = 0; attempt < 32; attempt += 1) {
+  const runId = `${compactUtc(new Date())}-${crypto.randomBytes(4).toString('hex')}`;
+  const runDir = path.join(root, runId);
+  try {
+    // A non-recursive mkdir is the reservation primitive: only one concurrent process can win a
+    // candidate id, and an existing run is never reopened or reused.
+    fs.mkdirSync(runDir, { mode: 0o700 });
+  } catch (error) {
+    if (error?.code === 'EEXIST') continue;
+    throw error;
+  }
+  for (const name of ['owner', 'snapshot', 'analysis', 'report']) {
+    fs.mkdirSync(path.join(runDir, name), { mode: 0o700 });
+  }
+  console.log(runId);
+  process.exit(0);
+}
+
+console.error('Could not reserve a unique Kabo run directory after 32 attempts');
+process.exit(1);

@@ -140,7 +140,7 @@ The data root is fixed at `~/.kabo` (it does not follow `$CLAUDE_PLUGIN_DATA` �
 ├── onboarding-profile.json       # schema kabo-onboarding-profile.v1: the creator's onboarding answers, diagnosis, baseline (with coverage + provenance), 90-day plan and resume state (written by /kabo-start after every group, mode 0600); holds no secrets, but it is the account's own diagnosis and plan, so logout deletes it along with `work/`
 ├── skill-cache/<id>/<version>/   # unpacked skill + .meta.json (TTL 14 days, cleaned by bin/skill-gc)
 ├── skill-cache/<id>.disabled     # local disable marker for a revocation
-├── work/<run-id>/                # one directory per run, holding everything a run produced — assembled snapshots, analyses, rendered reports (0700/0600, same 14-day TTL, cleaned by bin/skill-gc); logout deletes it outright, so copy anything worth keeping out of it first
+├── work/<run-id>/                # one directory atomically reserved by bin/kabo-run-dir per run, holding assembled snapshots, analyses, and reports (0700/0600, 14-day TTL via bin/skill-gc); logout deletes it outright
 ├── public-keys.<bucket>.json     # pinned server-side signing **keyset** (TOFU + continuity rotation; 0.9.x's public-key.<bucket>.pem is kept as a fallback)
 ├── pending-reports.jsonl         # buffer of skill verification failures awaiting relay (7-day TTL / 100 entries, listed at session start for relay, idempotent)
 └── meta-guidance.<bucket>.json   # signature-verified dynamic guidance, last-known-good (bucketed per endpoint, exactly like the keyset)
@@ -204,6 +204,6 @@ plugins/claude/kabo-alpha/
 ├── scripts/lib/common.js         # shared by hooks and bin (path/endpoint conventions, credential read/write + renewal lock, checksum, compareSemver, guidance signature verification)
 ├── scripts/lib/credentials.js    # the device-flow and renewal wire protocol (discovery, device code, token exchange) — holds no request header
 ├── scripts/lib/node-resolve.sh   # shared node lookup for the two sh shims ($KABO_NODE → ~/.kabo/node-path → PATH → usual install locations); builtins only
-├── bin/                          # skill-verify / skill-unpack / skill-gc / kabo-auth (executables, on the Bash PATH) + kabo-headers (run by the host, not by you) and kabo-headers.sh (the sh shim the host actually spawns: finds node, execs kabo-headers)
+├── bin/                          # skill-verify / skill-unpack / skill-gc / kabo-run-dir / kabo-auth (executables) + kabo-headers and its POSIX sh launcher
 └── commands/                     # /kabo-login /kabo-start /kabo-analyze /kabo-channel /kabo-logout
 ```

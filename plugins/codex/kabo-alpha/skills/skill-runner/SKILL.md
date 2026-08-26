@@ -29,10 +29,14 @@ If any one of the first three is missing, stop and return what is missing; do no
 
 ## Work directory
 
-Every artifact this run produces goes in one place, created by you before the first script runs:
+Every artifact this run produces goes in one place, atomically reserved before the first fetch or
+script runs:
 
 - Root: `$KABO_CODEX_DATA` if set, otherwise `~/.kabo/codex`; the run directory is `<root>/work/<run-id>/`, where `<run-id>` is a UTC compact timestamp plus 8 hex characters (for example `20260814T093012Z-3f9a1c02`).
-- Create it with `umask 077 && mkdir -p <run dir>/{owner,snapshot,analysis,report}` so directories land 0700 and files 0600. Nothing here is shared between users or runs.
+- Run `<plugin-root>/bin/kabo-run-dir` exactly once and use the run id it prints. The helper reserves
+  the run directory with an exclusive mkdir and creates its `owner/`, `snapshot/`, `analysis/`, and
+  `report/` subdirectories at mode 0700. Never invent, accept from another run, reopen, or reuse a
+  run id, and never replace this command with `mkdir -p`; concurrent runs must not share a path.
 - **Every Python launch is one guarded Bash command**: rewrite the prerequisite check and every Python command from a target Skill as `umask 077 && PYTHONDONTWRITEBYTECODE=1 python3 ...`. Never invoke bare `python3`. The environment setting prevents imports from creating `__pycache__` inside the signed skill, while the same-command umask makes every directory/file created by that process 0700/0600.
 - Pass absolute paths under this directory to every `--output` / `--output-dir` / positional output argument.
 - Never write anywhere else — not the skill cache, not the plugin directory, not the working directory you happen to start in.

@@ -18,8 +18,11 @@ snapshot schema declares plain {"type": "string"} for it. The narrowing is delib
 Kabo's, not upstream's: it is exactly the content-format enum the Kabo server uses for creator
 observations, so the day these items are normalized into observations there is nothing left to
 translate. Ranking never mixes formats, so a wrong label is a wrong cohort, not a cosmetic
-defect. YouTube duration remains evidence but is not a format signal: a horizontal video can be
-three minutes or less, and treating it as a Short would contaminate every same-format baseline.
+defect. Provider declarations and canonical Shorts URLs remain authoritative. When none exists,
+YouTube duration is a deliberately provisional fallback: at or below 180 seconds is classified as
+Short and above 180 seconds as long-form, with both the low confidence and inference source written
+onto the item. This keeps same-format baselines available for providers that expose duration but no
+declarative format signal without pretending that duration is conclusive.
 
 `observed_at`, `source.retrieved_at` and `source.raw_sha256` come from the envelope, i.e. from
 the server that actually performed the fetch. This machine's clock is never consulted: those
@@ -57,6 +60,8 @@ PLATFORMS = ("youtube", "instagram")
 # from duration by the research enrichment service and is provisional rather than a Shorts flag.
 YOUTUBE_SHORT_FORMATS = frozenset(("youtube_short", "short", "shorts", "short_form", "shortform"))
 YOUTUBE_LONG_FORMATS = frozenset(("youtube_long", "long", "long_form", "longform"))
+YOUTUBE_SHORT_MAX_DURATION_SECONDS = 180
+FORMAT_CONFIDENCE_PRIORITY = {"unknown": 0, "provisional": 1, "explicit": 2}
 
 # Metric name -> the keys an envelope may carry it under. First hit wins, and the key that hit
 # becomes `native_name`: the name as it appeared in the envelope, never a translated one.
@@ -88,7 +93,9 @@ TRUNCATION_MARKERS = (
     "partial",
 )
 
-ISO_DURATION = re.compile(r"^P(?:\d+D)?T(?:(\d+)H)?(?:(\d+)M)?(?:(\d+(?:\.\d+)?)S)?$")
+ISO_DURATION = re.compile(
+    r"^P(?:(\d+)D)?(?:T(?:(\d+)H)?(?:(\d+)M)?(?:(\d+(?:\.\d+)?)S)?)?$"
+)
 BARE_DATE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
 
 
@@ -175,9 +182,14 @@ def duration_seconds(row: dict[str, Any]) -> float | None:
         if text is None:
             continue
         match = ISO_DURATION.match(text)  # ISO-8601, as contentDetails.duration reports it
-        if match:
-            hours, minutes, seconds = match.groups()
-            return float(hours or 0) * 3600 + float(minutes or 0) * 60 + float(seconds or 0)
+        if match and any(value is not None for value in match.groups()):
+            days, hours, minutes, seconds = match.groups()
+            return (
+                float(days or 0) * 86400
+                + float(hours or 0) * 3600
+                + float(minutes or 0) * 60
+                + float(seconds or 0)
+            )
     return None
 
 
@@ -304,10 +316,12 @@ def url_of(row: dict[str, Any], platform: str, content_id: str) -> str:
     return f"https://www.instagram.com/{path}/{content_id}/"
 
 
-def format_of(row: dict[str, Any], platform: str, url: str) -> tuple[str, bool]:
-    """(format, format_unknown). Duration is never a reliable YouTube format signal."""
+def format_of(
+    row: dict[str, Any], platform: str, url: str, seconds: float | None
+) -> tuple[str, bool, str, str]:
+    """Return (format, format_unknown, confidence, source), strongest evidence first."""
     if platform == "instagram":
-        return instagram_format_of(row), False
+        return instagram_format_of(row), False, "explicit", "provider_media_type"
 
     # Prefer a provider's explicit boolean over every derived or URL-shaped signal. Only real
     # booleans count: accepting 0/1 or truthy strings here would turn an untyped provider quirk into
@@ -319,7 +333,12 @@ def format_of(row: dict[str, Any], platform: str, url: str) -> tuple[str, bool]:
     ):
         declared = dig(row, path)
         if isinstance(declared, bool):
-            return ("youtube_short" if declared else "youtube_long"), False
+            return (
+                "youtube_short" if declared else "youtube_long",
+                False,
+                "explicit",
+                "provider_boolean",
+            )
 
     # A provider may expose the same declaration as a small enum. Read only format-specific field
     # names and exact known values; generic `type=video` and provisional `format_candidate` are not
@@ -333,15 +352,67 @@ def format_of(row: dict[str, Any], platform: str, url: str) -> tuple[str, bool]:
             continue
         normalized = re.sub(r"[\s-]+", "_", declared.lower())
         if normalized in YOUTUBE_SHORT_FORMATS:
-            return "youtube_short", False
+            return "youtube_short", False, "explicit", "provider_format"
         if normalized in YOUTUBE_LONG_FORMATS:
-            return "youtube_long", False
+            return "youtube_long", False, "explicit", "provider_format"
 
     # A canonical Shorts route is an explicit platform signal. A /watch URL is not the inverse:
     # YouTube also serves Shorts through /watch, so it cannot prove long-form.
     if re.search(r"/shorts(?:/|$)", url, flags=re.IGNORECASE):
-        return "youtube_short", False
-    return "unknown", True
+        return "youtube_short", False, "explicit", "canonical_shorts_url"
+
+    # youtube-public supplies duration for rows whose URL is only /watch and whose payload has no
+    # declarative Short/long field. Falling back here is intentionally weaker than every signal
+    # above: an explicit isShort=false, for example, must keep a 45-second horizontal video in the
+    # long-form cohort. The item-level metadata keeps the inference visible to every consumer.
+    if seconds is not None and 0 <= seconds < float("inf"):
+        return (
+            "youtube_short" if seconds <= YOUTUBE_SHORT_MAX_DURATION_SECONDS else "youtube_long",
+            False,
+            "provisional",
+            "duration_seconds_fallback",
+        )
+    return "unknown", True, "unknown", "unavailable"
+
+
+def merge_format_evidence(
+    existing: dict[str, Any], candidate: dict[str, Any], content_id: str
+) -> None:
+    """Merge duplicate YouTube format evidence without making input order authoritative."""
+    existing_confidence = str(existing.get("format_confidence") or "unknown")
+    candidate_confidence = str(candidate.get("format_confidence") or "unknown")
+    existing_priority = FORMAT_CONFIDENCE_PRIORITY[existing_confidence]
+    candidate_priority = FORMAT_CONFIDENCE_PRIORITY[candidate_confidence]
+    existing_format = str(existing.get("format") or "unknown")
+    candidate_format = str(candidate.get("format") or "unknown")
+
+    if (
+        existing_confidence == "explicit"
+        and candidate_confidence == "explicit"
+        and existing_format != candidate_format
+    ):
+        raise ValueError(
+            f"{content_id}: conflicting explicit YouTube format evidence: "
+            f"{existing_format} versus {candidate_format}"
+        )
+
+    sticky_provisional_conflict = (
+        existing.get("format_source") == "conflicting_provisional"
+        and candidate_confidence == "provisional"
+    )
+    if candidate_priority > existing_priority and not sticky_provisional_conflict:
+        existing["format"] = candidate_format
+        existing["format_confidence"] = candidate_confidence
+        existing["format_source"] = candidate.get("format_source", "unavailable")
+    elif candidate_priority == existing_priority and candidate_format != existing_format:
+        # Conflicting duration-only observations are not authoritative enough to fail the whole
+        # snapshot, but neither value may win by input order. Downgrade the merged item instead.
+        existing["format"] = "unknown"
+        existing["format_confidence"] = "unknown"
+        existing["format_source"] = "conflicting_provisional"
+
+    if "duration_seconds" not in existing and "duration_seconds" in candidate:
+        existing["duration_seconds"] = candidate["duration_seconds"]
 
 
 def rows_of(envelope: dict[str, Any]) -> list[dict[str, Any]]:
@@ -490,7 +561,6 @@ def build(args: argparse.Namespace) -> dict[str, Any]:
     skipped_missing_publish_time = 0
     skipped_non_reel = 0
     duplicate_rows_merged = 0
-    format_unknown = 0
 
     for envelope, query in zip(envelopes, queries):
         for raw_row in rows_of(envelope):
@@ -513,7 +583,10 @@ def build(args: argparse.Namespace) -> dict[str, Any]:
             creator_id, creator_row = creator
             creators.setdefault(creator_id, creator_row)
             url = url_of(row, args.platform, content_id)
-            content_format, unknown = format_of(row, args.platform, url)
+            seconds = duration_seconds(row)
+            content_format, _unknown, format_confidence, format_source = format_of(
+                row, args.platform, url, seconds
+            )
             item = {
                 "content_id": content_id,
                 "creator_id": creator_id,
@@ -524,17 +597,22 @@ def build(args: argparse.Namespace) -> dict[str, Any]:
                 "format": content_format,
                 "metrics": metrics_of(row),
             }
+            if args.platform == "youtube":
+                item["format_confidence"] = format_confidence
+                item["format_source"] = format_source
             if query:
                 item["query_refs"] = [query]
-            seconds = duration_seconds(row)
             if seconds is not None:
                 item["duration_seconds"] = seconds
             if content_id in items:
                 duplicate_rows_merged += 1
                 # The same content reached us through two connectors. The analyzer raises on
                 # duplicates that disagree, so they are merged here: first envelope wins, later
-                # ones only fill metrics the first could not report.
+                # ones fill missing metrics while YouTube format evidence follows an explicit >
+                # provisional > unknown priority independent of input order.
                 existing = items[content_id]
+                if args.platform == "youtube":
+                    merge_format_evidence(existing, item, content_id)
                 for name, entry in item["metrics"].items():
                     if existing["metrics"][name]["status"] in ("unavailable", "error") \
                             and entry["status"] in ("available", "zero"):
@@ -542,9 +620,15 @@ def build(args: argparse.Namespace) -> dict[str, Any]:
                 if query:
                     existing["query_refs"] = sorted(set(existing.get("query_refs", []) + [query]))
                 continue
-            if unknown:
-                format_unknown += 1
             items[content_id] = item
+
+    # Count only final merged evidence. Incrementing while rows arrive leaves stale unknown or
+    # duration-derived counts when a later duplicate supplies an explicit provider declaration.
+    format_unknown = sum(item.get("format") == "unknown" for item in items.values()) \
+        if args.platform == "youtube" else 0
+    format_duration_inferred = sum(
+        item.get("format_source") == "duration_seconds_fallback" for item in items.values()
+    ) if args.platform == "youtube" else 0
 
     if skipped_unidentifiable:
         limitations.append(
@@ -554,8 +638,14 @@ def build(args: argparse.Namespace) -> dict[str, Any]:
         limitations.append(f"Skipped {skipped_non_reel} Instagram row(s) the provider marked as not a reel")
     if format_unknown:
         limitations.append(
-            f"No explicit provider format or Shorts URL signal for {format_unknown} YouTube item(s): "
-            "recorded as unknown and excluded from YouTube Short/long cohort comparisons"
+            f"No decisive format signal for {format_unknown} YouTube item(s): no usable duration "
+            "or consistent provisional duration evidence was available, so they were recorded as "
+            "unknown and excluded from YouTube Short/long cohort comparisons"
+        )
+    if format_duration_inferred:
+        limitations.append(
+            f"Classified {format_duration_inferred} YouTube item(s) from duration only using the "
+            f"{YOUTUBE_SHORT_MAX_DURATION_SECONDS}-second threshold; format_confidence is provisional"
         )
     if not items:
         raise ValueError(
@@ -611,6 +701,7 @@ def build(args: argparse.Namespace) -> dict[str, Any]:
                 "skipped_missing_publish_time": skipped_missing_publish_time,
                 "skipped_non_reel": skipped_non_reel,
                 "format_unknown": format_unknown,
+                "format_duration_inferred": format_duration_inferred,
             },
             "limitations": limitations,
         },

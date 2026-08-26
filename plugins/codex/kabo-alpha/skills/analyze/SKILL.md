@@ -1,6 +1,6 @@
 ---
 name: analyze
-description: Kabo creator research analysis entry point. Use it when the user needs YouTube public evidence collection, channel benchmarking and playbook summaries, account-relative outlier breakdowns and the topic ideas they support, emerging-creator breakout discovery, or reverse-engineering of viral Instagram Reels; this skill only starts the flow — the actual routing and execution rules live in meta-guidance.
+description: Kabo creator research analysis entry point. Use it when the user needs public account review, deterministic engagement-rate calculation or cross-platform ER comparison, YouTube public evidence collection, channel benchmarking and playbook summaries, account-relative outlier breakdowns and the topic ideas they support, emerging-creator breakout discovery, or reverse-engineering of viral Instagram Reels; this skill only starts the flow — the actual routing and execution rules live in meta-guidance.
 ---
 
 # Kabo analysis entry point
