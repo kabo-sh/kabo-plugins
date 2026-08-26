@@ -1,6 +1,6 @@
 {
   "name": "kabo-codex-plugin",
-  "version": "0.18.1",
+  "version": "0.18.2",
   "private": true,
   "type": "module",
   "description": "Kabo Codex plugin (client shell); declares ESM only, with zero npm dependencies."

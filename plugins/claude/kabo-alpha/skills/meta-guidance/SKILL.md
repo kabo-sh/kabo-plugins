@@ -62,7 +62,14 @@ Every fetch runs **on the platform**: Kabo holds the credentials, the user confi
 
 **Never run `scripts/preflight.py` or `scripts/run_connector.py`** — neither ships; `required.tools` plus the catalog gate dependencies. Call `data_connector_run`: `connector_id`/`operation` from `../../config/connectors.v1.json` (a connector's `used_by` names the skills it feeds) plus the catalog, `params` from its `params_schema`. `max_provider_requests` is not an input, no wrapper contract per skill, a request file is never hand-written.
 
-**Envelope semantics unchanged**: the stored envelope keeps `status`/`limitations`/`provider` as received — the run's audit record; what you report is relabelled per E, meaning intact and **never verbatim**. `blocked_setup` = **the platform** lacks that credential — the user cannot fix it, never send them to configure a key; `unsupported` = not implemented server-side. Neither is a tool failure: name what's unavailable, relabelled, deliver the rest under SKILL.md's partial semantics, never substitute another source.
+**Envelope semantics unchanged.** The stored envelope keeps `status`/`limitations`/`provider` as received — the run's audit record; what you report is relabelled per E, meaning intact and **never verbatim**. Apply this status matrix exactly:
+
+- `completed` is success: persist and use its evidence.
+- `completed_partial` and `partial` are usable partial results, not tool failures: persist their evidence, continue only under SKILL.md's partial semantics, and report every resulting gap.
+- `blocked_setup` and `unsupported` are platform-side gaps, not tool failures: the former means the **platform** lacks that credential (the user cannot fix it, so never send them to configure a key), and the latter means the operation is not implemented server-side. Stop that evidence path and apply partial/gap semantics to anything else deliverable.
+- `failed`, a host/backend result marked `isError: true`, and every other unrecognized non-success status are execution failures: never persist or consume them as successful evidence, and explicitly report which execution failed.
+
+For every partial result, platform-side gap, or execution failure, do not retry and do not switch data sources. Preserve each limitation's meaning, relabel it per E, and never substitute another source.
 
 **Deliverable.** Render the creator report SKILL.md names, run its creator-report validator where shipped (red = failed run), and name it on its own `creator_report:` line. Owner summaries carry conclusions and run-relative paths (`<run-id> → <path>`), never owner numbers; figures stay in the run JSON.
 

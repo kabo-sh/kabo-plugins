@@ -1,6 +1,6 @@
 {
   "name": "kabo-alpha",
-  "version": "0.18.1",
+  "version": "0.18.2",
   "description": "Kabo creator Skill distribution client: search, download, verify the signature of, and execute platform skills. Tool-level telemetry is recorded server-side; this variant collects no client-side usage events.",
   "author": {
     "name": "Kabo"

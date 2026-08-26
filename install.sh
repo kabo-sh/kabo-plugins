@@ -27,6 +27,12 @@ set -euo pipefail
 REPO_SLUG="${KABO_INSTALL_REPO:-kabo-sh/kabo-plugins}"
 REPO_REF="${KABO_INSTALL_REF:-}"
 
+# Codex clones the marketplace repo itself, so a remote source pulls the whole tree unless it is
+# told otherwise. These two paths are everything the Codex plugin needs; the Claude variant and
+# every other directory stay out of the clone.
+CODEX_SPARSE_MARKETPLACE=".agents/plugins/marketplace.json"
+CODEX_SPARSE_PLUGIN="plugins/codex/kabo-alpha"
+
 # The two marketplace names differ, and one is a prefix of the other (kabo-plugins /
 # kabo-plugins-codex). Every presence test must compare the **whole field**, never a grep
 # substring — otherwise installing for Claude would read Codex's entry as "already registered"
@@ -46,10 +52,10 @@ CLAUDE_MIN_VERSION="2.1.195"
 # No version floor for Codex: whether the `codex plugin` subcommand exists is a better test than
 # any version number.
 
-# Codex sign-in must name the contract scope set explicitly: a bare `codex mcp login kabo`
-# lets the host register a client with its default scopes (email included), which the platform
-# rejects with invalid_scope before any consent page (real report, 2026-08-18). The list is
-# byte-identical to OAUTH_SCOPE in the Claude variant's credentials.js; tests pin the two together.
+# Codex now also accepts a bare `codex mcp login kabo`. The installer still prints the explicit
+# contract scope set as the compatibility path, so behaviour never depends on a host version's
+# default scopes. Converting this list's commas to spaces yields exactly the ordered scope tokens
+# of OAUTH_SCOPE in the Claude variant's credentials.js; tests pin the two against drift.
 CODEX_LOGIN_SCOPES="openid,offline_access,account:read,registry,telemetry,data"
 
 # ====== Output ======
@@ -85,6 +91,9 @@ Options:
 
 Environment:
   KABO_INSTALL_REPO, KABO_INSTALL_REF  Same as --repo / --ref.
+
+For a remote Codex marketplace, only .agents/plugins/marketplace.json and
+plugins/codex/kabo-alpha are fetched — nothing else in the repository is cloned.
 
 The installer never installs Claude Code or Codex for you, never uses sudo, and never
 reads or writes your credentials. After installing the Claude plugin it checks for a
@@ -331,6 +340,10 @@ install_codex() {
   else
     local -a add_args=("$REPO_SLUG")
     [ -n "$REPO_REF" ] && add_args+=(--ref "$REPO_REF")
+    # A local path marketplace is already a working tree — sparse applies to a clone only.
+    if [ ! -d "$REPO_SLUG" ]; then
+      add_args+=(--sparse "$CODEX_SPARSE_MARKETPLACE" --sparse "$CODEX_SPARSE_PLUGIN")
+    fi
     run_cli codex plugin marketplace add "${add_args[@]}" \
       || fail "Could not register the marketplace from $REPO_SLUG. Codex clones it with git, so check that the name is right and that git can reach it, then try again."
     ok "marketplace registered"
@@ -784,8 +797,8 @@ if [ "$CODEX_DONE" -eq 1 ]; then
     printf '     hooks/hooks.json and scripts/hooks/ in the plugin first; they only sync skill\n'
     printf '     status at session start.\n'
     printf '  3. Run `codex mcp login kabo --scopes %s`\n' "$CODEX_LOGIN_SCOPES"
-    printf '     to authorize through your browser. The --scopes list matters: without it the\n'
-    printf '     host requests a default scope set the platform rejects (invalid_scope).\n'
+    printf '     to authorize through your browser. Bare login is also supported; the explicit\n'
+    printf '     scope list is the compatibility path that pins Kabo permissions across hosts.\n'
   fi
 fi
 

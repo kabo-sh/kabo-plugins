@@ -31,7 +31,7 @@ codex mcp login kabo --scopes openid,offline_access,account:read,registry,teleme
 
 A browser completes the OAuth authorization (OAuth 2.1 + PKCE on the platform side). `kabo` is the server name declared in this plugin's `.mcp.json`. Because they signed in at step 1, this should be a single consent click.
 
-**The `--scopes` list is required, exactly as written.** Codex's own default scope request includes `email`, which Kabo's authorization server does not offer: it rejects the client registration with `invalid_scope` before any consent page appears, so a bare `codex mcp login kabo` dies with what reads like a sign-in failure but is only this scope mismatch. Do not "fix" it by trimming the list down (say, to `openid,profile`) either — a short list still produces a consent page and a green CLI message, then fails silently later: without `offline_access` the server issues no renewal token and the user is kicked out after ~2 hours with no visible error, and without `registry`/`telemetry`/`data` the platform tools 403. The list above is the contract scope set, byte-identical to the `OAUTH_SCOPE` the Claude variant requests.
+The current platform also supports bare `codex mcp login kabo`. The explicit command above remains the recommended compatibility path because it pins Kabo's required permissions instead of depending on a host version's discovered defaults. If you pass `--scopes`, keep the list exactly as written: a hand-trimmed list can still produce a consent page and a green CLI message, then fail silently later. Without `offline_access` the server issues no renewal token and the user is kicked out after ~2 hours with no visible error, and without `registry`/`telemetry`/`data` the platform tools 403. After converting its commas to spaces, the explicit list has the same ordered scope tokens as the `OAUTH_SCOPE` the Claude variant requests.
 
 Once authorization completes, the **host** holds the token — but a task's tool list is negotiated once, when the task starts. A task that was already running when authorization finished (this one, usually) will never see the Kabo tools, and that is not an authorization failure; step 3 says what to do about it.
 
@@ -41,7 +41,7 @@ Once authorization completes, the **host** holds the token — but a task's tool
 
 ## 3. Verify with a real call
 
-Confirm instead of claiming success: call Kabo's `registry_skill_search` with query `youtube`.
+Confirm instead of claiming success: call the registered `mcp__kabo__registry_skill_search` tool (the shared guidance calls it `registry_skill_search`) with query `youtube`.
 
 - Results returned → the user is authorized. **Do not recite the skill list** — what happens next depends on whether this machine has an onboarding profile at `<data root>/onboarding-profile.json` (data root `$KABO_CODEX_DATA`, falling back to `~/.kabo/codex`; never `~/.kabo/` itself, which is the Claude variant's root):
   - The profile **does not exist** → this is a first sign-in. Go directly into `$kabo-start` (read `../kabo-start/SKILL.md` in the sibling directory and follow it in this task): open with its welcome line and start its questionnaire. The onboarding is the authorized-confirmation message. Its cost — real analysis time and a meaningful share of the user's quota; the figures live in `$kabo-start`'s Estimates block — is disclosed inside that flow before anything runs, and its consent popup is where they can decline.

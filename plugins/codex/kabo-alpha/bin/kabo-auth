@@ -21,11 +21,11 @@ import path from 'node:path';
 import { spawn } from 'node:child_process';
 import { apiEndpoint, cacheRoot, workRoot, onboardingProfilePath, guidanceCachePaths, publicKeyPaths, pendingReportsPath, safeBrowserUrl } from '../scripts/lib/common.js';
 
-// The full command, scopes included, everywhere this process names it. The bare `codex mcp login
-// kabo` is a trap: Codex's default scope request includes `email`, which the platform rejects at
-// client registration (invalid_scope) before any consent page. The list is the contract scope set -
-// byte-identical to OAUTH_SCOPE in the Claude variant's scripts/lib/credentials.js, where the
-// comment also explains why a shorter list fails *silently* instead of erroring.
+// Keep the explicit compatibility command everywhere this process names it. The current platform
+// also supports bare `codex mcp login kabo`; pinning the contract scope set avoids depending on a
+// host version's defaults. After converting commas to spaces, the ordered scope tokens equal
+// OAUTH_SCOPE in the Claude variant's scripts/lib/credentials.js, where the comment explains why a
+// hand-trimmed list fails silently.
 const MCP_LOGIN_COMMAND = 'codex mcp login kabo --scopes openid,offline_access,account:read,registry,telemetry,data';
 
 const NO_LOGIN_NOTICE =

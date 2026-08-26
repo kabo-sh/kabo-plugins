@@ -12,13 +12,14 @@ Why this file exists, and where its line is:
   It reshapes; it never judges. No ranking, no multiples, no outlier verdicts - those belong
   to the frozen analyzers, and computing them here would quietly replace them.
 
-`items[].format` is narrowed to youtube_short / youtube_long / instagram_reel /
+`items[].format` is narrowed to youtube_short / youtube_long / unknown / instagram_reel /
 instagram_feed even though the
 snapshot schema declares plain {"type": "string"} for it. The narrowing is deliberate and is
 Kabo's, not upstream's: it is exactly the content-format enum the Kabo server uses for creator
 observations, so the day these items are normalized into observations there is nothing left to
 translate. Ranking never mixes formats, so a wrong label is a wrong cohort, not a cosmetic
-defect.
+defect. YouTube duration remains evidence but is not a format signal: a horizontal video can be
+three minutes or less, and treating it as a Short would contaminate every same-format baseline.
 
 `observed_at`, `source.retrieved_at` and `source.raw_sha256` come from the envelope, i.e. from
 the server that actually performed the fetch. This machine's clock is never consulted: those
@@ -51,9 +52,11 @@ SOURCE_MODE = "public_connector"
 
 PLATFORMS = ("youtube", "instagram")
 
-# YouTube Shorts eligibility line since 2024-10. Used only when the envelope carries a real
-# duration; it is a threshold on provider data, not a guess about the content.
-SHORT_MAX_SECONDS = 180
+# Exact values accepted only from fields that explicitly declare a video's format. In particular,
+# `format_candidate=youtube_short_candidate` is intentionally not read here: that value is derived
+# from duration by the research enrichment service and is provisional rather than a Shorts flag.
+YOUTUBE_SHORT_FORMATS = frozenset(("youtube_short", "short", "shorts", "short_form", "shortform"))
+YOUTUBE_LONG_FORMATS = frozenset(("youtube_long", "long", "long_form", "longform"))
 
 # Metric name -> the keys an envelope may carry it under. First hit wins, and the key that hit
 # becomes `native_name`: the name as it appeared in the envelope, never a translated one.
@@ -302,15 +305,43 @@ def url_of(row: dict[str, Any], platform: str, content_id: str) -> str:
 
 
 def format_of(row: dict[str, Any], platform: str, url: str) -> tuple[str, bool]:
-    """(format, inferred_without_duration). See the module docstring for why the enum is narrow."""
+    """(format, format_unknown). Duration is never a reliable YouTube format signal."""
     if platform == "instagram":
         return instagram_format_of(row), False
-    seconds = duration_seconds(row)
-    if seconds is not None:
-        return ("youtube_short" if seconds <= SHORT_MAX_SECONDS else "youtube_long"), False
-    if "/shorts/" in url:
+
+    # Prefer a provider's explicit boolean over every derived or URL-shaped signal. Only real
+    # booleans count: accepting 0/1 or truthy strings here would turn an untyped provider quirk into
+    # an authoritative cohort label.
+    for path in (
+        ("is_short",), ("isShort",), ("short",),
+        ("snippet", "is_short"), ("snippet", "isShort"),
+        ("contentDetails", "isShort"), ("content_details", "is_short"),
+    ):
+        declared = dig(row, path)
+        if isinstance(declared, bool):
+            return ("youtube_short" if declared else "youtube_long"), False
+
+    # A provider may expose the same declaration as a small enum. Read only format-specific field
+    # names and exact known values; generic `type=video` and provisional `format_candidate` are not
+    # evidence of Short versus long-form.
+    for path in (
+        ("format",), ("content_format",), ("video_format",), ("video_type",),
+        ("snippet", "format"), ("snippet", "content_format"),
+    ):
+        declared = as_text(dig(row, path))
+        if declared is None:
+            continue
+        normalized = re.sub(r"[\s-]+", "_", declared.lower())
+        if normalized in YOUTUBE_SHORT_FORMATS:
+            return "youtube_short", False
+        if normalized in YOUTUBE_LONG_FORMATS:
+            return "youtube_long", False
+
+    # A canonical Shorts route is an explicit platform signal. A /watch URL is not the inverse:
+    # YouTube also serves Shorts through /watch, so it cannot prove long-form.
+    if re.search(r"/shorts(?:/|$)", url, flags=re.IGNORECASE):
         return "youtube_short", False
-    return "youtube_long", True
+    return "unknown", True
 
 
 def rows_of(envelope: dict[str, Any]) -> list[dict[str, Any]]:
@@ -459,7 +490,7 @@ def build(args: argparse.Namespace) -> dict[str, Any]:
     skipped_missing_publish_time = 0
     skipped_non_reel = 0
     duplicate_rows_merged = 0
-    format_inferred = 0
+    format_unknown = 0
 
     for envelope, query in zip(envelopes, queries):
         for raw_row in rows_of(envelope):
@@ -482,7 +513,7 @@ def build(args: argparse.Namespace) -> dict[str, Any]:
             creator_id, creator_row = creator
             creators.setdefault(creator_id, creator_row)
             url = url_of(row, args.platform, content_id)
-            content_format, inferred = format_of(row, args.platform, url)
+            content_format, unknown = format_of(row, args.platform, url)
             item = {
                 "content_id": content_id,
                 "creator_id": creator_id,
@@ -511,8 +542,8 @@ def build(args: argparse.Namespace) -> dict[str, Any]:
                 if query:
                     existing["query_refs"] = sorted(set(existing.get("query_refs", []) + [query]))
                 continue
-            if inferred:
-                format_inferred += 1
+            if unknown:
+                format_unknown += 1
             items[content_id] = item
 
     if skipped_unidentifiable:
@@ -521,9 +552,10 @@ def build(args: argparse.Namespace) -> dict[str, Any]:
         )
     if skipped_non_reel:
         limitations.append(f"Skipped {skipped_non_reel} Instagram row(s) the provider marked as not a reel")
-    if format_inferred:
+    if format_unknown:
         limitations.append(
-            f"Format inferred without a duration signal for {format_inferred} item(s): recorded as youtube_long"
+            f"No explicit provider format or Shorts URL signal for {format_unknown} YouTube item(s): "
+            "recorded as unknown and excluded from YouTube Short/long cohort comparisons"
         )
     if not items:
         raise ValueError(
@@ -578,7 +610,7 @@ def build(args: argparse.Namespace) -> dict[str, Any]:
                 "skipped_missing_creator": skipped_missing_creator,
                 "skipped_missing_publish_time": skipped_missing_publish_time,
                 "skipped_non_reel": skipped_non_reel,
-                "format_inferred": format_inferred,
+                "format_unknown": format_unknown,
             },
             "limitations": limitations,
         },
