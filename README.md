@@ -1,10 +1,12 @@
 # kabo-plugins
 
-The official **Kabo** plugin marketplace — the client for the creator-focused Skill distribution platform.
+The official [**Kabo**](https://kabo.sh/?utm_source=github&utm_medium=referral&utm_campaign=202608_plugins_readme&utm_content=readme_hero) plugin marketplace — the client for the creator-focused Skill distribution platform.
 
 Kabo lets you search, download, and execute creator research skills inside Claude Code and Codex: YouTube and Instagram public-evidence collection, outlier and viral breakdowns, channel benchmarking, and emerging-creator discovery. Every skill is signed and distributed by the platform, and the client verifies the signature locally before executing it.
 
 Creator research data is fetched by Kabo's servers, so there are no provider keys to configure. Usage telemetry is limited to event-level metadata — which skill ran and whether it succeeded; no prompt, tool, or skill-output content is collected.
+
+Beyond the plugin, Kabo publishes a free, no-signup toolbox for YouTube, Instagram, and TikTok creators — calculators, checkers, and generators that run without an account — at [kabo.sh/tools](https://kabo.sh/tools?utm_source=github&utm_medium=referral&utm_campaign=202608_plugins_readme&utm_content=readme_tools).
 
 ## Install
 
