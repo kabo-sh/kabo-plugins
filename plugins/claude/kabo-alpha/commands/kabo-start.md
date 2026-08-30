@@ -10,7 +10,7 @@ The question set below (copy, options, order, grouping) is authoritative — rea
 
 ## When to run
 
-- `/kabo-login` just verified successfully and `~/.kabo/onboarding-profile.json` does not exist → this is a first sign-in; enter directly (kabo-login.md hands off here).
+- `/kabo-login` just verified successfully and `$KABO_DATA_ROOT/onboarding-profile.json` (falling back to `~/.kabo`) does not exist → this is a first sign-in; enter directly (kabo-login.md hands off here).
 - `/kabo-analyze` with no arguments and no profile hands off here.
 - The user runs `/kabo-start` explicitly, or a profile exists. Read it first and branch on what is in it (see **Resume** below):
   - `onboarded_at` empty → an interrupted run. Offer to continue where they stopped.
@@ -256,7 +256,7 @@ Append `"pact"`.
 
 ### 16. Save + close
 
-Write `~/.kabo/onboarding-profile.json` (mode 0600) — the same file that was written after every group, now with `onboarded_at` set:
+Write `$KABO_DATA_ROOT/onboarding-profile.json` (falling back to `~/.kabo`; mode 0600) — the same file that was written after every group, now with `onboarded_at` set:
 
 ```json
 {
@@ -315,7 +315,9 @@ Close in chat:
 > - before you post, send me the video — I'll check it against your own baseline;
 > - say **trends** and I'll show you what's working in your niche right now.
 >
-> Saved to `~/.kabo/onboarding-profile.json` — your answers, your baseline, and this plan. No credentials in it. Delete the file any time and I'll start over.
+> Saved to `{profile path}` — your answers, your baseline, and this plan. No credentials in it. Delete the file any time and I'll start over.
+
+(`{profile path}` is the resolved absolute path of the profile file written above — the same substitution the Codex variant makes; never show the creator an unresolved env-var spelling.)
 
 In later sessions, read this profile and greet returning creators from it instead of re-asking anything.
 

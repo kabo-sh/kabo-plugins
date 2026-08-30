@@ -4,7 +4,7 @@ description: Sign in to Kabo from the terminal (a short code, confirmed in a bro
 
 Get the user authorized: run the bundled script's two-step sign-in, have them confirm the code it prints, then collect the approval.
 
-**Make this clear first**: sign-in happens in the terminal, and the browser tab only confirms a code. The plugin then holds a renewable credential in a `0600` file under `~/.kabo`, and reads it for you on every request. **You never touch it** — do not open it, print it, cat it, or assemble an Authorization header from anything; that is the plugin's job and doing it by hand is both a leak and a bug.
+**Make this clear first**: sign-in happens in the terminal, and the browser tab only confirms a code. The plugin then holds a renewable credential in a `0600` file under `$KABO_DATA_ROOT` (falling back to `~/.kabo`), and reads it for you on every request. **You never touch it** — do not open it, print it, cat it, or assemble an Authorization header from anything; that is the plugin's job and doing it by hand is both a leak and a bug.
 
 Requires **Claude Code 2.1.195 or newer** — see the troubleshooting section, this is the first thing to check when sign-in succeeded but the tools stay invisible.
 
@@ -40,7 +40,7 @@ Exit codes are worth reading back accurately: `1` means declined, expired, no si
 Sign-in takes effect in the running session on its own more often than not: the host re-runs the plugin's credential helper on every connection and once more, with a retry, when a tool call answers 401/403. So the first move after `--wait` exits 0 is **not** to tell the user to do anything — it is to confirm instead of claiming success: call `mcp__plugin_kabo-alpha_kabo__registry_skill_search` with query `youtube`.
 
 - Results returned → the user is authorized. **Do not recite the skill list** — what happens next depends on whether this machine has a creator profile:
-  - `~/.kabo/onboarding-profile.json` **does not exist** → this is a first sign-in. Go directly into the onboarding flow defined in `commands/kabo-start.md`: open with its welcome line and start its questionnaire. The onboarding is the authorized-confirmation message.
+  - `$KABO_DATA_ROOT/onboarding-profile.json` (falling back to `~/.kabo`) **does not exist** → this is a first sign-in. Go directly into the onboarding flow defined in `commands/kabo-start.md`: open with its welcome line and start its questionnaire. The onboarding is the authorized-confirmation message.
   - The profile **exists but `onboarded_at` is empty** → an interrupted onboarding. Hand off to `commands/kabo-start.md`, which offers to continue where they stopped (it never re-runs a finished analysis).
   - The profile **is complete** → welcome them back by handle, remind them of their plan (goal and cadence from the profile), and offer the next step from it. They can also state a request directly or use `/kabo-analyze`.
 - Tool invisible, or the call answers 401 → the sign-in worked but this session has not picked it up. Only now give the activation guidance in section 3, then retry the call once they have done it. Still stuck → troubleshooting.
