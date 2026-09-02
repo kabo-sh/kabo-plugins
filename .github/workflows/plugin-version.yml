@@ -1,0 +1,72 @@
+# Keeps the plugin version honest. The host installs `main` as-is and the skill registry's release
+# gate validates skills against the `main` commit, so the only place a wrong version can be stopped
+# is before the merge - and the only way a release tag never goes missing is for CI to create it.
+#
+# On a pull request: the seven version fields agree, shipped files cannot change without a bump, the
+# bump goes up, and the version is never below the highest existing tag.
+# On a push to main: the same checks, then an annotated tag `v<version>` plus a GitHub Release when
+# that tag does not exist yet. A push that leaves the version unchanged (docs outside plugins/,
+# workflow edits) is not a release and creates nothing.
+name: plugin-version
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 22
+      - name: Check the version fields
+        id: version
+        env:
+          BASE_REF: ${{ github.event_name == 'pull_request' && format('origin/{0}', github.base_ref) || '' }}
+        run: |
+          if [ -n "$BASE_REF" ]; then
+            version="$(node scripts/plugin-version.mjs --base "$BASE_REF" --tags)"
+          else
+            version="$(node scripts/plugin-version.mjs --tags)"
+          fi
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "plugin version $version"
+
+  release:
+    if: github.event_name == 'push'
+    needs: check
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+      - name: Tag and release when this version has no tag yet
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ needs.check.outputs.version }}
+        run: |
+          tag="v$VERSION"
+          if git rev-parse -q --verify "refs/tags/$tag" >/dev/null; then
+            echo "$tag already exists at $(git rev-parse --short "$tag^{commit}"); nothing to release"
+            exit 0
+          fi
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git tag -a "$tag" -m "kabo-alpha $VERSION"
+          git push origin "$tag"
+          # --generate-notes lists the merged pull requests since the previous tag; edit the release
+          # afterwards for user-facing wording when a version deserves more than a PR list.
+          gh release create "$tag" --title "kabo-alpha $VERSION" --generate-notes --verify-tag
