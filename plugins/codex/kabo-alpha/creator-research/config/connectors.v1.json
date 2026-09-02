@@ -18,6 +18,8 @@
         "optimize-creator-brand",
         "recommend-publish-timing",
         "research-content-trends",
+        "diagnose-reach-drop",
+        "research-youtube-trends",
         "review-creator-account"
       ],
       "operations": [
@@ -33,18 +35,44 @@
     },
     "tiktok-public": {
       "kind": "http_adapter",
-      "capability": "tiktok-public-profile",
+      "capability": "tiktok-public-data",
       "callable": true,
       "implementation_state": "platform_data_plane; check data_connector_catalog",
       "entrypoint": "data_connector_run",
       "used_by": [
-        "optimize-creator-brand"
+        "optimize-creator-brand",
+        "diagnose-reach-drop",
+        "review-creator-account",
+        "analyze-tiktok-competitors",
+        "research-tiktok-trends",
+        "research-content-trends",
+        "plan-platform-monetization",
+        "recommend-publish-timing"
       ],
       "operations": [
-        "check_handle"
+        "check_handle",
+        "list_account_posts",
+        "list_trending_sounds"
       ],
       "block_reason": null,
-      "runtime_note": "Checks a selected TikTok username against the public profile page. It needs no account authorization, fails closed when the page cannot be verified, and never reserves a username."
+      "runtime_note": "Checks a selected TikTok username, exposes a bounded current music chart, and supplies a bounded latest-post sequence plus the account's follower count for account diagnostics. The account-post operation returns only stable identity, publication, URL, follower and public count fields; it does not expose provider payloads or prove recommendation eligibility."
+    },
+    "tiktok-discovery": {
+      "kind": "http_adapter",
+      "capability": "tiktok-public-discovery",
+      "callable": true,
+      "implementation_state": "platform_data_plane; check data_connector_catalog",
+      "entrypoint": "data_connector_run",
+      "used_by": [
+        "analyze-tiktok-competitors",
+        "research-tiktok-trends"
+      ],
+      "operations": [
+        "search_videos",
+        "list_top_contents"
+      ],
+      "block_reason": null,
+      "runtime_note": "Supplies bounded TikTok keyword recall in relevance and most-liked order plus a regional daily ranked-content board. Provider time filters and successful responses are hints only: consumers must canonical-deduplicate, reapply exact timestamps, and treat an empty board as zero usable yield rather than complete market coverage."
     },
     "mock-owner-connector": {
       "kind": "fixture_adapter",
@@ -108,6 +136,8 @@
         "analyze-creator-competitors",
         "recommend-publish-timing",
         "research-content-trends",
+        "diagnose-reach-drop",
+        "research-instagram-trends",
         "review-creator-account"
       ],
       "operations": [
@@ -149,6 +179,21 @@
       ],
       "block_reason": null,
       "runtime_note": "Runs server-side in a private Kabo media worker with pinned media tooling; nothing runs on the user's machine and no credential is involved. All three operations are asynchronous: the call returns a job resource rather than an evidence envelope; poll that job with the data_connector_job tool until it reaches a terminal state, and report a job still running at reporting time as pending, never as absent. Readiness is the part that varies: a deployment with no media execution host reports ready false in the catalog and answers unsupported, and availability otherwise depends on upstream access from that worker's egress and can degrade without notice. Either way it is a platform-side condition the user cannot configure away, so check data_connector_catalog first, report which evidence is unavailable, deliver the rest under the skill's partial semantics, and never fall back to web search or prior knowledge."
+    },
+    "brand-ad-library": {
+      "kind": "http_adapter",
+      "capability": "brand-ad-library",
+      "callable": true,
+      "implementation_state": "platform_data_plane; check data_connector_catalog",
+      "entrypoint": "data_connector_run",
+      "used_by": [
+        "price-creator-brand-deals"
+      ],
+      "operations": [
+        "search_brand_ads"
+      ],
+      "block_reason": null,
+      "runtime_note": "Runs server-side; the platform owns the credential. It reports advertising a brand is currently running, which is observable context for a negotiation and never evidence of what that brand will pay a creator. Coverage is limited to one advertising ecosystem, so a brand advertising elsewhere is indistinguishable from one advertising nowhere."
     }
   },
   "internal_skills": {

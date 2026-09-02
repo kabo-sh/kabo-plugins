@@ -81,12 +81,14 @@ Because the fetch no longer happens on your machine, everything earlier versions
 
 Just talk normally: when a task involves **creator research**, the `meta-guidance` skill routes it through search → user confirmation → download → write to disk → signature verification → execution; a skill that fails verification or has been revoked by the platform is never executed.
 
-Seven creator research skills (the 2026-08-16 V2 generation) are currently published on the platform:
+Nine creator research skills are currently published on the platform:
 
 | skill | What it does |
 |---|---|
 | `review-creator-account` | Own-account health check: continue/stop/test decisions against a personal baseline |
 | `research-content-trends` | Current trends, top content and small-account outliers, turned into creator-fit directions |
+| `research-instagram-trends` | Instagram Reel trends with continuous evidence ranking |
+| `research-youtube-trends` | Official-API YouTube trends with continuous evidence ranking |
 | `analyze-creator-competitors` | Competitor discovery, cross-account playbooks, evidence-backed differentiation |
 | `analyze-content-video` | Per-timestamp single-video diagnosis and re-edit plan; third-party teardowns included |
 | `recommend-publish-timing` | Publish windows from the creator's own publish history; abstains honestly when the data is short |
@@ -140,6 +142,7 @@ The data root is fixed at `~/.kabo` (it does not follow `$CLAUDE_PLUGIN_DATA` �
 ├── onboarding-profile.json       # schema kabo-onboarding-profile.v1: the creator's onboarding answers, diagnosis, baseline (with coverage + provenance), 90-day plan and resume state (written by /kabo-start after every group, mode 0600); holds no secrets, but it is the account's own diagnosis and plan, so logout deletes it along with `work/`
 ├── skill-cache/<id>/<version>/   # unpacked skill + .meta.json (TTL 14 days, cleaned by bin/skill-gc)
 ├── skill-cache/<id>.disabled     # local disable marker for a revocation
+├── envelope-staging/<session>/   # connector envelopes the PostToolUse hook wrote verbatim (NN.json + NN.meta, 0600), waiting to be moved into a run's snapshot/ by bin/kabo-save-envelope; normally emptied within the same run
 ├── work/<run-id>/                # one directory atomically reserved by bin/kabo-run-dir per run, holding assembled snapshots, analyses, and reports (0700/0600, 14-day TTL via bin/skill-gc); logout deletes it outright
 ├── public-keys.<bucket>.json     # pinned server-side signing **keyset** (TOFU + continuity rotation; 0.9.x's public-key.<bucket>.pem is kept as a fallback)
 ├── pending-reports.jsonl         # buffer of skill verification failures awaiting relay (7-day TTL / 100 entries, listed at session start for relay, idempotent)
@@ -162,13 +165,22 @@ What remains is a usage signal about *which skill ran and whether it succeeded*:
 - **Only skill-runner subagents are reported**: the hook's matcher is restricted to `skill-runner`, and the server enforces this independently as well.
 - Without a Kabo sign-in there is no authorized MCP connection: the hook raises a non-blocking error and nothing is reported.
 
-The following is **still never collected**, and reading or serializing it is forbidden at the code level:
+The following is **still never collected** — never sent anywhere — and reading or serializing it for reporting is forbidden at the code level:
 
 - `prompt` (your prompts)
 - `tool_input` (tool arguments)
 - `tool_response` content
 - the session transcript that `transcript_path` points to
 - the output of any subagent, skill-runner included
+
+**One hook does read tool results, and it never sends them anywhere (0.19.0).** `scripts/hooks/persist-envelope.js` runs on `PostToolUse` and `PostToolUseFailure` for the three `data_connector_*` tools (the failure event matters because one failed envelope inside a batch flags the whole call, and the envelopes that did succeed are in that same payload) and writes each connector envelope to `~/.kabo/envelope-staging/` so a skill can archive it without the model retyping it. Reading and *reporting* are different acts, and only the second one is what the list above forbids. This hook:
+
+- writes to your disk only, under `~/.kabo`, mode 0600 — the same place your run outputs already live;
+- opens no socket and starts no subprocess, and imports nothing that could (no `node:child_process`, `node:http`, `node:https`, `node:net`, no `fetch` — the plugin's regression suite asserts this against the source);
+- is a plain `command` hook, deliberately not the `mcp_tool` kind the telemetry hooks use, so it has no authorized connection to send anything over;
+- hands the host back only a one-line summary: connector id, operation, status, byte count, a sha256 prefix and the staging path — never envelope content.
+
+Why it has to exist: a skill is required to archive the exact response it drew its numbers from, and before this the only way to get those bytes onto disk was to have the model retype the whole envelope. That was slow (measured: 836 seconds across seven runs) and it did not even work — the model shortened what it retyped and wrote itself a note admitting which fields it had dropped. Nothing leaves your machine either way; what changed is that the archived copy is now the real one.
 
 A hook can technically access the full session transcript — the platform does not enforce otherwise; this boundary is upheld by the plugin's own implementation, and it is **verifiable**: the hooks config can be checked entry by entry in the `/hooks` menu (matcher and command), and the code is open source and auditable.
 
@@ -200,10 +212,11 @@ plugins/claude/kabo-alpha/
 ├── agents/skill-runner.md        # restricted execution subagent (Read/Grep/Glob/Bash + data_connector_catalog/run)
 ├── hooks/hooks.json              # 3 events: SessionStart(command) + SubagentStart/Stop(mcp_tool, matcher=skill-runner)
 ├── scripts/hooks/session-start.sh# the SessionStart command: resolves node (node-resolve.sh) and execs session-start.js
+├── scripts/hooks/persist-envelope.js # PostToolUse + PostToolUseFailure: writes each connector envelope to envelope-staging/ verbatim so the model never has to retype one (0.19.0); local-only, see "Collection boundary"
 ├── scripts/hooks/session-start.js# syncs the revocation list from the public endpoints + fetches, verifies, and injects dynamic guidance; also checks the host can run the credential helper
 ├── scripts/lib/common.js         # shared by hooks and bin (path/endpoint conventions, credential read/write + renewal lock, checksum, compareSemver, guidance signature verification)
 ├── scripts/lib/credentials.js    # the device-flow and renewal wire protocol (discovery, device code, token exchange) — holds no request header
 ├── scripts/lib/node-resolve.sh   # shared node lookup for the two sh shims ($KABO_NODE → ~/.kabo/node-path → PATH → usual install locations); builtins only
-├── bin/                          # skill-verify / skill-unpack / skill-gc / kabo-run-dir / kabo-auth (executables) + kabo-headers and its POSIX sh launcher
+├── bin/                          # skill-verify / skill-unpack / skill-gc / kabo-run-dir / kabo-save-envelope / kabo-auth (executables) + kabo-headers and its POSIX sh launcher
 └── commands/                     # /kabo-login /kabo-start /kabo-analyze /kabo-channel /kabo-logout
 ```

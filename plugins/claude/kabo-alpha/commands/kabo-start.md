@@ -1,12 +1,14 @@
 ---
-description: First-run onboarding — the kabo app's guided setup, replicated in Claude Code (tap-through questionnaire, one real account check-up, a 90-day plan)
+description: First-run onboarding — the kabo app's guided setup, replicated in Claude Code (tap-through questionnaire, one real account check-up, a 90-day plan, and the first piece of content)
 ---
 
 # /kabo-start — first-run onboarding
 
-Give a newly signed-in creator the same guided first session as the kabo mobile app's onboarding: a short questionnaire, one real analysis of their own account, and a 90-day plan they commit to. The design intent is **faithful replication of the app flow** — same questions, same options, same order, same psychological beats — adapted only where the medium physically differs, and extended with the profile fields the product spec requires that the app's questionnaire does not collect. Do not re-minimize it, do not skip questionnaire steps, do not rephrase questions.
+Give a newly signed-in creator a guided first session: a short questionnaire, one real analysis of their own account, a 90-day plan with named weekly slots they commit to, and then the first piece of content that fills the first slot. The flow keeps the kabo mobile app's psychological beats — a real diagnosis before any advice, a plan measured against their own history, a pact they tap rather than read — but it is deliberately **shorter than the app's questionnaire** and it does not stop at the plan. Do not re-expand it, do not add questions back, do not rephrase the ones that are here.
 
 The question set below (copy, options, order, grouping) is authoritative — read it from this file and replicate it. It is shared with the Codex variant, and a regression test in the source repo holds the two in step, so a question that differs between the variants is a bug in the source repo, not a choice you make at run time.
+
+**12 questionnaire questions in 3 groups.** Everything the app asked that did not change an output was cut (2026-08-26): the dream-and-character group, the video-style bonus round, the grit statement, the brand-collaboration question, and the popup that asked how the creator wanted to spend the wait. The two niche levels and the plan inputs are now one step. Cutting them cost nothing downstream — none of them fed the diagnosis, the cadence, or the plan. The product spec fields that survive are the ones a later step actually reads.
 
 ## When to run
 
@@ -18,18 +20,20 @@ The question set below (copy, options, order, grouping) is authoritative — rea
 
 ## Mechanics
 
-- Ask every questionnaire step with the **AskUserQuestion** tool — options are tapped, not typed. The questions and options below are verbatim from the app and the fixture; keep them fixed. AskUserQuestion adds an "Other" free-text choice automatically; accept whatever arrives through it.
-- Free-text input (the channel link) is asked in chat, not in a popup.
+- Ask every questionnaire step with the **AskUserQuestion** tool — options are tapped, not typed. The questions and options below are verbatim from the fixture; keep them fixed. AskUserQuestion adds an "Other" free-text choice automatically; accept whatever arrives through it.
+- Free-text input (the channel link, and the handle or URL in step 12) is asked in chat, not in a popup.
 - All user-facing copy in the user's language; the English below is the source copy.
-- If AskUserQuestion is not available in this environment, ask the same questions one at a time in chat — same order, same options, and always say that typing their own answer is fine.
-- **Steps**: every questionnaire group opens with its `Step N of 6` label and its one-line intro (both below), then the questions. The intro is one warm sentence of context, never a pitch, never a second question.
+- If AskUserQuestion is not available in this environment, ask the same questions one at a time in chat — same order, same options, always saying that typing their own answer is fine, and counting them as `Question N of 12`.
+- **Steps**: every questionnaire group opens with its `Step N of 3` label and its one-line intro (both below), then the questions. The intro is one warm sentence of context, never a pitch, never a second question.
 - **Skip is silent.** If the user says skip, later, or simply answers nothing, move on without comment and never come back to that question. A skipped answer is **absent** from the profile (the key is omitted) — never an empty string, never a placeholder. Do not explain what they are missing, do not ask why.
-- **Save as you go.** After every completed group, write the profile (schema in step 16) with the group's key appended to `completed_steps`. A closed terminal must never cost the user their answers or a second analysis run.
+- **Save as you go.** After every completed group, write the profile (schema in step 14) with the group's key appended to `completed_steps`. A closed terminal must never cost the user their answers or a second analysis run.
 
 ## Estimates — the single source for time and cost figures
 
-- `{analysis_minutes}` = **10–15** · `{token_estimate}` = **on the order of 100,000 tokens**
-- Measured once (2026-08-20 rehearsal: 12m20s, ~109k tokens on one small account); figures vary with account size and will change as the runner improves. Update them from telemetry **here, and only here** — every `{analysis_minutes}` / `{token_estimate}` below substitutes these values at run time. Never hardcode figures into the copy.
+- `{questionnaire_minutes}` = **about a minute** — basis: the 2026-08-20 rehearsal measured ~2 minutes for the then-22-question set; 12 questions scale to about half of that. This is a scaled figure, not a fresh measurement; re-measure and correct it here.
+- `{analysis_minutes}` = **10–15** · `{token_estimate}` = **on the order of 100,000 tokens** — measured once (2026-08-20 rehearsal: 12m20s, ~109k tokens on one small account); figures vary with account size.
+- `{content_minutes}` and `{content_token_estimate}` for the step-12 run are **not measured yet**. Until a rehearsal produces them, say plainly that this second run spends a further share of their quota and that its size has not been measured — **never quote a number for it**. Inventing one to fill the sentence breaks the evidence rules as surely as inventing a follower count.
+- Update all of these from telemetry **here, and only here** — every `{...}` below substitutes these values at run time. Never hardcode figures into the copy.
 
 ## Flow
 
@@ -37,14 +41,14 @@ The question set below (copy, options, order, grouping) is authoritative — rea
 
 > Unleash your potential to go viral with AI. Your content deserves to be seen.
 >
-> Here's the plan: **6 groups of quick questions (about 4 minutes), one real analysis of your account, and a 90-day plan.**
+> Here's the plan: **3 groups of quick questions ({questionnaire_minutes}), one real analysis of your account, a 90-day plan — and then we write your first piece of content together.**
 > Say **skip** at any point and I'll continue with whatever you've answered so far.
 
 (The welcome sells the plan, not the price — the analysis cost belongs to the consent popup in step 5, where agreeing to it is the point. Decided 2026-08-22 after review discussion.)
 
 ### 2. Popup group 1 — creator basics (one AskUserQuestion call, 4 questions)
 
-`Step 1 of 6` · intro: *First, a quick picture of where you are today. Four taps.*
+`Step 1 of 3` · intro: *First, a quick picture of where you are today. Four taps.*
 
 1. "How long have you been creating content?" — Less than a month / 1–3 months / 3–12 months / More than a year
 2. "How many times do you post per week?" — Not every week / Once or twice / 3–5 times / Every day
@@ -55,7 +59,7 @@ Save → `completed_steps: ["basics"]`.
 
 ### 3. Popup group A — starting line (one AskUserQuestion call, 4 questions)
 
-`Step 2 of 6` · intro: *Now your starting line, so the plan is measured against you and nobody else.*
+`Step 2 of 3` · intro: *Now your starting line, so the plan is measured against you and nobody else.*
 
 Before asking, infer `{country}` from the shell time zone (`echo $TZ`, falling back to `date +%Z`; map the zone to its most likely country). If no country can be defended, substitute the zone name itself for `{country}` and keep the question text unchanged — never a guess presented as fact. "No — I'll type it" is answered through the free-text entry; take whatever they type as the country. If nothing was typed, leave it absent — do not ask again in chat.
 
@@ -66,7 +70,7 @@ Before asking, infer `{country}` from the shell time zone (`echo $TZ`, falling b
 | A3 | Account type | "Is this account personal or business?" | Personal brand / A business or product / Client work / Not sure yet |
 | A4 | Referral | "How did you hear about Kabo?" | Someone on the team / GitHub or the docs / A friend / Somewhere else |
 
-A1 is the creator's **current** follower band; it is deliberately distinct from the dream number asked in group 3.
+A1 is the creator's **current** follower band; it is deliberately distinct from the dream number asked in step 8.
 
 Save → append `"baseline"`.
 
@@ -96,97 +100,52 @@ Before showing it, resolve the account-review skill via `registry_skill_search` 
 
 ### 6. Not-now path
 
-No analysis runs. Skip step 8 (the wait question), step 12 (the bonus round — it is not offered on this path) and steps 13–14 (heartbeats and the report). Say one line first, so they know how much is left and that they can stop:
+No analysis runs. Skip steps 9–10 (the wait and the report). Say one line first, so they know how much is left and that they can stop:
 
-> No problem. A few more questions would help shape your plan — about two minutes. Say **skip** at any point and we'll go straight to the plan.
+> No problem. One more short group would help shape your plan. Say **skip** and we'll go straight to it.
 
-Then continue with groups 2, B1, B2, 3 (steps 9–11), each still saved as it completes. On this path, **skip said once ends the questionnaire** — not just the current group — and the flow goes straight to the closing copy below. Then, in place of the report delivery, say this:
+Then continue with step 8, still saved as it completes. On this path, **skip said once ends the questionnaire** — not just the current group — and the flow goes straight to the plan. In place of the report delivery, say this:
 
-> Without a real run over your videos there is no diagnosis today, so I won't pretend to have one. What I can give you is direction from your answers: {one or two concrete, non-numeric suggestions grounded in their stated goal, obstacle, and niche}. Whenever you want the actual check-up, send me a channel link and I'll run it then.
+> Without a real run over your videos there is no diagnosis today, so I won't pretend to have one. What I can give you is direction from your answers: {one or two concrete, non-numeric suggestions grounded in their stated goal and niche}. Whenever you want the actual check-up, send me a channel link and I'll run it then.
 
-Then continue with the pact card (step 15), anchored on cadence only — no target median, no baseline numbers.
+Then continue with the pact card (step 11), anchored on cadence only — no target median, no baseline numbers — and on to step 12, which does not depend on the account run.
 
 ### 7. Launch the real analysis
 
-Follow meta-guidance's single-skill flow exactly (cache check → download → `skill-verify` → dispatch skill-runner). Launch the runner **in the background** if the environment allows and continue to step 8 while it works. If backgrounding is not possible, still ask step 8 first (so the choice is theirs) but with its **foreground intro** instead of the background one, then run the questionnaire groups their choice allows, then run the analysis in the foreground. In the foreground case, "Nothing — ping me when it's done" means the run starts straight away.
+Follow meta-guidance's single-skill flow exactly (cache check → download → `skill-verify` → dispatch skill-runner). Launch the runner **in the background** if the environment allows and continue to step 8 while it works.
+
+If backgrounding is not possible, say so in one line, ask step 8 first so the questions are out of the way, then run the analysis in the foreground.
+
+There is no longer a popup asking how the creator wants to spend the wait. With one short group left it cost more attention than it saved, and it routinely bought silence the creator had not asked for. The group in step 8 is offered once, plainly, and **skip** ends it — that is the whole consent mechanism now.
 
 Record `provenance.run_id`, `skill_id`, and `skill_version` in the profile as soon as they are known.
 
-### 8. Popup D — how to wait (one AskUserQuestion call, 1 question)
+### 8. Popup group 3 — plan inputs and niche (two AskUserQuestion calls)
 
-`Step 3 of 6` · intro: *The analysis is running in the background. Whatever you pick here is fine, and I'll stick to it.*
+`Step 3 of 3` · intro: *Last step, while the analysis works: the two inputs your plan needs, and your niche.*
 
-Foreground intro (only when the runner could not be backgrounded, step 7): *The analysis will run next and takes about {analysis_minutes} minutes. Anything you'd like to answer first? Whatever you pick is fine — "Nothing" starts the run straight away.*
+**Call one** (3 questions):
 
-"The analysis takes about {analysis_minutes} minutes. How do you want to spend it?" — Keep answering questions / Just the essentials, then leave me alone / Nothing — ping me when it's done
+1. "How much time are you ready to invest?" — 15 minutes a day / 30 minutes a day / 1 hour a day / As much as it takes
+2. "What follower count are you dreaming of?" — 1,000 / 10,000 / 100,000 / 1,000,000+
+3. "What's your main content area?" — Lifestyle & personal / Knowledge & skills / Entertainment & creative / Business & professional
 
-| choice | what happens |
-|---|---|
-| **Keep answering questions** | steps 9, 10, 11, 12 in order, then the silent wait (step 13) |
-| **Just the essentials, then leave me alone** | steps 9 and 10 only; steps 11 and 12 are skipped, then the silent wait |
-| **Nothing — ping me when it's done** | steps 9–12 all skipped; write the partial profile now; silent wait; the first line of delivery is an explicit callback (step 14) |
+**Call two** · header "Sub-niche" · intro: *And one level down.* · "Which of these is closest?" — the four options matching the content-area answer:
 
-This is asked **once**. Whatever they chose holds for the rest of the run — never re-offer the skipped groups, never ask "one more?". Save → append `"wait"`.
-
-### 9. Popup group 2 — dream and character (one AskUserQuestion call, 4 questions)
-
-`Step 4 of 6` · intro: *While it works, a little about what you're really after. There are no wrong answers here.*
-
-1. "What is your ultimate dream?" — Build a massive audience / Make content my full-time job / Help people with my story / Leave a legacy
-2. "What prevents you from achieving this dream?" — I don't know what to post / I struggle with consistency / I need better feedback / I compare myself to others
-3. "Are you more of an introvert or an extrovert?" — Introvert / Extrovert / A bit of both
-4. "When a video doesn't work, I tend to doubt myself." — Not really me / Sometimes / Often / Totally me
-
-(The app renders question 4 here and question 1 in group 3 as a five-emoji scale; four labeled options is the closest AskUserQuestion allows.)
-
-Save → append `"dream"`.
-
-### 10. Popup group B — niche, two levels (two AskUserQuestion calls, 1 question each)
-
-`Step 5 of 6` · intro: *Your niche, in two taps. If none of these fit, just type your own.*
-
-**B1** · header "Niche" · "What's your main content area?" — Lifestyle & personal / Knowledge & skills / Entertainment & creative / Business & professional
-
-**B2** · header "Sub-niche" · intro: *And one level down.* · "Which of these is closest?" — the four options matching the B1 answer:
-
-| B1 | B2 options |
+| content area | sub-niche options |
 |---|---|
 | Lifestyle & personal | Fitness & health / Food & cooking / Travel / Fashion & beauty |
 | Knowledge & skills | Tech & coding / Finance & investing / Education & how-to / Language & culture |
 | Entertainment & creative | Comedy & skits / Gaming / Music & dance / Art & design |
 | Business & professional | Marketing & growth / Entrepreneurship / Real estate / Career & productivity |
 
-**A free-text entry must always be available at both levels** — this is the one hard warning in the product spec (closed niche lists are a long-standing complaint about comparable apps). AskUserQuestion's automatic Other covers it; if the host ever stops adding it, add an explicit "Something else" option and ask for the text. If B1 was answered in free text, ask B2 with no preset list: same question, free text only. If B1 was skipped, skip B2 too without comment.
+**A free-text entry must always be available at both niche levels** — this is the one hard warning in the product spec (closed niche lists are a long-standing complaint about comparable apps). AskUserQuestion's automatic Other covers it; if the host ever stops adding it, add an explicit "Something else" option and ask for the text. If the content area was answered in free text, ask the sub-niche with no preset list: same question, free text only. If the content area was skipped, skip the sub-niche too without comment.
 
-Save → append `"niche_area"`, then `"niche_sub"`.
+Save → append `"plan_inputs"`, then `"niche_sub"`.
 
-### 11. Popup group 3 — commitment inputs (one AskUserQuestion call, 4 questions)
+### 9. The wait (chat; only while the runner is still working)
 
-`Step 6 of 6` · intro: *Last group: the inputs for your plan. Answer as you are, not as you think you should be.*
-
-1. "I'm the type to keep going even when it's hard." — Not really me / Sometimes / Often / Totally me
-2. "How much time are you ready to invest?" — 15 minutes a day / 30 minutes a day / 1 hour a day / As much as it takes
-3. "What follower count are you dreaming of?" — 1,000 / 10,000 / 100,000 / 1,000,000+
-4. "Would you be open to paid brand collaborations?" — Yes / Maybe later / No
-
-Save → append `"commitment"`.
-
-### 12. Popup group C — how your videos are made (one AskUserQuestion call, 4 questions)
-
-No step label (the six steps are done; this is the bonus round). Intro: *Bonus round, only if you feel like it: how your videos are made. Skip any of these freely.*
-
-| # | header | question | options |
-|---|---|---|---|
-| C1 | Hook style | "How do most of your videos start?" | A question / A bold claim / A story / No fixed pattern |
-| C2 | Scripting | "Do you script before filming?" | Full script / Bullet points / I improvise / Depends |
-| C3 | On camera | "Are you on camera?" | Always / Sometimes / Voice only / Never |
-| C4 | Length | "How long are your videos usually?" | Under 30s / 30–60s / 1–3 min / Over 3 min |
-
-These feed the profile's content-style fields and the later script tooling; nothing in this run depends on them. Save → append `"style"`.
-
-### 13. The wait (chat; only while the runner is still working)
-
-The 2026-08-20 rehearsal measured ~2 minutes of questions against ~12 minutes of analysis; even the full questionnaire now covers only about a third of the run. That gap is not filled with more questions. When the questionnaire (whatever Popup D allowed of it) is done and the runner is still working, say once:
+The questionnaire now covers about a minute of a run that takes {analysis_minutes}. That gap is not filled with more questions. When step 8 is done and the runner is still working, say once:
 
 > That's all the questions. The analysis is still running — I'll deliver it here the moment it's back. Your answers so far are saved, so you can step away.
 
@@ -196,9 +155,9 @@ Then go quiet, with one exception: about every 3 minutes, one neutral line of pr
 
 Never ask whether they are still there, never fill the silence with tips or content the flow does not call for, never ask another question. If the user talks to you in the meantime, answer normally; the heartbeat cadence does not change.
 
-### 14. Deliver the result (chat; when the runner returns)
+### 10. Deliver the result (chat; when the runner returns)
 
-If Popup D was **Nothing — ping me when it's done**, the first line is an explicit callback, before anything else:
+If the creator has been silent through a long wait, open with an explicit callback before anything else:
 
 > Your analysis is done — here it is whenever you're ready.
 
@@ -225,22 +184,30 @@ Niche rule (identical in both plugins). *Stated* is `niche_sub` if answered, oth
 
 If the run failed or came back partial: say what is missing in task terms, deliver what exists, and keep going — the plan then anchors on cadence. Never fabricate a baseline, never leave a dead end.
 
-### 15. The 90-day pact (chat card + Popup F)
+### 11. The 90-day pact, with named weekly slots (chat card + Popup F)
 
-Compute: cadence **N** from the posting + time answers (at least their current frequency, at most what their time budget supports; if either was skipped, use what is there, and if both were skipped, N = 2). The measurable target lifts their **median** toward the level their own top content already reached. Render:
+Compute cadence **N** from the posting and time answers: at least their current frequency, at most what their time budget supports; if either was skipped, use what is there, and if both were skipped, N = 2.
+
+**Then cut N into named slots.** A number is not a plan — "2 posts a week" leaves the creator to decide twice a week what to post, which is the exact decision the report usually says they are losing. Give each slot a weekday and a job, derived in this order: the report's top recommendation takes the first slot; the report's "continue" item takes the second; any further slots repeat the stronger of the two. Spread the weekdays evenly. Every slot's job must trace to the report (or, on the Not-now path and after a failed run, to their stated goal and niche) — never to a generic content calendar.
+
+The measurable target lifts their **median** toward the level their own top content already reached. Render:
 
 > **Your 90-day plan** — until {date +90 days}
 > Goal: lift your median views from {X} toward {Y} — the level your own best content already proves possible
 > Cadence: {N} posts per week
-> First experiment: {the report's top recommendation}
+>
+> | slot | day | what goes here |
+> |---|---|---|
+> | 1 | {weekday} | {the report's top recommendation, as a thing to film} |
+> | 2 | {weekday} | {the report's continue item, as a thing to film} |
 >
 > *"I commit to posting {N} times per week, to grow my channel."*
 >
 > On {date} we re-measure with the same yardstick.
 
-On the Not-now path, or after a failed run, drop the Goal line and the first-experiment line's report dependency (use the best questionnaire-based suggestion instead); the card anchors on cadence only.
+On the Not-now path, or after a failed run, drop the Goal line and fill the slots from their stated goal and niche instead; the card anchors on cadence only.
 
-The followers answer (group 3, Q3) is their dream number — acknowledge it as the dream, but the measurable goal stays anchored to their own baseline.
+The followers answer is their dream number — acknowledge it as the dream, but the measurable goal stays anchored to their own baseline.
 
 **Popup F — the pact** (one AskUserQuestion call, 1 question). The card is something to read; the pact is something they do, so it must be tapped, not printed.
 
@@ -248,13 +215,55 @@ Intro: *Here's the plan as it stands. A lighter version is completely fine; the 
 
 header "The pact" · "Commit to {N} posts a week until {date}?" — I commit / Make it lighter / Make it harder / Not now
 
+**Settled in one reply. There is no second pact popup.**
+
 - **I commit** → `plan.committed = true`, `committed_at` = now.
-- **Make it lighter** → N − 1 (minimum 1); **Make it harder** → N + 1. Re-render the card once with the new N and ask Popup F once more, same intro. If the second answer is again lighter or harder, apply it, re-render the card, and save that plan with `committed = false` — a plan they shaped is the outcome; there is no third popup and no pledge is extracted.
-- **Not now** → `plan.committed = false`. Save the plan as it stands. No follow-up, no reasons asked; the close (step 16) is the same warm close.
+- **Make it lighter** → N − 1 (minimum 1). **Make it harder** → N + 1. Apply it, re-cut the slots for the new N, and save with `plan.committed = true` and `committed_at` = now. Then show the re-cut table **as a statement of what was saved**, not as another question: *"Saved: {N} a week, {days}."* Asking them to confirm the number they just chose is the friction this flow was trimmed to remove.
+- **Not now** → `plan.committed = false`. Save the plan as it stands. No follow-up, no reasons asked.
 
 Append `"pact"`.
 
-### 16. Save + close
+### 12. First move — turn the plan into actual content (Popup G, then one run)
+
+The plan names what goes in slot one; it does not yet contain the thing itself. This step fills it. It is where onboarding stops being a questionnaire and becomes the product.
+
+**Popup G — first move** (one AskUserQuestion call, 1 question)
+
+Intro: *Your plan is set; the first slot is still empty. Pick how we fill it — or stop here, the plan is already saved.*
+
+Before showing it, resolve the skill for the route the creator is most likely to take via `registry_skill_search` (capability keywords, per meta-guidance) and put the matched skill's name / version / permissions into the description text, together with the second run's cost line: this popup **doubles as the pre-run confirmation for the second run**, exactly as step 5 does for the first. State that this is a further run against their own quota and that its size has not been measured yet — see the Estimates block, and never quote a number you do not have.
+
+header "First move" · "How should we find your first piece of content?" — Recommend three topics for me / I'll name a creator I want to learn from / I'll send a video I want to make my version of / Not now
+
+| choice | what happens |
+|---|---|
+| **Recommend three topics for me** | Search for the trend / ideation capability and run it against their saved niche and baseline. Deliver **three** topics, each carrying the evidence that justifies it: what is currently performing, in whose hands, and why it transfers to this account. Never three topics from prior knowledge. |
+| **I'll name a creator I want to learn from** | Ask in chat for the handle or link. Search for the channel-research or benchmarking capability and run it on that account, reported **against the creator's own baseline** — what this account does that theirs does not, in their own numbers' terms. |
+| **I'll send a video I want to make my version of** | Ask in chat for the URL. Search for the breakout- or video-breakdown capability and run it on that video: hook, structure, and call to action, broken out as things that can be rebuilt. |
+| **Not now** | No run. Go straight to step 13. Accept it the first time, no reason asked. |
+
+**One primary skill for this step.** Meta-guidance rule D holds: these capabilities overlap and extra runs burn paid quota. Run the one that matches the chosen route; add a second only for independent evidence value, and at most one.
+
+**Then, from whatever came back, produce all three of these in one reply:**
+
+1. **The analysis** — what the evidence actually shows, per Section E, with its measurement basis and limitations kept.
+2. **A script draft** for slot one, built on that evidence and adapted to their niche, their stated goal, and the account's own baseline.
+3. **Recording prep** — what they need in front of the camera to shoot it: the opening line verbatim, the beats in order, and anything that has to be on hand.
+
+**Coverage is not assumed.** Resolve script-writing and recording-prep against `registry_skill_search` too. If a skill covers them, run it. If nothing does, say so plainly in one line and write the draft here from the retrieved evidence — clearly labeled as your own drafting on top of the run's findings, never presented as a skill's output, and never mixed into the statements about retrieved data. A route whose skill search returns nothing is reported as **no coverage**, and the flow continues with the routes that do have it; it is never quietly swapped for prior knowledge or a web search.
+
+Save the route, its subject, and the run id → append `"first_move"`.
+
+### 13. What else I can do for you (chat)
+
+Once, at the end, tell them the rest of what is available. Two sources, and neither is a list you write from memory:
+
+- **The platform capabilities**: one `registry_skill_search` sweep over the broad capability directions, and list what actually comes back — relabelled per Section E, one line each, in terms of what the creator would get, not what the skill is called. If the sweep returns nothing, say that nothing else is available right now. Never print a capability that did not come back from the search, and never name a supplier, product, or API behind one.
+- **The local commands**, which you may name literally because they ship in this plugin: `/kabo-analyze` for a fresh research question, `/kabo-start` to redo this setup, `/kabo-logout` to sign out.
+
+Keep it to a scannable list. This is an inventory, not a pitch: no urging, no "you should try", no ranking by what you would prefer they run.
+
+### 14. Save + close
 
 Write `~/.kabo/onboarding-profile.json` (mode 0600) — the same file that was written after every group, now with `onboarded_at` set:
 
@@ -266,15 +275,12 @@ Write `~/.kabo/onboarding-profile.json` (mode 0600) — the same file that was w
 
   "answers": {
     "creating": "", "posting": "", "platforms": "", "goal": "",
-    "dream": "", "obstacle": "", "personality": "", "belief": "", "grit": "",
-    "time": "", "followers_dream": "", "collabs": "",
-
     "followers_now": "",
     "country": "",
     "account_type": "",
     "referral": "",
-    "niche_area": "", "niche_sub": "",
-    "hook_style": "", "scripting": "", "on_camera": "", "video_length": ""
+    "time": "", "followers_dream": "",
+    "niche_area": "", "niche_sub": ""
   },
 
   "diagnosis": {
@@ -294,9 +300,12 @@ Write `~/.kabo/onboarding-profile.json` (mode 0600) — the same file that was w
 
   "plan": {
     "target_median": 0, "cadence_per_week": 0,
-    "first_experiment": "", "start": "", "review": "",
+    "slots": [{ "day": "", "job": "" }],
+    "start": "", "review": "",
     "committed": false, "committed_at": ""
   },
+
+  "first_move": { "route": "", "subject": "", "run_id": "", "delivered_at": "" },
 
   "provenance": { "run_id": "", "skill_id": "", "skill_version": "" },
 
@@ -304,18 +313,20 @@ Write `~/.kabo/onboarding-profile.json` (mode 0600) — the same file that was w
 }
 ```
 
-- `answers.*`: the option text as chosen (or the free text). A skipped answer is **absent** from the profile (the key is omitted) — never an empty string, never a placeholder.
+- `answers.*`: the option text as chosen (or the free text). A skipped answer is **absent** from the profile (the key is omitted) — never an empty string, never a placeholder. The keys the 2026-08-26 trim removed (`dream`, `obstacle`, `personality`, `belief`, `grit`, `collabs`, `hook_style`, `scripting`, `on_camera`, `video_length`) are no longer collected and no longer written; a profile carrying them from an earlier run is still valid — leave them alone, do not re-ask, do not delete.
+- `plan.slots`: one entry per weekly slot, in the order rendered on the card. `first_experiment` is gone — the first slot's `job` is what it used to hold.
 - `diagnosis`, `baseline`, `provenance`: from the run, as produced; `coverage.limitations` carries the run's stated limitations verbatim so a later re-measure has the same yardstick. On the Not-now path there was no run, so all three blocks are **omitted** (not written as empty / zero).
-- `completed_steps`: group keys in the order they were completed, from `basics`, `baseline`, `consent`, `wait`, `dream`, `niche_area`, `niche_sub`, `commitment`, `style`, `niche_reconcile`, `pact`.
+- `first_move`: omitted entirely when step 12 was declined or produced no run.
+- `completed_steps`: group keys in the order they were completed, from `basics`, `baseline`, `consent`, `plan_inputs`, `niche_sub`, `niche_reconcile`, `pact`, `first_move`. Keys from a superseded version of this flow (`wait`, `dream`, `niche_area`, `commitment`, `style`) may appear in an older profile; treat them as satisfied where they overlap and ignore the rest, rather than restarting the creator.
 - `onboarded_at`: set only here, at the close; its presence is what marks a finished run.
 
 Close in chat:
 
-> That's your setup done. Two things I can do whenever you're ready:
-> - before you post, send me the video — I'll check it against your own baseline;
-> - say **trends** and I'll show you what's working in your niche right now.
+> That's your setup done, and slot one has something in it.
 >
-> Saved to `~/.kabo/onboarding-profile.json` — your answers, your baseline, and this plan. No credentials in it. Delete the file any time and I'll start over.
+> Saved to `~/.kabo/onboarding-profile.json` — your answers, your baseline, your plan and your first script. No credentials in it. Delete the file any time and I'll start over.
+>
+> Before you post, send me the video and I'll check it against your own baseline.
 
 In later sessions, read this profile and greet returning creators from it instead of re-asking anything.
 
@@ -324,21 +335,25 @@ In later sessions, read this profile and greet returning creators from it instea
 The profile is written after every group, so an interrupted run is a normal case, not a failure.
 
 - Profile exists and `onboarded_at` is empty → say how far they got and ask (one AskUserQuestion call, header "Welcome back"): "You got through {N} of the question groups last time. Pick up where you left off?" — Continue / Start over.
-  - **Continue** → resume at the first group not in `completed_steps`, in flow order. If `provenance.run_id` and `baseline.measured_at` are set, the analysis already ran: do not run it again; go to delivery (step 14) once the remaining wait-phase groups their Popup D choice allowed are done. If the run never completed, re-launch it (cost line and consent shown again, since it is a new spend).
-  - **Start over** → discard the answers and begin at step 1. If `baseline.measured_at` is within 30 days, keep `baseline`, `diagnosis` and `provenance`, **skip steps 4–8** (channel, consent, launch, Popup D) and go from group A straight to group 2 — the consent popup is shown only when a new run will actually be launched. Otherwise step 4 onward runs as on a first pass.
-- Profile complete (`onboarded_at` set) and the user asks to **redo onboarding** → the questionnaire and plan are redone. If `baseline.measured_at` is within 30 days, the analysis is **not** re-run: steps 4–8 are skipped and group A leads straight into group 2. If it is older than 30 days, the consent popup (step 5) with its cost line is shown again; accepting re-runs the analysis, declining keeps the old baseline, says so in one line, and skips steps 7–8.
+  - **Continue** → resume at the first group not in `completed_steps`, in flow order. If `provenance.run_id` and `baseline.measured_at` are set, the analysis already ran: do not run it again; go to delivery (step 10) once step 8 is done. If the run never completed, re-launch it (cost line and consent shown again, since it is a new spend).
+  - **Start over** → discard the answers and begin at step 1. If `baseline.measured_at` is within 30 days, keep `baseline`, `diagnosis` and `provenance`, **skip steps 4–7** (channel, consent, launch) and go from group A straight to step 8 — the consent popup is shown only when a new run will actually be launched. Otherwise step 4 onward runs as on a first pass.
+- Profile complete (`onboarded_at` set) and the user asks to **redo onboarding** → the questionnaire and plan are redone. If `baseline.measured_at` is within 30 days, the analysis is **not** re-run: steps 4–7 are skipped and group A leads straight into step 8. If it is older than 30 days, the consent popup (step 5) with its cost line is shown again; accepting re-runs the analysis, declining keeps the old baseline, says so in one line, and skips step 7.
+- A complete profile whose `first_move` is absent → step 12 is the natural next step for a returning creator; offer it as today's next step rather than redoing the questionnaire.
 
 ## App steps deliberately not carried over
 
-- **notify** (push-notification permission): no medium equivalent; the return-visit close in step 16 carries that function.
+- **notify** (push-notification permission): no medium equivalent; the return-visit close in step 14 carries that function.
 - **intro carousel** ("250,000 accounts analyzed"): fabricated social proof — fails the evidence rules.
 - **save / Apple / Google sign-in**: `/kabo-login` already happened; the profile file is the save.
 - **paywall / blurred report** (the product spec's principle 1: the free tier gets the shape of the report and the paywall lands the second the diagnosis finishes): deliberately not replicated. The internal alpha plugin is not monetized, so the report is delivered in full. This is a recorded deviation from the product spec, not an oversight.
+- **the dream-and-character group, the video-style bonus round, the grit and brand-collaboration questions, and the wait-preference popup** (cut 2026-08-26): none of them changed the diagnosis, the cadence, the slots or the script, and together they were most of the flow's length. The personality read they were meant to give is better served by what the account actually publishes, which the run measures directly.
 
 ## Hard rules
 
-- Question copy and options are fixed — replicate, don't improvise.
-- **Never invent numbers**: no fake scores, no invented social proof, no follower projections. Every figure comes from the run or is absent.
-- The skill run itself follows meta-guidance unchanged (verification, Section E delivery, failure semantics). Onboarding changes the framing around the run, never the evidence rules.
+- Question copy and options are fixed — replicate, don't improvise. The set is deliberately short; do not add questions back.
+- **Never invent numbers**: no fake scores, no invented social proof, no follower projections, and no cost estimate for a run that has never been measured. Every figure comes from a run, from the Estimates block, or is absent.
+- Both runs follow meta-guidance unchanged (verification, one primary skill per run, Section E delivery, failure semantics). Onboarding changes the framing around a run, never the evidence rules.
+- **Every popup that precedes a run carries that run's cost line.** Step 5 does it for the account analysis; step 12 does it for the content run. A run the creator did not knowingly pay for is a bug.
+- A script you drafted yourself is labeled as yours, never as a skill's output, and never blended into the statements about retrieved data.
 - Never promise virality; the pact's measurable target derives from the creator's own history only.
-- **Never pressure.** Skip, later, Not now and "Nothing — ping me" are each accepted the first time, silently, and never revisited in the run. The wait is quiet apart from the fixed heartbeat line. Nothing is re-pitched, and no answer is ever demanded.
+- **Never pressure.** Skip and Not now are each accepted the first time, silently, and never revisited in the run. The wait is quiet apart from the fixed heartbeat line. The pact is settled in one reply. Nothing is re-pitched, and no answer is ever demanded.
