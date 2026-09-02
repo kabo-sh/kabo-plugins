@@ -27,6 +27,12 @@ curl -fsSL https://raw.githubusercontent.com/kabo-sh/kabo-plugins/main/install.s
 
 Already cloned this repo? Skip the network: `./install.sh --repo /path/to/kabo-plugins`.
 
+### Upgrading, or repairing a broken install
+
+Run the same one-line command again. On a machine that already has the plugin it refreshes the marketplace clone and runs `claude plugin update`, and if the host answers `Plugin "kabo-alpha" not found` — the plugin is installed but the marketplace it came from can no longer be resolved — it re-registers the marketplace from GitHub and reinstalls the plugin. Your sign-in is kept: the credential lives under `~/.kabo`, which the installer never touches. Restart Claude Code afterwards.
+
+By hand, the equivalent is `claude plugin marketplace update kabo-plugins` followed by `claude plugin update kabo-alpha@kabo-plugins`; a plain `claude plugin update` on its own compares against whatever the local clone holds, so if the refresh fails silently it reports the old version as the latest.
+
 The rest of this section is the same thing by hand.
 
 ### Claude Code
