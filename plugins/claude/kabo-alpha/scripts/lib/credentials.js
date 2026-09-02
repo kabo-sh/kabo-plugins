@@ -188,15 +188,39 @@ export async function requestDeviceCode(deviceEndpoint, timeoutMs = DEVICE_CODE_
 
 /**
  * Normalize a token endpoint response into the three outcomes a caller can act on.
+ *
+ * The split that matters is not HTTP-shaped, it is "does waiting help": 'network' means come back in
+ * a moment holding the same credential, 'error' means the server has judged something about this
+ * request and repeating it changes nothing.
+ *
  * @returns {{outcome: 'tokens', tokens: object}
  *   | {outcome: 'error', code: string}
  *   | {outcome: 'network'}}
  */
 function classifyTokenResponse(res) {
   if (res.transport === 'network') return { outcome: 'network' };
-  // 5xx is the server saying "not now", which is the same recovery as an unreachable host: keep the
-  // credential, do not send the user through a login they do not need.
-  if (res.status >= 500) return { outcome: 'network' };
+  // 5xx, 429 and 408 are all the server saying "not now" - same recovery as an unreachable host:
+  // keep the credential, do not send the user through a login they do not need. invalid_grant sits
+  // on the other side of the line for the opposite reason: it is a verdict about the key itself, and
+  // waiting will never make a rotated-away renewal token valid again.
+  //
+  // 429 is on this side because of a production incident (2026-08-21): concurrent renewals broke one
+  // user's rotation chain, the retry storm drained the token endpoint's rate-limit bucket, and a 429
+  // classified as 'error' reaches `ensureFreshAccessToken` as needs_login. A throttle that clears
+  // itself in tens of seconds was therefore rendered as "you must sign in again" - the user stayed
+  // signed out for 6.5 days. That bucket is shared across the whole deployment, so any one client's
+  // retry loop can produce this for everybody; spending a session on it is never right.
+  //
+  // Judged by status before the body is read, deliberately: the throttling answer is the framework's
+  // own `{"message":"Too many requests. Please try again later."}`, with no OAuth `error` field, so
+  // anything that classifies off `errorCode()` cannot see it at all (it lands on the `http_429`
+  // fallback). No backoff hint is available either - the header is the non-standard `X-Retry-After`
+  // and `postForm` keeps no headers.
+  //
+  // The device-code polling loop shares this function and wants the same answer: there, an 'error'
+  // outcome ends the poll and discards the pending sign-in the user has already approved in their
+  // browser, while 'network' is retried and the pending state is kept.
+  if (res.status >= 500 || res.status === 429 || res.status === 408) return { outcome: 'network' };
   if (res.status === 200 && res.body && typeof res.body.access_token === 'string') {
     return { outcome: 'tokens', tokens: res.body };
   }
@@ -303,7 +327,11 @@ export async function ensureFreshAccessToken(endpoint = apiEndpoint(), now = Dat
     if (current.endpoint !== endpoint) return { status: 'needs_login', reason: 'endpoint_mismatch' };
     if (accessTokenUsable(current, Date.now())) return { status: 'ok', access_token: current.access_token };
     // Could not get the lock and the file is still stale: back off rather than force the lock. Two
-    // renewals at once produce a guaranteed invalid_grant, and that outcome deletes the credential.
+    // renewals at once produce a guaranteed invalid_grant for the loser, and when the loser reads the
+    // row after the winner's rotation lands, the server treats it as a replay and deletes the whole
+    // refresh family for (client_id, user) - every machine this user owns, not just this one. That
+    // asymmetry is why backing off beats forcing: this lock is per-machine and cannot mutex the
+    // others, so the one thing it can do is not add a racer of its own.
     if (!locked) return { status: 'unreachable', reason: 'renewal_in_progress' };
 
     if (msUntil(current.refresh_expires_at, Date.now()) <= 0) {
@@ -335,8 +363,14 @@ export async function ensureFreshAccessToken(endpoint = apiEndpoint(), now = Dat
       writeCredentials(next);
     } catch {
       // The rotated token could not be persisted. The in-memory one still works for this request, but
-      // the one on disk is already dead server-side, so say nothing reassuring here - the next request
-      // will report needs-auth honestly.
+      // the one on disk is already dead server-side, so say nothing reassuring here.
+      //
+      // The cost of landing here is larger than "this machine has to sign in again", and worse than
+      // an earlier version of this comment claimed. The next request renews with the stale value,
+      // which the server reads as a replay of a rotated token and answers by deleting the whole
+      // refresh family for (client_id, user) - and `kabo-cli` is one static client_id shared by every
+      // install, so every other machine this user owns is signed out too. Nothing here can widen the
+      // write's chance of succeeding, but nothing should make it look cheap either.
       return { status: 'ok', access_token: next.access_token };
     }
     return { status: 'ok', access_token: next.access_token };

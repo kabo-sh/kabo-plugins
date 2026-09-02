@@ -1,6 +1,6 @@
 ---
 name: analyze
-description: Kabo creator research analysis entry point. Use it when the user needs public account review, deterministic engagement-rate calculation or cross-platform ER comparison, YouTube public evidence collection, channel benchmarking and playbook summaries, account-relative outlier breakdowns and the topic ideas they support, emerging-creator breakout discovery, or reverse-engineering of viral Instagram Reels; this skill only starts the flow — the actual routing and execution rules live in meta-guidance.
+description: Kabo creator research analysis entry point. Use it when the user needs Instagram or YouTube competitor discovery and content analysis, public account review, reach-drop or shadowban-pattern diagnosis, deterministic engagement-rate calculation or cross-platform ER comparison, YouTube public evidence collection, channel benchmarking and playbook summaries, account-relative outlier breakdowns and the topic ideas they support, emerging-creator breakout discovery, or reverse-engineering of viral Instagram Reels; this skill only starts the flow — the actual routing and execution rules live in meta-guidance.
 ---
 
 # Kabo analysis entry point
@@ -8,6 +8,8 @@ description: Kabo creator research analysis entry point. Use it when the user ne
 The explicit entry point when the user states a creator research need. This skill **does not implement routing itself** — read `meta-guidance` and follow it.
 
 1. Read `../meta-guidance/SKILL.md` in the sibling directory and execute per its "Single-skill flow" or "Composite requests".
+   `registry_skill_search` uses literal substring matching, so search with one stable capability term per call (for example, `competitor`) rather than a sentence or a bundle of keywords. Do not assume or hard-code a Skill id.
+   On Codex, follow the meta-guidance **Download-to-unpack bridge** exactly: the downloaded structured package is streamed once through the exact-count raw/no-echo bridge and is never printed, put in a shell argument, or repeatedly downloaded after a local transport failure.
 2. **Invoked with no arguments** (nothing to analyze was named): check for `<data root>/onboarding-profile.json` (data root `$KABO_CODEX_DATA`, falling back to `~/.kabo/codex`). No profile, or a profile whose `onboarded_at` is empty (an interrupted onboarding) → hand off to `$kabo-start` (read `../kabo-start/SKILL.md` and follow it in this task) — it is the first-run path, offers Continue / Start over on an interrupted one, and discloses its own cost before anything runs. Profile complete → greet them by handle and ask what they want to look at today, using the goal and niche on file as the starting point; do not re-ask onboarding questions.
 3. When the request is unclear, ask first: the analysis target (channel / niche / specific video), the conclusion they want, and the time window. **Do not guess.**
 4. When the search finds no match, say plainly that it is not covered and describe which capability areas are covered today. **Do not** fall back to native web search or existing knowledge to invent an analysis and deliver it as Kabo output.

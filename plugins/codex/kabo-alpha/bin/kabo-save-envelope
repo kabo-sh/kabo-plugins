@@ -1,0 +1,157 @@
+#!/usr/bin/env node
+// kabo-save-envelope - move the envelopes the PostToolUse hook staged into a run's snapshot/ (kabo#482).
+//
+// The hook (scripts/hooks/persist-envelope.js) writes each completed connector envelope to a
+// per-session staging directory the moment the host hands it over. This command is the second
+// half: it moves those bytes into the run work directory under the numbering every data-plane
+// SKILL.md and build_public_snapshot.py already expect (`snapshot/envelope-01.json`, ...).
+//
+// The split exists because the two halves know different things. The hook has the bytes but not
+// the run id - it fires before, during and after any given run and cannot tell which one it
+// belongs to. The runner knows the run directory but has no way to receive bytes except through
+// the model, which is the whole problem (kabo#482: 836s and 18 truncated copies). Staging is the
+// only place the two facts meet without the envelope passing through a model again.
+//
+// Verification is not decoration. The sidecar's sha256 was computed by the hook at the instant the
+// host delivered the result; recomputing it here proves the bytes that land in the run directory
+// are the bytes the connector returned, which is exactly the claim the audit trail makes and the
+// exact claim hand-copying could never support.
+import fs from 'node:fs';
+import path from 'node:path';
+
+import { ensurePrivateDir, sha256hex } from '../scripts/lib/common.js';
+
+const USAGE = `Usage: kabo-save-envelope --from <staging-dir> --into <snapshot-dir>
+       kabo-save-envelope --list --from <staging-dir>
+
+  --from   the per-session staging directory named in the hook's context line
+  --into   this run's snapshot/ directory (created if absent)
+  --list   report what is staged without moving anything
+
+Moves every staged envelope into <snapshot-dir>/envelope-NN.json, continuing the existing
+numbering, verifying each file's sha256 against the sidecar the hook wrote. Prints one line per
+envelope. Exits 1 on a checksum mismatch or an unreadable pair; exits 0 with "staged=0" when
+there is nothing to move.`;
+
+function fail(message) {
+  console.error(`${message}\n\n${USAGE}`);
+  process.exit(1);
+}
+
+const args = process.argv.slice(2);
+if (args.includes('--help') || args.includes('-h')) {
+  console.log(USAGE);
+  process.exit(0);
+}
+
+let from = null;
+let into = null;
+let listOnly = false;
+for (let i = 0; i < args.length; i += 1) {
+  const arg = args[i];
+  if (arg === '--list') listOnly = true;
+  else if (arg === '--from') from = args[++i] ?? null;
+  else if (arg === '--into') into = args[++i] ?? null;
+  else fail(`Unknown argument: ${arg}`);
+}
+if (!from) fail('--from is required');
+if (!listOnly && !into) fail('--into is required (or pass --list)');
+
+if (!fs.existsSync(from)) {
+  // Not an error. A Skill whose evidence plan made no connector call, or a run whose calls all
+  // failed before returning an envelope, legitimately has nothing staged - and reporting that as
+  // a failure would push the runner back toward writing files by hand.
+  console.log('staged=0 (no staging directory yet)');
+  process.exit(0);
+}
+
+/**
+ * Pairs are `<seq>.json` + `<seq>.meta`.
+ *
+ * An unmatched stem is reported, never skipped. Silently ignoring a `.json` whose `.meta` never
+ * landed would leave a completed connector response sitting in staging forever while the command
+ * cheerfully prints `staged=0` — the run then archives nothing and nobody finds out until someone
+ * audits the report. A half-written pair is a staging failure, and the runner can only react to it
+ * if this says so.
+ */
+function stagedPairs(dir) {
+  const stems = new Map();
+  for (const name of fs.readdirSync(dir)) {
+    const match = /^(\d{2,})\.(json|meta)$/.exec(name);
+    if (!match) continue;
+    const entry = stems.get(match[1]) ?? {};
+    entry[match[2]] = path.join(dir, name);
+    stems.set(match[1], entry);
+  }
+  const complete = [];
+  const partial = [];
+  for (const [stem, entry] of [...stems.entries()].sort(([a], [b]) => a.localeCompare(b))) {
+    if (entry.json && entry.meta) complete.push({ stem, envelope: entry.json, meta: entry.meta });
+    else partial.push({ stem, has: entry.json ? 'envelope without sidecar' : 'sidecar without envelope' });
+  }
+  return { complete, partial };
+}
+
+const { complete: pairs, partial } = stagedPairs(from);
+if (partial.length > 0) {
+  console.error(
+    `incomplete staged entries in ${from} — the hook did not finish writing them:\n` +
+      partial.map((p) => `  ${p.stem}: ${p.has}`).join('\n') +
+      '\nNothing was moved. Re-run this command; if it persists, that response was not archived.',
+  );
+  process.exit(1);
+}
+if (pairs.length === 0) {
+  console.log('staged=0');
+  process.exit(0);
+}
+
+if (listOnly) {
+  for (const pair of pairs) {
+    const meta = JSON.parse(fs.readFileSync(pair.meta, 'utf8'));
+    console.log(
+      `${pair.stem} ${meta.connector_id}/${meta.operation} status=${meta.status} bytes=${meta.bytes} sha256=${meta.sha256}`,
+    );
+  }
+  console.log(`staged=${pairs.length}`);
+  process.exit(0);
+}
+
+ensurePrivateDir(into);
+
+/** Continue the run's existing numbering rather than restarting it: a Skill may drain more than once. */
+let next = 0;
+for (const name of fs.readdirSync(into)) {
+  const match = /^envelope-(\d+)\.json$/.exec(name);
+  if (match) next = Math.max(next, Number(match[1]));
+}
+
+const moved = [];
+for (const pair of pairs) {
+  const meta = JSON.parse(fs.readFileSync(pair.meta, 'utf8'));
+  const bytes = fs.readFileSync(pair.envelope, 'utf8');
+  const actual = sha256hex(bytes);
+  if (actual !== meta.sha256) {
+    // Refuse loudly. A silent copy here would put an artifact in the audit trail that claims to be
+    // what the connector returned while nobody can say what it actually is.
+    console.error(
+      `checksum mismatch for ${pair.envelope}: sidecar says ${meta.sha256}, file hashes to ${actual}. Nothing further was moved.`,
+    );
+    process.exit(1);
+  }
+  next += 1;
+  const target = path.join(into, `envelope-${String(next).padStart(2, '0')}.json`);
+  fs.writeFileSync(target, bytes, { mode: 0o600 });
+  // Only after the destination exists: an interrupted drain must leave the evidence somewhere.
+  fs.rmSync(pair.envelope, { force: true });
+  fs.rmSync(pair.meta, { force: true });
+  moved.push({ target: path.basename(target), meta });
+}
+
+for (const entry of moved) {
+  console.log(
+    `${entry.target} ${entry.meta.connector_id}/${entry.meta.operation} status=${entry.meta.status} bytes=${entry.meta.bytes} sha256=${entry.meta.sha256}`,
+  );
+}
+console.log(`staged=${moved.length}`);
+process.exit(0);
