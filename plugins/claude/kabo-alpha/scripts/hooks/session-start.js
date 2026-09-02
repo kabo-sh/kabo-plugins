@@ -597,7 +597,13 @@ async function main() {
   // it that is not credential material. Last in the list so the sync results above keep their
   // position.
   if (!fs.existsSync(credentialsPath())) {
-    parts.push('Kabo is not signed in on this machine - run /kabo-login to enable platform tools');
+    // The whole sequence goes here, before the user meets the host's own "needs authentication"
+    // state for kabo. The host asked the credential helper exactly once, when it connected the
+    // server at session start, was told there is none, and will not ask again in this session
+    // (after a 401 it runs its own OAuth discovery, never the helper). A user told only "run
+    // /kabo-login" signs in, sees nothing change, and reaches for the host's Authenticate prompt -
+    // the one path that leaves a token the plugin cannot manage.
+    parts.push('Kabo is not signed in on this machine - run /kabo-login to sign in (once per machine), then start a new session: this session already connected to the kabo server without a credential and the host will not ask the plugin for one again, so the tools cannot appear here after the sign-in; ignore the host\'s own "Authenticate" prompt for kabo (it leaves a token the plugin cannot manage)');
   } else {
     // One line for EVERY probe outcome, never silence (2026-08-23). A rejected credential says the
     // probe child's own canonical recovery line (names /kabo-login; the 2026-08-18 incident:

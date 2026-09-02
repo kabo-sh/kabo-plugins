@@ -473,7 +473,7 @@ offer_claude_signin() {
   fi
   printf '\n'
   local reply=''
-  prompt reply "Sign in to Kabo now? It prints a URL and a code to confirm in a browser on any device. [Y/n] " "Y"
+  prompt reply "Sign in to Kabo now? It prints a URL and a code to confirm in a browser on any device; doing it here means your first session starts with Kabo ready. [Y/n] " "Y"
   case "$reply" in
     [nN]*) return 0 ;;
   esac
@@ -819,7 +819,7 @@ if [ "$CLAUDE_DONE" -eq 1 ]; then
     printf '     app). Already in a CLI session? /reload-plugins loads the plugin in place.\n'
     printf '  2. Run /kabo-login. It prints a URL and an 8-character code; confirm the code in a\n'
     printf '     browser on any device. You only do this once per machine.\n'
-    printf '  3. If Kabo is still unavailable in that session afterwards, start a new session.\n'
+    printf '  3. Start a new session: the one you signed in from will not pick the credential up.\n'
     printf '     (CLI only: /mcp reconnect plugin:kabo-alpha:kabo — Claude Code CLI 2.1.205+ —\n'
     printf '     or /reload-plugins on an older CLI reconnects without a restart.)\n'
   fi
