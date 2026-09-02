@@ -13,7 +13,7 @@ Why this file exists, and where its line is:
   to the frozen analyzers, and computing them here would quietly replace them.
 
 `items[].format` is narrowed to youtube_short / youtube_long / unknown / instagram_reel /
-instagram_feed even though the
+instagram_feed / tiktok_video even though the
 snapshot schema declares plain {"type": "string"} for it. The narrowing is deliberate and is
 Kabo's, not upstream's: it is exactly the content-format enum the Kabo server uses for creator
 observations, so the day these items are normalized into observations there is nothing left to
@@ -53,7 +53,7 @@ SCHEMA_VERSION = "public-content-snapshot.v1"
 # alike; this assembler only ever produces public-connector evidence.
 SOURCE_MODE = "public_connector"
 
-PLATFORMS = ("youtube", "instagram")
+PLATFORMS = ("youtube", "instagram", "tiktok")
 
 # Exact values accepted only from fields that explicitly declare a video's format. In particular,
 # `format_candidate=youtube_short_candidate` is intentionally not read here: that value is derived
@@ -69,6 +69,8 @@ METRIC_ALIASES: dict[str, tuple[str, ...]] = {
     "views": ("views", "viewCount", "view_count", "play_count", "video_play_count", "video_view_count"),
     "likes": ("likes", "likeCount", "like_count"),
     "comments": ("commentCount", "comment_count", "comments"),
+    "shares": ("shares", "shareCount", "share_count"),
+    "saves": ("saves", "saveCount", "save_count", "collectCount", "collect_count"),
 }
 
 # Where rows live inside an envelope's `data`. The three shapes the data plane ships today:
@@ -91,6 +93,15 @@ TRUNCATION_MARKERS = (
     "not the whole",
     "time budget",
     "partial",
+)
+PAGINATION_ONLY_MARKERS = (
+    "cursor",
+    "next_max_id",
+    "next page",
+    "next_page_token",
+    "page token",
+    "prefix of the result set",
+    "not the whole",
 )
 
 ISO_DURATION = re.compile(
@@ -275,6 +286,15 @@ def creator_of(row: dict[str, Any], platform: str) -> tuple[str, dict[str, Any]]
             "source_url": f"https://www.youtube.com/channel/{creator_id}",
         }
     handle = first_text(row, (("user", "username"), ("owner", "username"), ("username",)))
+    if platform == "tiktok":
+        creator_id = first_text(row, (("creator_id",), ("user", "secUid"), ("secUid",))) or handle
+        if creator_id is None or handle is None:
+            return None
+        return creator_id, {
+            "creator_id": creator_id,
+            "handle": handle,
+            "source_url": f"https://www.tiktok.com/@{handle}",
+        }
     creator_id = first_text(row, (("user", "pk"), ("user", "id"), ("owner", "pk"), ("owner", "id"))) or handle
     if creator_id is None or handle is None:
         return None
@@ -312,6 +332,11 @@ def url_of(row: dict[str, Any], platform: str, content_id: str) -> str:
         return given
     if platform == "youtube":
         return f"https://www.youtube.com/watch?v={content_id}"
+    if platform == "tiktok":
+        handle = first_text(row, (("username",), ("user", "username"), ("owner", "username")))
+        if handle is None:
+            return f"https://www.tiktok.com/video/{content_id}"
+        return f"https://www.tiktok.com/@{handle}/video/{content_id}"
     path = "reel" if instagram_format_of(row) == "instagram_reel" else "p"
     return f"https://www.instagram.com/{path}/{content_id}/"
 
@@ -322,6 +347,8 @@ def format_of(
     """Return (format, format_unknown, confidence, source), strongest evidence first."""
     if platform == "instagram":
         return instagram_format_of(row), False, "explicit", "provider_media_type"
+    if platform == "tiktok":
+        return "tiktok_video", False, "explicit", "platform_operation"
 
     # Prefer a provider's explicit boolean over every derived or URL-shaped signal. Only real
     # booleans count: accepting 0/1 or truthy strings here would turn an untyped provider quirk into
@@ -428,22 +455,49 @@ def coverage_incomplete_signals(
 ) -> bool:
     if envelope.get("status") == "completed_partial":
         return True
+    operation_complete = envelope.get("operation") in complete_operations
     for text in envelope.get("limitations") or []:
         lowered = str(text).lower()
+        # Intermediate pages legitimately mention their continuation cursor. Once the caller has
+        # persisted a terminal page for this operation, that pagination-only wording no longer
+        # means the assembled chain is incomplete. Non-pagination limits (time budget, partial
+        # provider response, etc.) still fail closed.
+        if "time budget" in lowered or "partial" in lowered:
+            return True
+        if operation_complete and any(marker in lowered for marker in PAGINATION_ONLY_MARKERS):
+            continue
         if any(marker in lowered for marker in TRUNCATION_MARKERS):
             return True
     data = envelope.get("data")
     if isinstance(data, dict):
-        operation_complete = envelope.get("operation") in complete_operations
         if data.get("more_available") is True and not operation_complete:
             return True
         for key in ("cursor", "next_cursor", "next_max_id", "nextPageToken"):
             if as_text(data.get(key)) is not None and not operation_complete:
                 return True
+        coverage = data.get("coverage") if isinstance(data.get("coverage"), dict) else {}
+        if as_text(coverage.get("next_page_token")) is not None and not operation_complete:
+            return True
         # Discovery providers often return a bounded sample without a pagination attestation.
         # `null` / absent is unknown coverage, not proof that the niche or market was exhausted.
         if envelope.get("operation") == "discover_trending" and data.get("more_available") is not False:
             return True
+    return False
+
+
+def terminal_page(envelope: dict[str, Any]) -> bool:
+    """Recognize the terminal pagination signal used by each public connector."""
+    data = envelope.get("data")
+    if not isinstance(data, dict):
+        return False
+    if data.get("more_available") is False:
+        return True
+    if envelope.get("operation") == "list_channel_uploads":
+        coverage = data.get("coverage")
+        # youtube-public documents its cursor under data.coverage. Presence matters: an absent
+        # field is unknown coverage, while an explicit null is the API's terminal page.
+        return isinstance(coverage, dict) and "next_page_token" in coverage \
+            and as_text(coverage.get("next_page_token")) is None
     return False
 
 
@@ -498,13 +552,9 @@ def build(args: argparse.Namespace) -> dict[str, Any]:
         operation_envelopes = [
             envelope for envelope in envelopes if envelope.get("operation") == operation
         ]
-        if not any(
-            isinstance(envelope.get("data"), dict)
-            and envelope["data"].get("more_available") is False
-            for envelope in operation_envelopes
-        ):
+        if not any(terminal_page(envelope) for envelope in operation_envelopes):
             raise ValueError(
-                f"--complete-operation {operation} requires a terminal envelope with more_available=false"
+                f"--complete-operation {operation} requires a connector-native terminal page"
             )
     queries = list(getattr(args, "query", None) or [])
     if queries and len(queries) != len(envelopes):
@@ -730,11 +780,11 @@ def main() -> int:
     parser.add_argument(
         "--complete-operation",
         action="append",
-        choices=("list_posts", "list_reels", "list_channel_uploads"),
+        choices=("list_posts", "list_reels", "list_account_posts", "list_channel_uploads"),
         help=(
             "repeat only when every pagination chain for this operation reached a persisted "
-            "terminal envelope with more_available=false; intermediate cursors then do not "
-            "make coverage incomplete"
+            "terminal envelope (more_available=false, or YouTube coverage.next_page_token=null); "
+            "intermediate cursors then do not make coverage incomplete"
         ),
     )
     parser.add_argument("--output", type=Path, required=True)
