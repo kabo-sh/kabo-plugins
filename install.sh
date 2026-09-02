@@ -268,6 +268,45 @@ claude_plugin_enabled() {
     END { exit found ? 0 : 1 }'
 }
 
+# `claude plugin update` answers `Plugin "kabo-alpha" not found` when the plugin is still installed but
+# the marketplace it came from can no longer resolve it: the marketplace record was lost, its clone is
+# missing or broken and GitHub could not be reached to re-clone it, or it was registered from a local
+# path that no longer exists. None of those are fixed by running `update` again, and a user cannot be
+# asked to diagnose which one it is. So the update's output is captured, and that answer routes to
+# claude_reregister_marketplace below instead of the generic "retry" advice.
+CLAUDE_UPDATE_UNRESOLVED=0
+claude_plugin_update() {
+  CLAUDE_UPDATE_UNRESOLVED=0
+  [ "$DRY_RUN" -eq 1 ] && { run_cli claude plugin update "${PLUGIN_NAME}@${CLAUDE_MARKETPLACE}"; return 0; }
+  local out status
+  out="$(mktemp)"
+  # tee: the user still sees the host's own output live; the copy is only for the routing below.
+  run_cli claude plugin update "${PLUGIN_NAME}@${CLAUDE_MARKETPLACE}" 2>&1 | tee "$out"
+  status="${PIPESTATUS[0]}"
+  if [ "$status" -ne 0 ] && grep -q 'not found' "$out"; then
+    CLAUDE_UPDATE_UNRESOLVED=1
+  fi
+  rm -f "$out"
+  return "$status"
+}
+
+# Re-register the marketplace from the requested source and reinstall the plugin. `marketplace remove`
+# also uninstalls every plugin that came from that marketplace, so the install afterwards is not
+# optional; the enable step that follows in install_claude puts the enabled state back. The credential
+# and everything else under ~/.kabo are the plugin's own files and are not touched by any of this.
+claude_reregister_marketplace() {
+  local source="$REPO_SLUG"
+  [ -n "$REPO_REF" ] && source="${REPO_SLUG}@${REPO_REF}"
+  warn "The registered marketplace can no longer resolve ${PLUGIN_NAME}. Re-registering it from ${source} and reinstalling."
+  run_cli claude plugin marketplace remove "$CLAUDE_MARKETPLACE" || true
+  run_cli claude plugin marketplace add "$source" \
+    || fail "Could not register the marketplace from $source. The host clones it with git, so check that git can reach GitHub from this machine (a proxy may be needed), then run this installer again."
+  run_cli claude plugin install "${PLUGIN_NAME}@${CLAUDE_MARKETPLACE}" \
+    || claude_plugin_present \
+    || fail "claude plugin install failed after re-registering the marketplace, and ${PLUGIN_NAME} is not installed."
+  ok "marketplace re-registered and plugin reinstalled (restart to apply)"
+}
+
 install_claude() {
   info "Claude Code"
 
@@ -292,8 +331,10 @@ install_claude() {
     # "already installed" and keeps the old version, even against a freshly refreshed clone.
     # The actual upgrade command is `plugin update`. A failed update is not a failed install:
     # the old version is still there and still works.
-    if run_cli claude plugin update "${PLUGIN_NAME}@${CLAUDE_MARKETPLACE}"; then
+    if claude_plugin_update; then
       ok "plugin updated to the marketplace's latest version (restart to apply)"
+    elif [ "$CLAUDE_UPDATE_UNRESOLVED" -eq 1 ]; then
+      claude_reregister_marketplace
     else
       warn "claude plugin update failed; the installed version stays as it was. You can retry with: claude plugin update ${PLUGIN_NAME}@${CLAUDE_MARKETPLACE}"
     fi
@@ -432,7 +473,7 @@ offer_claude_signin() {
   fi
   printf '\n'
   local reply=''
-  prompt reply "Sign in to Kabo now? It prints a URL and a code to confirm in a browser on any device. [Y/n] " "Y"
+  prompt reply "Sign in to Kabo now? It prints a URL and a code to confirm in a browser on any device; doing it here means your first session starts with Kabo ready. [Y/n] " "Y"
   case "$reply" in
     [nN]*) return 0 ;;
   esac
@@ -778,7 +819,7 @@ if [ "$CLAUDE_DONE" -eq 1 ]; then
     printf '     app). Already in a CLI session? /reload-plugins loads the plugin in place.\n'
     printf '  2. Run /kabo-login. It prints a URL and an 8-character code; confirm the code in a\n'
     printf '     browser on any device. You only do this once per machine.\n'
-    printf '  3. If Kabo is still unavailable in that session afterwards, start a new session.\n'
+    printf '  3. Start a new session: the one you signed in from will not pick the credential up.\n'
     printf '     (CLI only: /mcp reconnect plugin:kabo-alpha:kabo — Claude Code CLI 2.1.205+ —\n'
     printf '     or /reload-plugins on an older CLI reconnects without a restart.)\n'
   fi

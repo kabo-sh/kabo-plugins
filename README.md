@@ -16,7 +16,7 @@ One command, either host:
 curl -fsSL https://raw.githubusercontent.com/kabo-sh/kabo-plugins/main/install.sh | bash
 ```
 
-It reports which hosts it found on this machine and lets you pick **one or both** — Claude Code and Codex install in the same run. It never installs a host for you, never uses `sudo`, and never reads or writes a credential. After installing the Claude plugin it offers to start the plugin's own terminal sign-in (`kabo-auth login`, the same RFC 8628 device flow `/kabo-login` runs) right there: say yes, confirm the code, and it immediately makes one real request to the MCP endpoint with the credential just written — so you learn whether it works there and then, rather than at the first 401 inside a session. Decline, and signing in stays a separate step it prints at the end. It also looks for a pre-plugin direct `claude mcp add kabo` registration of the same endpoint — a leftover that now duplicates the bundled server — and offers to remove it, never automatically. On the Codex side it offers the host's browser OAuth in the same run.
+It reports which hosts it found on this machine and lets you pick **one or both** — Claude Code and Codex install in the same run. It never installs a host for you, never uses `sudo`, and never reads or writes a credential. After installing the Claude plugin it offers to start the plugin's own terminal sign-in (`kabo-auth login`, the same RFC 8628 device flow `/kabo-login` runs) right there: say yes, confirm the code, and it immediately makes one real request to the MCP endpoint with the credential just written — so you learn whether it works there and then, rather than at the first 401 inside a session. Say yes if you can: signing in before the first session is the one order in which no session ever shows `kabo` as "needs authentication" — a session that starts before the sign-in cannot pick the credential up and has to be replaced by a new one afterwards (see "Signing in"). Decline, and signing in stays a separate step it prints at the end. It also looks for a pre-plugin direct `claude mcp add kabo` registration of the same endpoint — a leftover that now duplicates the bundled server — and offers to remove it, never automatically. On the Codex side it offers the host's browser OAuth in the same run.
 
 If you would rather not pipe a script into a shell unseen:
 
@@ -26,6 +26,12 @@ curl -fsSL https://raw.githubusercontent.com/kabo-sh/kabo-plugins/main/install.s
 ```
 
 Already cloned this repo? Skip the network: `./install.sh --repo /path/to/kabo-plugins`.
+
+### Upgrading, or repairing a broken install
+
+Run the same one-line command again. On a machine that already has the plugin it refreshes the marketplace clone and runs `claude plugin update`, and if the host answers `Plugin "kabo-alpha" not found` — the plugin is installed but the marketplace it came from can no longer be resolved — it re-registers the marketplace from GitHub and reinstalls the plugin. Your sign-in is kept: the credential lives under `~/.kabo`, which the installer never touches. Restart Claude Code afterwards.
+
+By hand, the equivalent is `claude plugin marketplace update kabo-plugins` followed by `claude plugin update kabo-alpha@kabo-plugins`; a plain `claude plugin update` on its own compares against whatever the local clone holds, so if the refresh fails silently it reports the old version as the latest.
 
 The rest of this section is the same thing by hand.
 
@@ -70,7 +76,7 @@ codex plugin marketplace add /absolute/path/to/kabo-plugins
 
 However you installed it, authorization is a separate step, and the two hosts do it differently.
 
-**Claude Code.** The shortest path is the installer itself: it offers to start the sign-in right after installing, so the whole onboarding is install → confirm the code → start a session — done. Otherwise, open a session and run `/kabo-login`: the terminal prints a URL and an 8-character code, and confirming that code in a browser tab — **on any device** — completes an RFC 8628 device flow.
+**Claude Code.** The shortest path is the installer itself: it offers to start the sign-in right after installing, so the whole onboarding is install → confirm the code → start a session — done. Otherwise, open a session and run `/kabo-login`: the terminal prints a URL and an 8-character code, and confirming that code in a browser tab — **on any device** — completes an RFC 8628 device flow. Then start a new session: the one you signed in from connected to Kabo before the credential existed and will not pick it up — the host asks the plugin for the credential once, when it connects the server, and does not ask again in that session. If that old session shows the host's own "Authenticate" prompt for `kabo`, ignore it; the plugin's sign-in is the only supported path, and a host-held token is one `/kabo-logout` cannot revoke.
 
 **Your first session.** A successful `/kabo-login` hands off to `/kabo-start`: a short questionnaire, one real analysis of your own account, and a 90-day plan. Run `/kabo-start` again whenever you like — it reads what is already on file and offers to pick up where you stopped or start over.
 
