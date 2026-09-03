@@ -55,8 +55,11 @@ Description:
           (--no-open prints the URL only)
   logout  clears the local skill cache, the run work directories, the onboarding profile, the pinned server public keyset,
           and the verification failure events awaiting relay
-          (to revoke platform-side access on every device, use $kabo-logout, which calls the
-          platform's auth_revoke_all over the already-connected MCP link)
+          This is local-only: no network, always instant, and access on other devices is
+          untouched. $kabo-logout runs it alongside \`codex mcp logout kabo\`, which is what
+          ends this machine's access. Revoking on every device is a separate, explicit
+          skill - $kabo-revoke, which calls the platform's auth_revoke_all over the
+          already-connected MCP link first
 
 ${NO_LOGIN_NOTICE}`;
 
@@ -156,7 +159,7 @@ function cmdLogout() {
   // token. It is the *Claude* variant's live sign-in (its dataRoot() is ~/.kabo), so anything this
   // command did to it could only ever damage the other plugin, never clear something of ours.
   console.log(`Local Kabo data cleared (skill cache, run work directories, onboarding profile, server public keyset, events awaiting relay${cleared === 0 ? '; it was already empty' : ''}).`);
-  console.log("This clears local files only. Revoking platform-side access on every device is what $kabo-logout does through the platform's auth_revoke_all tool.");
+  console.log("This clears local files only; access elsewhere is unaffected, deliberately. Ending this machine's access is `codex mcp logout kabo`, and revoking on every device is a separate skill, $kabo-revoke, through the platform's auth_revoke_all tool.");
 }
 
 const [cmd, ...rest] = process.argv.slice(2);
