@@ -17,7 +17,7 @@ import path from 'node:path';
 import os from 'node:os';
 import crypto from 'node:crypto';
 import { fileURLToPath } from 'node:url';
-export const PLUGIN_VERSION = '0.19.0';
+export const PLUGIN_VERSION = '0.19.1';
 export const SUPPORTED_API_VERSION = '1.0.0';
 export const DEFAULT_ENDPOINT = 'https://kabo.sh';
 export const CACHE_TTL_MS = 14 * 24 * 60 * 60 * 1000; // skill cache TTL: 14 days
