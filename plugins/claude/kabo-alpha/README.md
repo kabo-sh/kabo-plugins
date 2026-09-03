@@ -148,7 +148,7 @@ The data root is fixed at `~/.kabo` (it does not follow `$CLAUDE_PLUGIN_DATA` �
 ├── envelope-staging/<session>/   # connector envelopes the PostToolUse hook wrote verbatim (NN.json + NN.meta, 0600), waiting to be moved into a run's snapshot/ by bin/kabo-save-envelope; normally emptied within the same run
 ├── work/<run-id>/                # one directory atomically reserved by bin/kabo-run-dir per run, holding assembled snapshots, analyses, and reports (0700/0600, 14-day TTL via bin/skill-gc); logout deletes it outright
 ├── public-keys.<bucket>.json     # pinned server-side signing **keyset** (TOFU + continuity rotation; 0.9.x's public-key.<bucket>.pem is kept as a fallback)
-├── pending-reports.jsonl         # buffer of skill verification failures awaiting relay (7-day TTL / 100 entries, listed at session start for relay, idempotent)
+├── pending-reports.jsonl         # buffer of skill verification failures awaiting relay (7-day TTL / 100 entries; drained at session start by `bin/kabo-headers --relay`, which prunes what the platform confirms)
 └── meta-guidance.<bucket>.json   # signature-verified dynamic guidance, last-known-good (bucketed per endpoint, exactly like the keyset)
 ```
 
@@ -165,6 +165,7 @@ Collected fields are strictly limited to a fixed whitelist of 12, listed here in
 What remains is a usage signal about *which skill ran and whether it succeeded*:
 
 - The reporting channel is the `mcp_tool`-type SubagentStart/SubagentStop hooks in `hooks/hooks.json`: they call `telemetry_report_usage` **over the MCP connection you authorized**, handling no local token.
+- Skill **verification failures** take one other route: `bin/skill-verify` cannot reach MCP, so it appends the same whitelisted fields to `pending-reports.jsonl`, and the next session start relays them with `bin/kabo-headers --relay` — the credential helper, the one file that holds your token — then deletes what the platform confirms. Until 2026-09-03 those entries were instead injected into the session's opening context with a request that the model call the tool; that is gone. It asked a model to act on injected instructions (which a model should refuse, and did), and nothing could confirm the relay, so the same events were re-injected every session until they expired.
 - **Only skill-runner subagents are reported**: the hook's matcher is restricted to `skill-runner`, and the server enforces this independently as well.
 - Without a Kabo sign-in there is no authorized MCP connection: the hook raises a non-blocking error and nothing is reported.
 

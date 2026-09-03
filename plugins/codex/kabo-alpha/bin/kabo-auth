@@ -13,7 +13,7 @@
 //
 // Usage:
 //   kabo-auth login    open the platform sign-in page in a browser (also prints the URL)
-//   kabo-auth logout   clear the local skill cache, the run work directories, the onboarding profile, the pinned server public keyset, and the events awaiting relay
+//   kabo-auth logout   clear the local skill cache, the run work directories, the onboarding profile, the pinned server public keyset, and any relay buffer left by an older version
 
 import fs from 'node:fs';
 import os from 'node:os';
@@ -54,7 +54,7 @@ Description:
           the URL is always printed as well, so a headless or blocked opener costs nothing
           (--no-open prints the URL only)
   logout  clears the local skill cache, the run work directories, the onboarding profile, the pinned server public keyset,
-          and the verification failure events awaiting relay
+          and any relay buffer left behind by a version older than 0.18 (nothing writes it now)
           This is local-only: no network, always instant, and access on other devices is
           untouched. $kabo-logout runs it alongside \`codex mcp logout kabo\`, which is what
           ends this machine's access. Revoking on every device is a separate, explicit
@@ -125,7 +125,8 @@ function cmdOpenSignIn(noOpen) {
 
 function cmdLogout() {
   // Logout clears everything: no local trust material is left behind. The pinned public keyset is the
-  // trust anchor and therefore trust material; pending-reports holds events produced on this machine
+  // trust anchor and therefore trust material; pending-reports is a legacy path (this variant stopped
+  // writing it in 2026-09; see scripts/lib/common.js) and is cleaned so an old queue does not linger
   // that have not been relayed yet, and after logout nobody will relay them, so keeping them would
   // only leave dirty data.
   let cleared = 0;
@@ -158,7 +159,7 @@ function cmdLogout() {
   // is ~/.kabo/codex, and Codex stores no credential of its own at all, because the host holds the
   // token. It is the *Claude* variant's live sign-in (its dataRoot() is ~/.kabo), so anything this
   // command did to it could only ever damage the other plugin, never clear something of ours.
-  console.log(`Local Kabo data cleared (skill cache, run work directories, onboarding profile, server public keyset, events awaiting relay${cleared === 0 ? '; it was already empty' : ''}).`);
+  console.log(`Local Kabo data cleared (skill cache, run work directories, onboarding profile, server public keyset, legacy relay buffer${cleared === 0 ? '; it was already empty' : ''}).`);
   console.log("This clears local files only; access elsewhere is unaffected, deliberately. Ending this machine's access is `codex mcp logout kabo`, and revoking on every device is a separate skill, $kabo-revoke, through the platform's auth_revoke_all tool.");
 }
 

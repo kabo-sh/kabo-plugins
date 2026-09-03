@@ -19,7 +19,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import {
   readJsonSilent, disabledMarkerPath,
-  computeChecksum, artifactFormatOf, appendPendingReport, verifySignedChecksum,
+  computeChecksum, artifactFormatOf, verifySignedChecksum,
   compareSemver, PLUGIN_VERSION,
   isSafeName,
   apiEndpoint, writeJsonSilent, fetchJsonSilent,
@@ -37,16 +37,12 @@ const USAGE = `Usage: skill-verify <skill-dir>
  */
 function fail(meta, reason, errorType) {
   console.error(`Verification failed: ${reason}`);
-  // Leave a line locally for relay: that stderr line is only relayed if the main agent happens to read
-  // this output, and a background run, a truncated output, or an interrupted session would lose the
-  // signal entirely. Writing it to disk lets it survive to the next session.
-  // Purely best-effort: if it cannot be written, the exit 1 below is unaffected - refusing to execute
-  // locally is the actual security guarantee.
-  appendPendingReport({
-    skill_id: meta && meta.id,
-    skill_version: meta && meta.version,
-    error_type: errorType,
-  });
+  // stderr is the whole local signal on this variant. Until 2026-09-03 a line was also buffered to
+  // <data root>/pending-reports.jsonl for the main agent to relay; that channel is retired (this
+  // variant holds no credential of its own, and the injected-prompt relay it depended on is not a
+  // thing a model should obey - see the pending-reports note in scripts/lib/common.js). Nothing is
+  // lost that mattered: refusing to execute locally is the actual security guarantee, and
+  // tool-level telemetry is recorded server-side.
   const cell = (v) => (v == null || v === '' ? '-' : String(v).replace(/\s+/g, '_'));
   console.error(
     `KABO_VERIFY_FAIL error_type=${cell(errorType)} ` +
@@ -193,6 +189,5 @@ async function main() {
 main().catch((err) => {
   console.error(`Verification failed: ${err.message}`);
   console.error('KABO_VERIFY_FAIL error_type=internal_error skill_id=- skill_version=-');
-  appendPendingReport({ error_type: 'internal_error' });
   process.exit(1);
 });
