@@ -17,7 +17,7 @@ import path from 'node:path';
 import os from 'node:os';
 import crypto from 'node:crypto';
 import { fileURLToPath } from 'node:url';
-export const PLUGIN_VERSION = '0.19.0';
+export const PLUGIN_VERSION = '0.19.1';
 export const SUPPORTED_API_VERSION = '1.0.0';
 export const DEFAULT_ENDPOINT = 'https://kabo.sh';
 export const CACHE_TTL_MS = 14 * 24 * 60 * 60 * 1000; // skill cache TTL: 14 days
@@ -722,153 +722,28 @@ export async function ensureVerified(attempt, opts = {}) {
   return { ok: false, reason: 'signature_invalid' };
 }
 
-// ---------- pending-reports (the relay queue of skill verification failures) ----------
+// ---------- pending-reports (retired on this variant, 2026-09-03) ----------
 //
-// Why the queue is written to disk: bin/skill-verify is a shell subprocess, it never has an MCP
-// connection, and it cannot report anything itself; and the KABO_VERIFY_FAIL line at the end of
-// stderr is only relayed when **the main agent happens to read that output**, so a failure in the
-// background, a truncated output, or an interrupted session loses the whole line. Writing it to disk
-// lets the signal survive across sessions until someone can file it.
+// This variant used to buffer skill-verify failures to <data root>/pending-reports.jsonl and have
+// SessionStart inject them so the main agent would call telemetry_report_usage. That channel is
+// gone, and nothing writes the file any more. Two reasons, both observed in the field:
+//   - a model following its safety rules **refuses** to act on tool-call instructions that arrive as
+//     injected session text (it is indistinguishable from a prompt-injection attack) and reports
+//     them to the user instead, so the queue drained only when a user explicitly authorized it;
+//   - nothing could confirm a relay, so relayed entries were never removed and the same events were
+//     re-injected into every new session until their 7-day TTL - spending opening context on events
+//     the platform already had.
+// The Claude variant relays from its credential helper instead (`kabo-headers --relay`: it holds the
+// token, gets a real tool result, and prunes what the server confirmed). **This variant has no local
+// credential** - the host holds the token (0.9.0) - so it has no equivalent, and it stops collecting
+// rather than keep a channel that only works when a user talks it into working. That is consistent
+// with hooks/hooks.json, which already records that usage telemetry is not collected here, and with
+// the platform's position that client-side usage events are optional: tool-level telemetry is
+// recorded server-side, and a verification failure still exits 1 locally and prints its
+// KABO_VERIFY_FAIL line to stderr, which is where the local signal lives now.
 //
-// Why the client never deletes already-relayed entries: event_id is deterministic (the same day, the
-// same skill, and the same error cause always yield the same id), so the server's
-// (user_id, event_id) uniqueness constraint makes relaying naturally idempotent and a repeated relay
-// is swallowed as a duplicate.
-// Conversely, "delete once reported" would require the client to confirm the report succeeded, and
-// the client cannot see the result of an MCP call at all - one wrong guess and the event is lost
-// forever. Better repeated than lost; old entries age out by time and by the entry-count cap.
-
-/** An entry older than 7 days has no relay value left (the server has long since seen the problem through other signals) */
-export const PENDING_REPORT_MAX_AGE_MS = 7 * 24 * 60 * 60 * 1000;
-/** Keep at most 100 entries in the file, so a long offline stretch cannot inflate it into a log file */
-export const PENDING_REPORT_KEEP = 100;
-/** Prompt for at most 10 relays per session, to avoid crowding out context */
-export const PENDING_REPORT_INJECT_MAX = 10;
-
-/**
- * event_id = sha256hex([event, skill_id, skill_version, error_type, UTC date].join("\0")).slice(0,32)
- *
- * Deliberately deterministic and deliberately bucketed by day: one bad package that trips
- * verification repeatedly within a single day counts as one thing on the server, so a high retry
- * count cannot skew the statistics; across days it is counted again, which still shows that "the
- * problem is ongoing".
- */
-export function pendingReportEventId(skillId, skillVersion, errorType, now = new Date()) {
-  const day = new Date(now).toISOString().slice(0, 10);
-  const parts = ['skill_verify_fail', skillId || '-', skillVersion || '-', errorType || '-', day];
-  return sha256hex(parts.join('\0')).slice(0, 32);
-}
-
-/**
- * Per-field character-set allowlist - this is a security boundary, not data cleaning.
- * skill_id/skill_version come from the **top-level** fields of the SkillPackage and are outside the
- * coverage of the signature; the contents of this file are read into the main agent's context and
- * forwarded, so tightening them to the character set a directory name / version number should have
- * keeps free text out of the buffer. Writing and reading share the same check, so a locally tampered
- * buffer file cannot use it as a route either.
- */
-function sanitizePendingRow(row) {
-  if (!row || row.event !== 'skill_verify_fail') return null;
-  if (typeof row.event_id !== 'string' || !/^[0-9a-f]{32}$/.test(row.event_id)) return null;
-  if (typeof row.ts !== 'string' || !Number.isFinite(Date.parse(row.ts))) return null;
-  if (typeof row.error_type !== 'string' || !/^[a-z_]{1,64}$/.test(row.error_type)) return null;
-  const out = { event: 'skill_verify_fail', event_id: row.event_id };
-  if (typeof row.skill_id === 'string' && /^[A-Za-z0-9._-]{1,64}$/.test(row.skill_id)) {
-    out.skill_id = row.skill_id;
-  }
-  if (typeof row.skill_version === 'string' && /^[A-Za-z0-9._-]{1,32}$/.test(row.skill_version)) {
-    out.skill_version = row.skill_version;
-  }
-  out.error_type = row.error_type;
-  out.status = 'error';
-  out.ts = row.ts;
-  return out;
-}
-
-/**
- * Append one event awaiting relay (best-effort; any failure is silent).
- * Only telemetry allowlist fields are written - this file is read verbatim into the main agent's
- * context and forwarded, so mixing in any content-level data would bypass the collection boundary
- * stated at the top of this file.
- */
-export function appendPendingReport(fields = {}, now = new Date()) {
-  try {
-    const skillId = fields.skill_id || null;
-    const skillVersion = fields.skill_version || null;
-    const errorType = fields.error_type || null;
-    const row = sanitizePendingRow({
-      event: 'skill_verify_fail',
-      event_id: pendingReportEventId(skillId, skillVersion, errorType, now),
-      skill_id: skillId,
-      skill_version: skillVersion,
-      error_type: errorType,
-      status: 'error',
-      ts: new Date(now).toISOString(),
-    });
-    if (!row) return false;
-    ensurePrivateDir(path.dirname(pendingReportsPath()));
-    fs.appendFileSync(pendingReportsPath(), `${JSON.stringify(row)}\n`);
-    return true;
-  } catch {
-    return false;
-  }
-}
-
-/**
- * Read the relay queue, pruning it and rewriting the file along the way (drop expired entries, keep
- * only the newest PENDING_REPORT_KEEP).
- * Pruning on the read path is deliberate: the write path lives in skill-verify, a process that must
- * stay minimal and exit on failure and should not take on file maintenance; SessionStart runs once
- * per session and is the natural maintenance point.
- */
-export function readAndPrunePendingReports(now = Date.now()) {
-  const file = pendingReportsPath();
-  let raw;
-  try {
-    raw = fs.readFileSync(file, 'utf8');
-  } catch {
-    return [];
-  }
-  const rows = [];
-  for (const line of raw.split('\n')) {
-    if (!line.trim()) continue;
-    let row = null;
-    try {
-      row = sanitizePendingRow(JSON.parse(line));
-    } catch {
-      continue; // drop half-written/corrupt lines outright, so one bad line cannot jam the whole queue
-    }
-    if (!row) continue;
-    if (now - Date.parse(row.ts) > PENDING_REPORT_MAX_AGE_MS) continue;
-    rows.push(row);
-  }
-  const kept = rows.slice(-PENDING_REPORT_KEEP);
-  try {
-    const rewritten = kept.map((r) => `${JSON.stringify(r)}\n`).join('');
-    if (rewritten !== raw) {
-      // Concurrency safety: another process may have appended new lines after we read the file, and
-      // rewriting the whole file would erase them - while the buffer's invariant is "entries only
-      // leave by TTL/cap".
-      // Before rewriting, append the tail added since the first read verbatim, then land it
-      // atomically via a temp file and rename.
-      // There is still a microsecond window between "re-read" and "rename", which is accepted:
-      // event_id is derived deterministically, so the same failure recurring on the same day
-      // produces the same entry - losing a line delays a report at most.
-      let tail = '';
-      try {
-        const latest = fs.readFileSync(file, 'utf8');
-        if (latest.length > raw.length && latest.startsWith(raw)) {
-          tail = latest.slice(raw.length);
-        }
-      } catch { /* if it cannot be read, treat it as having no additions */ }
-      const tmp = `${file}.${process.pid}.tmp`;
-      fs.writeFileSync(tmp, rewritten + tail);
-      fs.renameSync(tmp, file);
-    }
-  } catch { /* a failed prune does not affect the result of this read */ }
-  return kept;
-}
-
+// pendingReportsPath() is deliberately kept (see the top of this file): `kabo-auth logout` still
+// deletes the file, so a queue left behind by an older version does not linger on disk forever.
 
 /** last-known-good cache of signature-verified meta-guidance (bucketed per endpoint, same rule as publicKeysPath) */
 export function guidanceCachePath(endpoint = apiEndpoint()) {

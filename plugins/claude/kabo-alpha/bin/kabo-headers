@@ -7,7 +7,24 @@
 //   stdout on success: {"Authorization":"Bearer <jwt>"}\n   - exactly that, one line, nothing else
 //   stdout on failure: 0 bytes
 //
-// Probe mode (`--probe`, the only argument this file recognizes): instead of emitting the header,
+// Relay mode (`--relay`): instead of emitting the header, relay this machine's buffered
+// skill-verify failures (<data root>/pending-reports.jsonl) to the platform over one authenticated
+// `tools/call telemetry_report_usage`, and delete exactly the entries the server confirmed.
+// stdout is ALWAYS 0 bytes in relay mode. Exit codes mirror probe mode - 0 done (nothing to relay is
+// also 0), 1 the server rejected the credential, 2 could not tell (network, timeout, protocol, or a
+// tool-level error), 3 the access token is expired locally (relay mode never renews either).
+// stderr carries at most one line, and in relay mode it never contains the /kabo-login substring:
+// the parallel probe is the authority on sign-in state, and two verdicts on one line of terminal
+// would be one too many.
+// The mode exists because the buffer previously had no channel of its own: SessionStart injected the
+// events into the model's opening context and asked the main agent to call the tool. A model obeying
+// its safety rules refuses that - injected text asking for a tool call is indistinguishable from a
+// prompt-injection attack - so the queue drained only when a user explicitly authorized it, and
+// because nothing could confirm a relay, the same events were re-injected every session until they
+// expired. Doing it here fixes both halves: this file already holds the credential, and a tool
+// result is a confirmation the buffer can be pruned against.
+//
+// Probe mode (`--probe`): instead of emitting the header,
 // send one authenticated no-op request to this deployment's MCP path and report whether the server
 // still accepts the credential. stdout is ALWAYS 0 bytes in probe mode; the outcome is the exit
 // code plus one canonical stderr sentence per outcome - 0 the server accepted it, 1 sign-in
@@ -45,6 +62,11 @@
 // is merely bound to another endpoint. A user who redoes the whole login because of one flaky minute
 // - or because of one mis-set KABO_API_ENDPOINT - was failed by that line.
 //
+// Both extra modes keep this file thin on purpose: everything that is merely protocol (the two
+// JSON-RPC bodies, the tolerant response parse, the buffer read and prune) lives in
+// scripts/lib/common.js, where no token ever is. What stays here is the part that cannot move: the
+// header and the fetch that carries it.
+//
 // WARNING - this is the only file in the plugin allowed to contain the Authorization/Bearer literals.
 // The token is never written to argv, env, logs or stderr; only to stdout, as one line of JSON:
 //   - no token, token prefix, token length or "masked" fragment on stderr. There is deliberately no
@@ -55,7 +77,12 @@
 //     imports no process-spawning module at all, and must keep importing none.
 
 import fs from 'node:fs';
-import { apiEndpoint, readCredentials } from '../scripts/lib/common.js';
+import {
+  apiEndpoint, readCredentials,
+  readAndPrunePendingReports, dropPendingReports,
+  buildToolCallRpcBodies, parseRpcMessage, toolCallSucceeded,
+  PENDING_REPORT_MAX,
+} from '../scripts/lib/common.js';
 import { accessTokenUsable, ensureFreshAccessToken, msUntil } from '../scripts/lib/credentials.js';
 
 /** Recovery line for exit 1, needs-login case. It must name /kabo-login: this is the only text the stuck user gets. */
@@ -80,6 +107,17 @@ const UNREACHABLE =
  */
 const LOCALLY_EXPIRED =
   'Kabo credential present; the access token has expired locally and will be renewed on first use (the probe never renews).';
+/**
+ * Relay mode's own lines. None of them may contain `/kabo-login` (that substring is the hook's
+ * signature for a sign-in verdict, and sign-in is the probe's job, not the relay's) and none of them
+ * may name a skill, a path or anything else out of the buffer - the entries are attacker-influenced
+ * text (skill_id comes from a package's unsigned top-level fields), and stderr is echoed by the hook
+ * into the user's terminal. Counts only.
+ */
+const RELAY_REJECTED = 'Kabo could not relay this machine\'s buffered verification events: the server rejected the credential.';
+const RELAY_UNAVAILABLE = 'Kabo could not relay this machine\'s buffered verification events (they stay queued for a later session).';
+/** The tool takes {events: Event[]}; the name is the platform contract's, not this file's. */
+const TELEMETRY_TOOL = 'telemetry_report_usage';
 /** Refresh tokens expiring within this window get an informational line on exit 0 (probe mode only). */
 const REFRESH_WARN_MS = 7 * 24 * 60 * 60 * 1000;
 
@@ -117,13 +155,26 @@ budget.unref();
 try {
   const endpoint = apiEndpoint();
 
+  // Mode first: relay mode has to be able to say nothing at all, and the credential checks below
+  // speak (NEEDS_LOGIN, WRONG_ENDPOINT). SessionStart runs the relay **alongside** the probe, and
+  // those two sentences are the probe's to say - printed twice they read like two problems.
+  const probeMode = process.argv.includes('--probe');
+  const relayMode = !probeMode && process.argv.includes('--relay');
+
+  // Nothing queued is the overwhelmingly common case for the relay, and it must cost zero network,
+  // zero credential reads and zero output. The read also prunes (TTL, cap, bad lines), which is
+  // worth doing even when the relay itself never gets off the ground.
+  if (relayMode && readAndPrunePendingReports().length === 0) process.exit(0);
+
   // Fast path first: roughly 98% of calls have a cached access token that is not close to expiry, and
   // those must cost zero network round trips.
   const cached = readCredentials();
-  if (!cached) fail(1);
-  if (cached.endpoint !== endpoint) fail(1, WRONG_ENDPOINT);
+  if (!cached) relayMode ? process.exit(1) : fail(1);
+  if (cached.endpoint !== endpoint) relayMode ? process.exit(1) : fail(1, WRONG_ENDPOINT);
 
-  const probeMode = process.argv.includes('--probe');
+  // A dead refresh token means the next renewal is guaranteed to fail; there is nothing for the
+  // relay to try. Silent for the same reason as above.
+  if (relayMode && msUntil(cached.refresh_expires_at) <= 0) process.exit(1);
 
   if (probeMode) {
     // The refresh token's own expiry is read off the file, never sent anywhere. A dead refresh
@@ -142,6 +193,10 @@ try {
   let accessToken;
   if (accessTokenUsable(cached)) {
     accessToken = cached.access_token;
+  } else if (relayMode) {
+    // Same rule as the probe (no rotation under an outer kill timeout), but silent and its own exit
+    // code: the events simply wait for a session whose access token is fresh.
+    process.exit(3);
   } else if (probeMode) {
     // Probe mode NEVER renews. A renewal is a strict single-use rotation, and the probe's caller
     // (SessionStart) enforces its own outer kill timeout - a rotation truncated between the
@@ -179,6 +234,51 @@ try {
       process.exit(0);
     } catch {
       fail(2);
+    }
+  }
+
+  if (relayMode) {
+    // Re-read rather than reusing the earlier read: the emptiness check above happened before the
+    // credential work, and this is the batch the prune below has to match exactly.
+    const batch = readAndPrunePendingReports().slice(-PENDING_REPORT_MAX);
+    if (batch.length === 0) process.exit(0);
+    const [initBody, callBody] = buildToolCallRpcBodies(TELEMETRY_TOOL, { events: batch });
+    const post = async (body, id) => {
+      const response = await fetch(`${endpoint}/mcp-for-claude`, {
+        method: 'POST',
+        headers: {
+          Authorization: `Bearer ${accessToken}`,
+          'content-type': 'application/json',
+          accept: 'application/json, text/event-stream',
+        },
+        body: JSON.stringify(body),
+        // Half the probe's per-request budget, because the relay spends two round trips and shares
+        // the same outer 4.5s kill timeout in SessionStart. A relay that does not fit costs nothing:
+        // the entries stay queued for the next session.
+        signal: AbortSignal.timeout(2000),
+      });
+      return { status: response.status, message: parseRpcMessage(await response.text(), id) };
+    };
+    try {
+      const init = await post(initBody, 1);
+      // 401/403 is the one status worth short-circuiting on - retrying the second POST with the
+      // same rejected credential cannot go better. Any other non-2xx initialize is NOT fatal: the
+      // server is stateless, so tools/call carries its own verdict.
+      if (init.status === 401 || init.status === 403) fail(1, RELAY_REJECTED);
+      const call = await post(callBody, 2);
+      if (call.status === 401 || call.status === 403) fail(1, RELAY_REJECTED);
+      if (call.status < 200 || call.status >= 300) fail(2, RELAY_UNAVAILABLE);
+      // A tool-level failure arrives as result.isError, not as a JSON-RPC error. Reading that as
+      // success is precisely how a buffer gets pruned while the server took nothing.
+      if (!toolCallSucceeded(call.message)) fail(2, RELAY_UNAVAILABLE);
+      // Confirmed: the batch is in (`accepted`) or was already in (`duplicates`) - both mean the
+      // platform holds these events and re-sending them is pure waste. Only these ids are dropped,
+      // so anything appended meanwhile survives.
+      const dropped = dropPendingReports(batch.map((entry) => entry.event_id));
+      writeFd(2, `Kabo relayed ${batch.length} buffered verification event(s) (${dropped} cleared from the local queue).\n`);
+      process.exit(0);
+    } catch {
+      fail(2, RELAY_UNAVAILABLE);
     }
   }
 
