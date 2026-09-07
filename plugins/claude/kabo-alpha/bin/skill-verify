@@ -1,18 +1,32 @@
 #!/usr/bin/env node
 // skill-verify - integrity verification of the skill cache.
-// Usage: skill-verify <skill-dir>
+// Usage: skill-verify [--local-only] <skill-dir>   (the flag may come before or after the directory)
 // Steps:
 //   1. Read <skill-dir>/.meta.json ({id, version, checksum, signature, format_version?, ...})
 //   2. Revocation check (kill-switch):
-//      a. a local <data root>/skill-cache/<id>.disabled marker hit means reject
-//      b. then query the public GET <endpoint>/api/sync live (no token needed) - a revocation the
-//         platform issued after SessionStart must take effect before this execution; if the network
-//         is unreachable, fall back to the result of a
+//      a. a local <data root>/skill-cache/<id>.disabled marker hit means reject - in every mode
+//      b. then the revocation list. <data root>/revocation-sync.json (written by SessionStart and by
+//         this script's own live queries, see revocationSyncPath in common.js) is used as is while
+//         it is younger than REVOCATION_SYNC_TTL_MS and not from the future; otherwise query the
+//         public GET <endpoint>/api/sync live (no token needed) and rewrite that file - a revocation
+//         the platform issued after SessionStart must take effect before this execution; if the
+//         network is unreachable, fall back to the result of a.
+//         --local-only skips b entirely.
 //   3. Recompute the checksum (algorithm verbatim identical to the server's, see computeChecksum in
 //      common.js) and compare it against .meta.json
 //   4. Verify the signature with the server's Ed25519 keyset (GET /api/public-key, pinned after TOFU in
-//      <data root>/public-keys.<bucket>.json; on a key rotation it refreshes once via a continuity proof)
+//      <data root>/public-keys.<bucket>.json; on a key rotation it refreshes once via a continuity proof).
+//      --local-only tries the pinned keys only and never refreshes: no pinned key means
+//      public_key_unavailable, a pinned key that fails still means signature_invalid.
+//   5. manifest.min_plugin_version against PLUGIN_VERSION (after the signature, see below)
 // Exit 0 on success; on any failed step print the reason and exit 1.
+//
+// Why two modes (2026-09-07): one measured skill run verified the same cached skill three times, and
+// each time paid a live revocation GET (1-3 s) plus, on a cold process, a keyset round trip. The
+// routing now verifies once per run, online, right after unpacking (skill-unpack --verify), and
+// kabo-run-pipeline re-runs this script with --local-only after the analyzer scripts have run next
+// to the cache - that pass exists to prove the signed tree is still byte-identical, not to learn
+// anything new from the network. Neither mode ever skips the marker, the checksum or the signature.
 //
 // Since 0.7.0 this script **needs no credentials at all**: it is a Bash subprocess and never has an
 // MCP connection, while the revocation list is the hard pre-execution gate - which is exactly why the
@@ -28,12 +42,14 @@ import crypto from 'node:crypto';
 import {
   isSafeName,
   apiEndpoint, readJsonSilent, writeJsonSilent,
-  disabledMarkerPath, computeChecksum, artifactFormatOf, ensureVerified, fetchJsonSilent,
+  disabledMarkerPath, revocationSyncPath, REVOCATION_SYNC_TTL_MS, GUIDANCE_CLOCK_SKEW_MS,
+  computeChecksum, artifactFormatOf, ensureVerified, fetchJsonSilent,
   appendPendingReport, compareSemver, PLUGIN_VERSION,
 } from '../scripts/lib/common.js';
 
-const USAGE = `Usage: skill-verify <skill-dir>
-  Verifies the checksum and Ed25519 signature of a skill already written to disk; exit 0 on success, exit 1 with a printed reason on failure`;
+const USAGE = `Usage: skill-verify [--local-only] <skill-dir>
+  Verifies the checksum and Ed25519 signature of a skill already written to disk; exit 0 on success, exit 1 with a printed reason on failure
+  --local-only  skip the network revocation query and the keyset refresh (the local .disabled marker, checksum and signature are still checked; pinned keys only)`;
 
 /** Revocation query budget: this is the hot-path gate before every execution - better to come back empty-handed than to hold the user up */
 const REVOCATION_TIMEOUT_MS = 2500;
@@ -85,27 +101,67 @@ function collectFiles(dir, base = '') {
 }
 
 /**
+ * The revocation snapshot, if it can stand in for a live query right now.
+ * Usable = parses, carries a list, and its synced_at is younger than REVOCATION_SYNC_TTL_MS without
+ * being ahead of this clock by more than the same skew tolerance the guidance envelope gets - a
+ * timestamp from the future is a clock or a file that cannot be reasoned about, and the safe answer
+ * to either is the live query.
+ * @returns {{revocations: string[], ageMs: number}|null} null = absent, unreadable or stale: go live
+ */
+function readRevocationSync() {
+  const sync = readJsonSilent(revocationSyncPath());
+  if (!sync || typeof sync.synced_at !== 'string' || !Array.isArray(sync.revocations)) return null;
+  const ageMs = Date.now() - Date.parse(sync.synced_at);
+  if (!Number.isFinite(ageMs)) return null;
+  if (ageMs >= REVOCATION_SYNC_TTL_MS || ageMs < -GUIDANCE_CLOCK_SKEW_MS) return null;
+  return { revocations: sync.revocations.filter((id) => typeof id === 'string'), ageMs };
+}
+
+/**
  * Live revocation query: GET <endpoint>/api/sync (public read-only, no arguments, no identity).
+ * A successful answer also refreshes the snapshot, so the next verification inside the TTL window
+ * (the pipeline's own, a second skill in a composite run) does not pay this round trip again.
  * @returns {Promise<boolean|null>} true = revoked, false = not revoked, null = endpoint unreachable
  */
 async function isRevokedRemotely(skillId) {
   const resp = await fetchJsonSilent(`${apiEndpoint()}/api/sync`, {}, REVOCATION_TIMEOUT_MS);
   if (!resp || !Array.isArray(resp.revocations)) return null;
+  writeJsonSilent(revocationSyncPath(), {
+    synced_at: new Date().toISOString(),
+    revocations: resp.revocations.filter((id) => typeof id === 'string'),
+    server_api_version: typeof resp.server_api_version === 'string' ? resp.server_api_version : null,
+  });
   return resp.revocations.includes(skillId);
 }
 
 async function main() {
   const args = process.argv.slice(2);
-  if (args.length === 0 || args[0] === '--help' || args[0] === '-h') {
+  if (args.length === 0 || args.includes('--help') || args.includes('-h')) {
     console.log(USAGE);
     process.exit(args.length === 0 ? 1 : 0);
   }
-  if (args.length > 1) {
+  let localOnly = false;
+  const positional = [];
+  for (const arg of args) {
+    if (arg === '--local-only') {
+      localOnly = true;
+    } else if (arg.startsWith('-')) {
+      console.error(`Unknown option: ${arg}\n\n${USAGE}`);
+      process.exit(1);
+    } else {
+      positional.push(arg);
+    }
+  }
+  if (positional.length === 0) {
+    console.log(USAGE);
+    process.exit(1);
+  }
+  if (positional.length > 1) {
     console.error(`Too many arguments\n\n${USAGE}`);
     process.exit(1);
   }
 
-  const dir = path.resolve(args[0]);
+  const dir = path.resolve(positional[0]);
   if (!fs.existsSync(dir) || !fs.statSync(dir).isDirectory()) {
     fail(null, `directory does not exist: ${dir}`, 'dir_not_found');
   }
@@ -140,11 +196,26 @@ async function main() {
     fail(meta, `skill "${signedId}" has been revoked by the platform (disabled locally), refusing to execute`, 'revoked');
   }
 
-  // Revocation check b: query the public endpoint live. A session can run for a long time, so the
-  // snapshot from SessionStart may be stale; revocation is a security kill-switch and must be
-  // reconfirmed before execution. When unreachable (null), fall back to the result of a.
-  {
-    const revoked = await isRevokedRemotely(signedId);
+  // Revocation check b: the platform's list. A session can run for a long time, so the snapshot
+  // from SessionStart may be stale; revocation is a security kill-switch and must be reconfirmed
+  // before execution - but "reconfirmed" is bounded by REVOCATION_SYNC_TTL_MS, not by "every
+  // process": inside that window the snapshot answers, past it the public endpoint is queried live.
+  // When unreachable (null), fall back to the result of a. Skipped whole under --local-only, whose
+  // caller ran the online check moments ago (see the header); the passing line says which happened.
+  let revocationNote = 'not re-queried';
+  if (!localOnly) {
+    const synced = readRevocationSync();
+    let revoked;
+    let hit;
+    if (synced) {
+      revoked = synced.revocations.includes(signedId);
+      revocationNote = `fresh ${Math.round(synced.ageMs / 1000)}s ago`;
+      hit = `revocation list synced ${revocationNote.slice('fresh '.length)}`;
+    } else {
+      revoked = await isRevokedRemotely(signedId);
+      revocationNote = revoked === null ? 'offline marker only' : 'live';
+      hit = 'live query hit';
+    }
     if (revoked === true) {
       // Persist the marker while we are here, so later offline runs are blocked too (signedId already passed isSafeName)
       writeJsonSilent(disabledMarkerPath(signedId), {
@@ -152,7 +223,7 @@ async function main() {
         reason: 'revoked',
         revoked_at: new Date().toISOString(),
       });
-      fail(meta, `skill "${signedId}" has been revoked by the platform (live query hit), refusing to execute`, 'revoked');
+      fail(meta, `skill "${signedId}" has been revoked by the platform (${hit}), refusing to execute`, 'revoked');
     }
   }
 
@@ -189,7 +260,8 @@ async function main() {
   // key selection hint - it is a dotfile and outside the signature's coverage, so changing it at most
   // makes the client try a few more keys and cannot change the verification outcome);
   // only if all fail and this key_id is a key the machine has never seen does it refresh the keyset
-  // once to rotate the anchor and retry.
+  // once to rotate the anchor and retry - never under --local-only, where the pinned keys are all
+  // there is.
   const verified = await ensureVerified(
     (pem) => crypto.verify(
       null,
@@ -197,11 +269,17 @@ async function main() {
       crypto.createPublicKey(pem),
       Buffer.from(meta.signature, 'base64'),
     ),
-    { keyId: typeof meta.key_id === 'string' ? meta.key_id : null },
+    { keyId: typeof meta.key_id === 'string' ? meta.key_id : null, offline: localOnly },
   );
   if (!verified.ok) {
     if (verified.reason === 'public_key_unavailable') {
-      fail(meta, 'cannot obtain the server public key (no local cache and /api/public-key is unreachable)', 'public_key_unavailable');
+      fail(
+        meta,
+        localOnly
+          ? 'no pinned server public key verifies this signature and --local-only never refreshes the keyset (run skill-verify without the flag to rotate the anchor)'
+          : 'cannot obtain the server public key (no local cache and /api/public-key is unreachable)',
+        'public_key_unavailable',
+      );
     }
     fail(meta, 'Ed25519 signature verification failed (the package may be forged)', 'signature_invalid');
   }
@@ -220,7 +298,12 @@ async function main() {
     );
   }
 
-  console.log(`Verification passed: ${meta.id || '?'}@${meta.version || '?'} (checksum and ed25519 signature are both valid)`);
+  // The parenthesis names how the revocation list was consulted, so a transcript shows whether this
+  // process went to the network - the difference between the two modes is exactly that.
+  const subject = `${meta.id || '?'}@${meta.version || '?'}`;
+  console.log(localOnly
+    ? `Verification passed: ${subject} (local-only: checksum and ed25519 signature are both valid; revocation list not re-queried)`
+    : `Verification passed: ${subject} (checksum and ed25519 signature are both valid; revocation list ${revocationNote})`);
   process.exit(0);
 }
 

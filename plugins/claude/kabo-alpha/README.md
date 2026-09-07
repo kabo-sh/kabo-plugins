@@ -1,6 +1,6 @@
 # Kabo Claude Code Plugin
 
-The Claude Code plugin for **Kabo**, the creator-focused Skill distribution platform: search, download, and verify the platform's creator research skills (YouTube public evidence collection, viral breakdowns, channel benchmarking, cross-platform creator discovery, and so on) inside Claude Code, and execute them in a restricted subagent.
+The Claude Code plugin for **Kabo**, the creator-focused Skill distribution platform: search, download, and verify the platform's creator research skills (YouTube public evidence collection, viral breakdowns, channel benchmarking, cross-platform creator discovery, and so on) inside Claude Code, and execute them — deterministic skills as one `kabo-run-pipeline` command run by the main agent, skills with a semantic pass in a restricted subagent.
 
 ## Install
 
@@ -79,7 +79,7 @@ Because the fetch no longer happens on your machine, everything earlier versions
 
 ## Usage
 
-Just talk normally: when a task involves **creator research**, the `meta-guidance` skill routes it through search → user confirmation → download → write to disk → signature verification → execution; a skill that fails verification or has been revoked by the platform is never executed.
+Just talk normally: when a task involves **creator research**, the `meta-guidance` skill routes it through search → user confirmation → download, write to disk and one signature verification (`skill-unpack --verify`) → execution in the mode the skill's manifest declares (see "Execution modes and the fast path" below); a skill that fails verification or has been revoked by the platform is never executed.
 
 Nine creator research skills are currently published on the platform:
 
@@ -99,7 +99,7 @@ They replace the five V1 skills (`pp-youtube`, `yt-youtube-research-agent`, `hea
 
 Which connectors and operations are live right now is answered by `data_connector_catalog`, not by this file — readiness moves, and a table in a shipped README cannot. Nothing it reports is fixable on your machine: an unready connector or an unimplemented operation is a platform-side gap, and a skill degrades under partial semantics rather than inventing the missing half.
 
-These skills' bodies are **used verbatim from upstream with no rewriting** — upstream treats a skill body as a read-only deliverable. A V2 package bundles its own `scripts/` (stdlib-only python3) and `references/` (frozen schemas and field maps) and resolves them relative to the skill directory; the one plugin-side piece of the pipeline is `creator-research/scripts/build_public_snapshot.py`, the assembler skill-runner drives before an analyzer runs. The `../../` path mapping into `creator-research/` that the V1 bodies needed applies only to bodies that literally contain `../../`, which no V2 body does.
+These skills' bodies are **used verbatim from upstream with no rewriting** — upstream treats a skill body as a read-only deliverable. A V2 package bundles its own `scripts/` (stdlib-only python3) and `references/` (frozen schemas and field maps) and resolves them relative to the skill directory; the plugin-side pieces of the pipeline are `creator-research/scripts/build_public_snapshot.py` (the assembler) and `account_analyzers.py` (the shared account analyzer), which run as the first `kabo-run-pipeline` steps before a skill's own analyzer. The `../../` path mapping into `creator-research/` that the V1 bodies needed applies only to bodies that literally contain `../../`, which no V2 body does.
 
 `creator-research/` is nested in a subdirectory rather than spread across the plugin root because the root's `scripts/` already holds `hooks/` and `lib/` — dropping upstream's `scripts/` straight on top would delete the hook entry points.
 
@@ -116,6 +116,55 @@ Slash commands (five):
 How fast each surface actually stops: **this machine, the same second** (the credential is gone, so no header is produced and the request 401s); **renewal anywhere, the same second** (the refresh token is revoked); an access token already cached **on another machine, up to 2 hours** — it is a self-contained JWT and the platform runs no denylist.
 
 `/kabo-analyze` is the explicit entry point; you do not have to use it — meta-guidance routes automatically when you simply state your need, and both paths run the same flow.
+
+## Execution modes and the fast path
+
+A skill's `manifest.json` declares how it runs, in `execution`:
+
+| `execution` | Who runs it | How |
+|---|---|---|
+| `pipeline` | the main agent — no subagent | Read `SKILL.md` → `kabo-run-dir --skill <dir>` → the connector calls the SKILL.md names, in one assistant turn (the PostToolUse hook stages every envelope and prints a `kabo:` line naming the staging directory) → one `kabo-run-pipeline` call carrying every deterministic step as `--step` arguments → Read the report → reply |
+| `subagent` | skill-runner | the same fixed sequence in at most three Bash calls (PRE: `kabo-run-dir --skill` + `python3 --version`; FETCH: the connector calls in one turn; POST: one `kabo-run-pipeline` with `--staging`), plus only the semantic pass the SKILL.md explicitly requires; returns a summary of about 300 tokens |
+| `inline` | the main agent | reads the SKILL.md and follows it |
+
+`execution` may also be an object — `{"default": "subagent", "operations": {"engagement-rate": "pipeline"}}` — giving one operation of a skill its own mode; the dispatcher picks the mode of the operation the user's request maps to. A deterministic skill is one with no model work between fetch and report: every step is a script its SKILL.md documents, and for it a subagent is pure overhead.
+
+**Fetch and verify are one step.** `skill-unpack --verify <file>` writes the cache directory, prints one manifest digest line — `manifest: execution=<mode> required.tools=<list> min_plugin_version=<x.y.z> skill=<id>@<version>` — and then runs `skill-verify <dest>` with stdio inherited, exiting with its code. The digest exists so the dispatcher never opens `manifest.json` separately; the chained verify exists so verification never runs twice. A cache hit skips the download and runs `skill-verify <dir>` once instead — the revocation check still happens every run.
+
+**Files SessionStart writes** (under `~/.kabo`, mode 0600):
+
+- `revocation-sync.json` — `{"synced_at", "revocations", "server_api_version"}` from the `GET /api/sync` response, written only when that request answered: a session that starts offline leaves the previous file in place, or none at all. `skill-verify` consults it first and makes no network request while it is fresher than 10 minutes (`REVOCATION_SYNC_TTL_MS`); absent or older than that it queries live as before and rewrites the file — a missing snapshot makes it go live, never silent.
+- `meta-guidance.current.md` — the guidance body currently in force: the signature-verified dynamic version, or the static `skills/meta-guidance/SKILL.md` body when that is unavailable. Written on every session start, offline included.
+- `execution-conventions.md` — the `## C.` section of that body, written on every session start alongside it. skill-runner reads this file instead of receiving the section pasted into its dispatch, which is where 25 seconds of the measured run below went.
+
+**Two bins carry the pipeline.**
+
+`kabo-run-dir [--skill <skill-dir>] [--request-id <id>]` — unchanged without arguments; with `--skill` it also writes `<run dir>/run-manifest.json` (per `creator-research/schemas/run-manifest.schema.json`: run id, request id, skill id, plugin version, start time, status `running`, empty artifact list). stdout is still exactly the run id.
+
+`kabo-run-pipeline --run-id <id> --skill <skill-dir> [--staging <dir>] [--language <tag>] [--param k=v]... [--report <file-name>] (--step '<shell command>')...` — the run directory must already exist. It drains `--staging` into `<run>/snapshot/` through `kabo-save-envelope` (sha256-checked), expands the placeholders below in every `--step`, runs the steps in order with `/bin/sh -c` from the run directory under `umask 077` and `PYTHONDONTWRITEBYTECODE=1`, stops at the first non-zero exit, fails if any `__pycache__` / `*.pyc` / `*.pyo` appeared under the skill (it never deletes anything there), chmods the run directory to 700/600, runs `skill-verify --local-only <skill-dir>`, finalizes `run-manifest.json` (status, duration, sha256 of every file under `analysis/` and `report/`), and prints only run-relative lines: `step n/N ok <secs>s <command>`, `drained=<n>`, `creator_report: <run-id> → report/<file>`, `run-manifest: <run-id> → run-manifest.json`. Exit 1 on any failure, with the reason on stderr. It never calls the network and never reads credentials. When no `--step` is given and the manifest has a `pipeline` array of `{name, cmd}` objects, those commands are the steps — the forward-compatible shape for skills that ship their own sequence.
+
+| Placeholder | Expands to |
+|---|---|
+| `{run}` | the run directory |
+| `{skill}` | the skill directory |
+| `{plugin}` | the plugin root (resolved from the bin's own location, not from `~/.kabo/plugin-root`) |
+| `{cr}` | `{plugin}/creator-research` — what a SKILL.md's `../../` means |
+| `{snapshot}` `{analysis}` `{report}` `{owner}` | the four run subdirectories |
+| `{language}` | the `--language` tag |
+| `{param.<key>}` | the value of `--param <key>=<value>` |
+| `{envelopes}` | `--envelope <path>` for every `<run>/snapshot/envelope-*.json` in numeric order; empty when there are none |
+
+An unknown placeholder is an error before any step runs. Every value is single-quoted for `/bin/sh` as it is substituted, so a placeholder is written bare in a step — wrapping one in quotes hands the script the quote characters as part of the value.
+
+**Verification policy.** Every run verifies a skill's checksum and Ed25519 signature exactly once with a revocation check (`skill-unpack --verify`, or `skill-verify <dir>` on a cache hit): the revocation list comes from `revocation-sync.json` while it is under 10 minutes old, from a live `GET /api/sync` otherwise, and from the local marker alone when offline — as before. The only other verification in a run is `kabo-run-pipeline`'s post-run `skill-verify --local-only`, which re-checks checksum and signature against the pinned keyset, refreshes no keys and queries no list; it exists to prove the run left the signed skill byte-identical. The local `<id>.disabled` marker is honoured unconditionally in both modes. Nothing skips checksum or signature verification, and skill code still never receives credentials.
+
+**Measured motivation.** One run of the deterministic skill `diagnose-reach-drop@0.2.0` on 2026-09-07 took 280 seconds end to end; the real data fetch was 7.6 seconds of it. The rest was control plane: 34 model turns, three `skill-verify` runs (each a live `GET /api/sync`, 1–3 s), `data_connector_catalog` pulled twice (53 KB each, overflowing the host's tool-result cap and forcing a file read-back), `connectors.v1.json` parsed twice, the main agent hand-typing the ~3 KB Section C into the subagent dispatch (25 s), the subagent spending 22 turns and 8 Bash calls on a fixed deterministic sequence, and a 1,886-token subagent summary. The fast path removes each of those: deterministic skills run as one pipeline command from the main agent, semantic skills keep a slimmer subagent, and verification happens once.
+
+**Server-side follow-ups this branch depends on.**
+
+- Publish guidance body v19 — the body of `skills/meta-guidance/SKILL.md` on this branch; the cross-repo snapshot test is red until the two match.
+- Declare `execution: "pipeline"` (or the object form) in the manifests of deterministic skills and operations. Candidates: `diagnose-reach-drop`, `recommend-publish-timing`, `plan-platform-monetization`, `review-creator-account`'s engagement-rate operation, `research-tiktok-trends`' trending-sounds operation, `analyze-content-video`'s transcript and cover operations. Until a manifest says so, a skill keeps running through skill-runner.
+- Optional: a filter parameter on `data_connector_catalog`, so a dispatcher can ask for the one or two connectors a SKILL.md names instead of the 53 KB whole.
 
 ## Dynamic meta-guidance
 
@@ -144,6 +193,10 @@ The data root is fixed at `~/.kabo` (it does not follow `$CLAUDE_PLUGIN_DATA` �
 ├── skill-cache/<id>.disabled     # local disable marker for a revocation
 ├── envelope-staging/<session>/   # connector envelopes the PostToolUse hook wrote verbatim (NN.json + NN.meta, 0600), waiting to be moved into a run's snapshot/ by bin/kabo-save-envelope; normally emptied within the same run
 ├── work/<run-id>/                # one directory atomically reserved by bin/kabo-run-dir per run, holding assembled snapshots, analyses, and reports (0700/0600, 14-day TTL via bin/skill-gc); logout deletes it outright
+├── work/<run-id>/run-manifest.json # the run record: written by kabo-run-dir --skill (status running), finalized by kabo-run-pipeline (status, duration, sha256 of every analysis/ and report/ file)
+├── revocation-sync.json          # {synced_at, revocations, server_api_version} from the last GET /api/sync (SessionStart, or skill-verify when it had to go live); skill-verify reuses it for 10 minutes instead of querying
+├── meta-guidance.current.md      # the guidance body in force after the last SessionStart (dynamic when it verified, otherwise the static SKILL.md body)
+├── execution-conventions.md      # Section C of that body — the file skill-runner reads instead of having it pasted into its dispatch
 ├── public-keys.<bucket>.json     # pinned server-side signing **keyset** (TOFU + continuity rotation; 0.9.x's public-key.<bucket>.pem is kept as a fallback)
 ├── pending-reports.jsonl         # buffer of skill verification failures awaiting relay (7-day TTL / 100 entries, listed at session start for relay, idempotent)
 └── meta-guidance.<bucket>.json   # signature-verified dynamic guidance, last-known-good (bucketed per endpoint, exactly like the keyset)
@@ -209,14 +262,14 @@ plugins/claude/kabo-alpha/
 ├── .mcp.json                     # one bundled MCP server: kabo (http, kabo.sh/mcp-for-claude + headersHelper) — the local connectors server is gone (0.12.0)
 ├── creator-research/             # creator research support tree (config/schemas + scripts/build_public_snapshot.py and scripts/snapshot_store.py); the local fetch scripts and the V1 wrappers/ are gone
 ├── skills/meta-guidance/SKILL.md # resident router skill, and the verbatim fallback snapshot when dynamic guidance fails verification (must not be deleted)
-├── agents/skill-runner.md        # restricted execution subagent (Read/Grep/Glob/Bash + data_connector_catalog/run)
-├── hooks/hooks.json              # 3 events: SessionStart(command) + SubagentStart/Stop(mcp_tool, matcher=skill-runner)
+├── agents/skill-runner.md        # restricted execution subagent for `execution: subagent` skills (Read/Grep/Glob/Bash/Write + data_connector_*); `pipeline` skills never use it
+├── hooks/hooks.json              # 5 events: SessionStart(command) + PostToolUse/PostToolUseFailure(command, matcher=data_connector_*) + SubagentStart/Stop(mcp_tool, matcher=skill-runner)
 ├── scripts/hooks/session-start.sh# the SessionStart command: resolves node (node-resolve.sh) and execs session-start.js
 ├── scripts/hooks/persist-envelope.js # PostToolUse + PostToolUseFailure: writes each connector envelope to envelope-staging/ verbatim so the model never has to retype one (0.19.0); local-only, see "Collection boundary"
-├── scripts/hooks/session-start.js# syncs the revocation list from the public endpoints + fetches, verifies, and injects dynamic guidance; also checks the host can run the credential helper
+├── scripts/hooks/session-start.js# syncs the revocation list from the public endpoints + fetches, verifies, and injects dynamic guidance; writes revocation-sync.json, meta-guidance.current.md and execution-conventions.md; also checks the host can run the credential helper
 ├── scripts/lib/common.js         # shared by hooks and bin (path/endpoint conventions, credential read/write + renewal lock, checksum, compareSemver, guidance signature verification)
 ├── scripts/lib/credentials.js    # the device-flow and renewal wire protocol (discovery, device code, token exchange) — holds no request header
 ├── scripts/lib/node-resolve.sh   # shared node lookup for the two sh shims ($KABO_NODE → ~/.kabo/node-path → PATH → usual install locations); builtins only
-├── bin/                          # skill-verify / skill-unpack / skill-gc / kabo-run-dir / kabo-save-envelope / kabo-auth (executables) + kabo-headers and its POSIX sh launcher
+├── bin/                          # skill-verify / skill-unpack / skill-gc / kabo-run-dir / kabo-run-pipeline / kabo-save-envelope / kabo-auth (executables) + kabo-headers and its POSIX sh launcher
 └── commands/                     # /kabo-login /kabo-start /kabo-analyze /kabo-channel /kabo-logout
 ```

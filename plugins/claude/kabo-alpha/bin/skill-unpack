@@ -1,33 +1,70 @@
 #!/usr/bin/env node
 // skill-unpack - writes a SkillPackage JSON to disk as a cache directory tree.
 // Usage:
-//   skill-unpack <path to package.json|-> [dest-root]
-//     - when the first argument is "-", the SkillPackage JSON is read from stdin
+//   skill-unpack [--verify] <path to package.json|-> [dest-root]
+//     - when the source argument is "-", the SkillPackage JSON is read from stdin
 //     - dest-root defaults to <data root>/skill-cache (the data root is fixed at ~/.kabo, overridable with KABO_DATA_ROOT)
+//     - --verify may appear anywhere in argv
 // On-disk layout: <dest-root>/<id>/<version>/ containing every file + .meta.json
 //   .meta.json = {id, version, checksum, signature, downloaded_at, format_version?, key_id?}
-// Note: this script only writes to disk and performs no verification; bin/skill-verify must pass before execution.
+// Note: this script only writes to disk and performs no verification of its own; bin/skill-verify must
+// pass before execution. --verify does not change that: it hands the freshly written directory to
+// bin/skill-verify as a child process and exits with the child's exit code - nothing is skipped.
+//
+// Why --verify exists: fetch -> unpack -> verify used to be three host round trips, and the last two
+// were pure ceremony - the agent had nothing to decide between them, and the verify result is required
+// before anything else may happen. Folding the verify call into the unpack process makes "cache this
+// skill and prove it is genuine" one Bash call, and the manifest digest printed in between is the only
+// thing the agent needs from the package to route the run (execution mode, required tools, plugin
+// floor), so it no longer opens manifest.json in a further turn either. The digest is printed before
+// verification and is informational: routing on it is fine, executing anything still waits for the
+// verify line.
+//
+// stdout is relay-safe by contract (the runner relays it off the machine), so no absolute path under
+// the user's home may appear there: the "Written:" line names the cache-relative directory and the
+// digest names manifest fields only, each reduced to an allowlisted token (see manifestDigest) - the
+// package is unverified at that point and must not be able to write its own lines. Absolute paths
+// are for stderr.
 
 import fs from 'node:fs';
 import path from 'node:path';
-import { cacheRoot, ensurePrivateDir, PLUGIN_ARTIFACT_FORMAT_VERSION } from '../scripts/lib/common.js';
+import { spawnSync } from 'node:child_process';
+import { fileURLToPath } from 'node:url';
+import { cacheRoot, ensurePrivateDir, readJsonSilent, PLUGIN_ARTIFACT_FORMAT_VERSION } from '../scripts/lib/common.js';
 
-const USAGE = `Usage: skill-unpack <path to package.json|-> [dest-root]
+const USAGE = `Usage: skill-unpack [--verify] <path to package.json|-> [dest-root]
   Reads a SkillPackage JSON from a file or stdin(-) and writes it to <dest-root>/<id>/<version>/
-  dest-root defaults to ~/.kabo/skill-cache (overridable with KABO_DATA_ROOT)`;
+  dest-root defaults to ~/.kabo/skill-cache (overridable with KABO_DATA_ROOT)
+  --verify then runs skill-verify on the written directory and exits with its exit code`;
 
 function die(msg) {
   console.error(msg);
   process.exit(1);
 }
 
-/** Path-traversal guard: reject absolute paths, backslashes, empty segments, and segments starting with ".".
+/** stdout goes through a synchronous write on the raw fd rather than console.log: with --verify the
+ *  child inherits this fd, and console.log on a pipe is not guaranteed to have handed its bytes to the
+ *  kernel before the next statement runs, so the digest could land below the child's verify line in a
+ *  relayed transcript. */
+function out(line) {
+  fs.writeSync(1, `${line}\n`);
+}
+
+/** C0 and C1 control characters plus DEL: newline, ESC (ANSI sequences), 8-bit CSI, NUL. */
+const CONTROL_CHARS = /[\u0000-\u001f\u007f-\u009f]/;
+
+/** Path-traversal guard: reject absolute paths, backslashes, control characters, empty segments, and
+ *  segments starting with ".".
  *  Dotfile segments must be rejected: the server's packaging and skill-verify's checksum recomputation
  *  both exclude dotfiles, so if the unpacking side let them through, a dotfile inside a package would
  *  become a smuggling channel around signature verification (a MITM stuffs a .xxx file into a
- *  legitimately signed package and verify still passes). */
+ *  legitimately signed package and verify still passes).
+ *  Control characters must be rejected because id and version are echoed on relay-safe stdout before
+ *  the package is verified: a newline in either would let the package append a line of its own -
+ *  a forged "Verification passed:" - to the "Written:" line, and an ESC would reach the user's
+ *  terminal. No legitimate package names a file or a version that way. */
 function assertSafeRelPath(p) {
-  if (typeof p !== 'string' || p === '' || path.isAbsolute(p) || p.includes('\\')) {
+  if (typeof p !== 'string' || p === '' || path.isAbsolute(p) || p.includes('\\') || CONTROL_CHARS.test(p)) {
     die(`SkillPackage contains an illegal file path: ${JSON.stringify(p)}`);
   }
   for (const seg of p.split('/')) {
@@ -46,10 +83,62 @@ async function readSource(src) {
   return fs.readFileSync(src, 'utf8');
 }
 
+/** What a digest value may look like: mode names, operation names, mcp__... tool names, semver.
+ *  Everything else prints as "-". The digest is printed from a manifest nobody has verified yet, on
+ *  the same stdout the agent reads the verify result from, so values are allowlisted rather than
+ *  escaped: a hostile or MITM'd package could otherwise put a newline plus a forged "Verification
+ *  passed:" line - or an ANSI escape aimed at the user's terminal - into execution or required.tools
+ *  and have it printed above the real failure. No separator of the digest line (space, "=", ",",
+ *  "@") is in the set, so a value can never pass for a second field either. */
+const DIGEST_TOKEN = /^[A-Za-z0-9._+-]{1,128}$/;
+
+function digestToken(value) {
+  return typeof value === 'string' && DIGEST_TOKEN.test(value) ? value : '-';
+}
+
+/** One-line digest of the fields the agent routes on, read back from the manifest.json that was just
+ *  written - the signed copy, not pkg.manifest from the envelope, so what is printed is what
+ *  skill-verify will check. Missing, unreadable or non-allowlisted values print as "-" and never fail
+ *  the unpack: a package without a usable manifest is skill-verify's to reject, with its own
+ *  error_type. */
+function manifestDigest(dest, pkg) {
+  const parsed = readJsonSilent(path.join(dest, 'manifest.json'));
+  const manifest = parsed && typeof parsed === 'object' ? parsed : {};
+  let execution = '-';
+  if (typeof manifest.execution === 'string') {
+    execution = digestToken(manifest.execution);
+  } else if (manifest.execution && typeof manifest.execution === 'object' && !Array.isArray(manifest.execution)) {
+    // The object form is rebuilt from allowlisted keys and values, never stringified as found: only
+    // the {default, operations: {<operation>: mode}} shape the dispatcher reads survives.
+    const ex = manifest.execution;
+    const safe = {};
+    if (ex.default !== undefined) safe.default = digestToken(ex.default);
+    if (ex.operations && typeof ex.operations === 'object' && !Array.isArray(ex.operations)) {
+      safe.operations = {};
+      for (const [op, mode] of Object.entries(ex.operations)) {
+        if (DIGEST_TOKEN.test(op)) safe.operations[op] = digestToken(mode);
+      }
+    }
+    execution = JSON.stringify(safe);
+  }
+  const tools = manifest.required && Array.isArray(manifest.required.tools)
+    ? manifest.required.tools.map(digestToken)
+    : [];
+  // id/version are control-character-free already (assertSafeRelPath); the allowlist keeps them from
+  // passing for another field. The "Written:" line above carries them verbatim.
+  return `manifest: execution=${execution}`
+    + ` required.tools=${tools.length > 0 ? tools.join(',') : '-'}`
+    + ` min_plugin_version=${digestToken(manifest.min_plugin_version)}`
+    + ` skill=${digestToken(pkg.id)}@${digestToken(pkg.version)}`;
+}
+
 async function main() {
-  const args = process.argv.slice(2);
+  // --verify is the only option and may sit anywhere; everything else stays positional so that "-"
+  // (stdin) and the optional dest-root keep working exactly as before.
+  const verify = process.argv.slice(2).includes('--verify');
+  const args = process.argv.slice(2).filter((a) => a !== '--verify');
   if (args.length === 0 || args[0] === '--help' || args[0] === '-h') {
-    console.log(USAGE);
+    out(USAGE);
     process.exit(args.length === 0 ? 1 : 0);
   }
   if (args.length > 2) die(`Too many arguments\n\n${USAGE}`);
@@ -136,8 +225,22 @@ async function main() {
   // channel, and the server records it itself in the registry_skill_download tool handler (with
   // skill_id/skill_version, which is more accurate).
 
-  console.log(`Written: ${pkg.id}@${pkg.version} -> ${dest} (${pkg.files.length} file(s) + .meta.json)`);
-  console.log('Reminder: skill-verify must pass before execution.');
+  // Cache-relative on purpose (see the header): the last segment of dest-root is "skill-cache" for the
+  // default root and whatever the caller named for a custom one, never the path above it.
+  out(`Written: ${pkg.id}@${pkg.version} -> ${path.basename(destRoot)}/${pkg.id}/${pkg.version} (${pkg.files.length} file(s) + .meta.json)`);
+  out(manifestDigest(dest, pkg));
+
+  if (!verify) {
+    out('Reminder: skill-verify must pass before execution.');
+    return;
+  }
+  // The sibling by file location, not by PATH: the host puts bin/ on the agent's PATH, but this process
+  // must run the skill-verify that ships with the same plugin install as itself.
+  const verifyBin = path.join(path.dirname(fileURLToPath(import.meta.url)), 'skill-verify');
+  const result = spawnSync(process.execPath, [verifyBin, dest], { stdio: 'inherit' });
+  if (result.error) die(`skill-verify could not be started: ${result.error.message}`);
+  // A child killed by a signal has no status; that is a failed verification, not a pass.
+  process.exit(result.status === null ? 1 : result.status);
 }
 
 main().catch((err) => die(`skill-unpack failed: ${err.message}`));
