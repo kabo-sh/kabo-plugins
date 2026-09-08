@@ -14,6 +14,7 @@
 import crypto from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { PLUGIN_VERSION, readJsonSilent, workRoot } from '../scripts/lib/common.js';
 
 const USAGE = `Usage: kabo-run-dir [--skill <skill-dir>] [--request-id <id>]
@@ -47,6 +48,21 @@ function compactUtc(date) {
   return date.toISOString().replace(/[-:]/g, '').replace(/\.\d{3}Z$/, 'Z');
 }
 
+const PLUGIN_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
+
+/**
+ * Which host ran the skill. Read from the plugin layout, not from the environment or a literal: this
+ * file is shipped byte for byte by the Claude Code and Codex variants, neither host exports its own
+ * name to a Bash child, and the one thing that tells the variants apart wherever they are installed
+ * is which host manifest directory sits beside bin/ - the directory each host needs in order to
+ * recognise the plugin at all.
+ */
+function hostAgent() {
+  if (fs.existsSync(path.join(PLUGIN_ROOT, '.claude-plugin'))) return 'claude-code';
+  if (fs.existsSync(path.join(PLUGIN_ROOT, '.codex-plugin'))) return 'codex';
+  return 'kabo-plugin';
+}
+
 /**
  * The opening half of the run manifest. The skill id comes from the signed manifest.json, the
  * same source skill-verify trusts for identity; a cache directory whose manifest cannot be read is
@@ -64,7 +80,7 @@ function openRunManifest(runDir, runId) {
     finished_at: null,
     duration_seconds: null,
     status: 'running',
-    runtime: { agent: process.env.CLAUDE_AGENT_TYPE || 'claude-code', environment: 'local' },
+    runtime: { agent: hostAgent(), environment: 'local' },
     dependencies: {},
     provider_requests: [],
     fallbacks: [],
