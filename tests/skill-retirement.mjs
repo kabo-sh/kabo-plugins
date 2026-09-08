@@ -73,7 +73,10 @@ for (const host of ['claude', 'codex']) {
       assert.equal(fs.existsSync(marker(old)), false);
       assert.equal(fs.existsSync(marker(keep)), false);
       assert.match(output.systemMessage, /built-in static version/);
-      assert.equal(output.hookSpecificOutput.additionalContext, undefined);
+      if (host === 'codex') {
+        assert.match(output.hookSpecificOutput.additionalContext, /Codex client deltas/);
+        assert.doesNotMatch(output.hookSpecificOutput.additionalContext, /KABO-META-GUIDANCE-BEGIN/);
+      } else assert.equal(output.hookSpecificOutput.additionalContext, undefined);
       if (next === 'listed' || next === 'removed') assert.match(output.systemMessage, /1 skill\(s\) updatable/);
       if (next === 'offline') assert.match(output.systemMessage, /cannot reach the platform/);
     }
