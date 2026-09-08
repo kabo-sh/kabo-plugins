@@ -1,4 +1,4 @@
-// SessionStart hook - since 0.10.0 it is structurally identical to the Claude variant:
+// SessionStart hook - shares the Claude sync flow, with a Codex-local bootstrap:
 //   (1) GET /api/sync (public read-only): the revocation list kill-switch + a catalog diff yielding the updatable count;
 //   (2) GET /api/meta-guidance (public read-only): the platform's dynamic routing guidance, **injected only
 //       after the keyset verifies its signature** (hookSpecificOutput.additionalContext; on a failed
@@ -23,6 +23,12 @@ import {
 } from '../lib/common.js';
 
 const REQUEST_TIMEOUT_MS = 3000; // session startup path: better to come back empty-handed than to hold the user up
+
+/** Load this installed host's mechanics before interpreting cross-host signed guidance. */
+function buildHostGuidanceSection() {
+  const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..');
+  return `Before using Kabo skills on Codex, read \`${root}/skills/meta-guidance/SKILL.md\`. Its Codex client deltas define this installed version's local cache, tools, authorization and runner mechanics; apply them when interpreting the signed platform guidance. Never bypass signature verification or revocation checks.`;
+}
 
 /**
  * Write the plugin install root under the data root, so the shell-only skill-runner can locate
@@ -271,24 +277,25 @@ async function main() {
   }
 
   // Relay buffer: pruned while reading, at most 10 entries injected; over 10000 characters the oldest
-  // pending entries are trimmed first, keeping the guidance
+  // pending entries are trimmed first, keeping the local bootstrap and signed guidance
   const allPending = readAndPrunePendingReports();
   let pending = allPending.slice(-PENDING_REPORT_INJECT_MAX);
   let guidanceText = envelope ? buildGuidanceSection(envelope) : null;
+  const hostGuidance = buildHostGuidanceSection();
 
   let additionalContext = null;
   for (;;) {
-    const sections = [];
+    const sections = [hostGuidance];
     if (pending.length > 0) sections.push(buildPendingSection(pending));
     if (guidanceText) sections.push(guidanceText);
-    if (sections.length === 0) break;
     const joined = sections.join('\n\n');
     if (joined.length <= MAX_ADDITIONAL_CONTEXT_CHARS) {
       additionalContext = joined;
       break;
     }
     if (pending.length > 0) pending = pending.slice(1);
-    else guidanceText = null; // the guidance alone is over the cap: inject nothing and fall back to the built-in static version
+    else if (guidanceText) guidanceText = null; // never truncate signed content; retain the local bootstrap
+    else break; // a pathological install path exceeds the host cap; do not loop forever
   }
 
   if (!envelope) parts.push('dynamic guidance unavailable, using the plugin built-in static version');
