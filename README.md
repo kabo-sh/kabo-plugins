@@ -45,6 +45,8 @@ codex plugin add kabo-alpha@kabo-plugins-codex --json
 
 Run only the pair for the host you use, and stop if the marketplace refresh fails: updating against a stale snapshot can report the old version as the latest. Restart that host, start a new session, then run `claude plugin list --json` or `codex plugin list --json` and confirm that `kabo-alpha` has the intended version and `enabled: true`. A successful command alone is not proof of an upgrade.
 
+The Claude command above updates the default `user` scope. For a `project` or `local` installation, run it from the relevant project with `--scope project` or `--scope local`, matching the installation shown by `claude plugin list --json`. For a `managed` installation, follow your organization's administrator-managed update policy.
+
 A marketplace pinned to a tag or commit stays pinned when refreshed; inspect that source before deciding to move it to `main`. For a local-path marketplace, its maintainer must first update the local checkout while preserving local changes; a Git marketplace refresh does not update that directory. Do not remove/re-add a marketplace, clear Skill caches, or sign out as a routine upgrade step.
 
 Registry Skill updates are separate from Plugin updates. If your installed Plugin already meets the requested Skill's minimum version, a Registry catalog change alone does not require reinstalling the Plugin. First-time installation instructions follow.
