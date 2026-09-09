@@ -123,6 +123,75 @@ function isEnvelope(value) {
 }
 
 /**
+ * Strict base64 -> bytes, or `null`.
+ *
+ * `Buffer.from` is lenient: it skips characters outside the alphabet and returns a short buffer
+ * rather than throwing. Re-encoding and comparing catches that. It does not catch truncation - a
+ * shorter payload is still valid base64 - which is why the caller also checks the server's sha256.
+ * The two together are what make "the bytes on disk are the object the connector produced" true.
+ */
+function decodeBase64(value) {
+  const body = Buffer.from(value, 'base64');
+  return body.toString('base64') === value.replace(/\s+/g, '') ? body : null;
+}
+
+/**
+ * Artifact bodies returned by `data_connector_artifact`.
+ *
+ * Unwrap **by shape**, never by tool name — the same rule the envelope side follows, for the same
+ * reason: host registration prefixes and `required.tools` both drift, and a rename must not quietly
+ * stop persistence.
+ *
+ * The pairing is positional but verified: `structuredContent.artifacts[]` carries the identifiers
+ * (object_ref, sha256, content_type) while `content[]` carries the bytes, and the server emits one
+ * content block per projected artifact in the same order. A mismatch means the two halves disagree
+ * about what came back, and staging a body under the wrong sha256 would put a file in the audit
+ * trail that claims to be something it is not — so a disagreement stages nothing.
+ */
+function collectArtifacts(parsed) {
+  const projected = parsed?.structuredContent?.artifacts;
+  const blocks = parsed?.content;
+  const jobId = parsed?.structuredContent?.job_id;
+  if (!Array.isArray(projected) || !Array.isArray(blocks)) return [];
+  if (typeof jobId !== 'string' || !jobId) return [];
+
+  /* **Text artifacts count too.** A transcript comes back as a text block, and the codex runner's
+   * SKILL.md says so. Keeping only images made `bodies.length` differ from `projected.length` on
+   * any mixed response, and the mismatch guard below then dropped *everything* - including the
+   * frames that did arrive. Normalize both shapes before pairing. */
+  const bodies = [];
+  for (const block of blocks) {
+    if (block?.type === 'image' && typeof block.data === 'string') {
+      bodies.push(decodeBase64(block.data));
+    } else if (block?.type === 'text' && typeof block.text === 'string') {
+      bodies.push(Buffer.from(block.text, 'utf8'));
+    }
+  }
+  if (bodies.length !== projected.length) return [];
+
+  const out = [];
+  for (const [index, artifact] of projected.entries()) {
+    const block = bodies[index];
+    if (
+      typeof artifact?.object_ref !== 'string' ||
+      typeof artifact?.sha256 !== 'string' ||
+      typeof artifact?.content_type !== 'string'
+    ) {
+      return [];
+    }
+    out.push({
+      body: block,
+      jobId,
+      kind: typeof artifact.kind === 'string' ? artifact.kind : 'keyframes',
+      objectRef: artifact.object_ref,
+      sha256: artifact.sha256,
+      contentType: artifact.content_type,
+    });
+  }
+  return out;
+}
+
+/**
  * One tool result may carry more than one envelope, and the three data-plane tools each wrap
  * theirs differently. Unwrap by shape, never by tool name: `required.tools` and host registration
  * prefixes both drift, and a rename must not quietly stop persistence.
@@ -202,7 +271,8 @@ async function main() {
   }
 
   const envelopes = collectEnvelopes(parsed);
-  if (envelopes.length === 0) return;
+  const artifacts = collectArtifacts(parsed);
+  if (envelopes.length === 0 && artifacts.length === 0) return;
 
   // The session id partitions staging so two runs on one machine cannot drain each other's
   // evidence. It comes from the host, so it is validated before it becomes a path segment.
@@ -259,12 +329,75 @@ async function main() {
     sequence += 1;
   }
 
+  /* Artifact bodies (keyframes) stage the same way, with `.art` instead of `.json`.
+   *
+   * This is the same carve-out, not a new one: local disk only, under the data root, mode 0600,
+   * no socket, no subprocess, and the returned `additionalContext` still carries nothing but
+   * identifiers. What changes is the content type of the bytes, and none of the four conditions
+   * in CONTRACT §2.4 mentions one.
+   *
+   * Why it has to happen here at all: the frames only exist as bytes inside this response. The
+   * server cannot reach the user's disk, and the evidence object points at frames *by path* —
+   * without a local file there is nothing for `frames[].path` to name, which is exactly the gap
+   * the 2026-08-26 regression recorded as "retained as host artifacts but never read". */
+  for (const artifact of artifacts) {
+    /* **Verify before writing, not after.** Writing a payload we could not decode faithfully under
+     * the server's sha256 pushes the failure to `kabo-save-envelope`, which refuses the *whole*
+     * drain - one damaged frame would then cost the run every envelope staged beside it. One hash
+     * here turns that into a single skipped frame. */
+    const body = artifact.body;
+    if (!body || sha256hex(body) !== artifact.sha256) continue;
+    // The sidecar sha256 is the one the *server* computed over the original object. Recomputing it
+    // here and storing ours would make the drain's check self-referential — it would only prove the
+    // staging file did not rot, never that it is the object the connector produced.
+    const meta = {
+      // Not a connector/operation pair: an artifact belongs to a *job*, and the response carries
+      // the job id rather than the operation that produced it. Inventing
+      // `public-video-media/artifact` (the first draft did) puts a pair in the audit trail that
+      // never ran.
+      artifact: true,
+      job_id: artifact.jobId,
+      kind: artifact.kind,
+      object_ref: artifact.objectRef,
+      status: 'completed',
+      bytes: body.byteLength,
+      sha256: artifact.sha256,
+      content_type: artifact.contentType,
+      verbatim: true,
+      staged_at: new Date().toISOString(),
+      tool_use_id: typeof event.tool_use_id === 'string' ? event.tool_use_id : null,
+    };
+    let written = false;
+    for (let attempt = 0; attempt < 64 && !written; attempt += 1) {
+      const stem = path.join(stagingDir, String(sequence).padStart(2, '0'));
+      try {
+        fs.writeFileSync(`${stem}.art`, body, { mode: 0o600, flag: 'wx' });
+      } catch (error) {
+        if (error?.code === 'EEXIST') {
+          sequence += 1;
+          continue;
+        }
+        throw error;
+      }
+      fs.writeFileSync(`${stem}.meta`, `${JSON.stringify(meta)}\n`, { mode: 0o600 });
+      written = true;
+    }
+    if (!written) return;
+    staged.push(meta);
+    sequence += 1;
+  }
+
   // What goes back to the model. Compact by design: this is injected after *every* connector call,
   // and a verbose reminder repeated a dozen times per run is its own context tax. The first one
   // spells out the command; later ones are a single line, because by then the runner has it.
   const first = startSequence === 1;
+  // Frames and envelopes are described differently because the runner does different things with
+  // them: an envelope is JSON it must not retype, a frame is an image it has to *look at*. Calling
+  // a keyframe an "envelope" (the first live run did) sends it looking for JSON that is not there.
   const describe = (m) =>
-    `${m.connector_id}/${m.operation} status=${m.status} bytes=${m.bytes} sha256=${m.sha256.slice(0, 12)}`;
+    m.artifact
+      ? `${m.kind} ${m.object_ref} bytes=${m.bytes} sha256=${m.sha256.slice(0, 12)}`
+      : `${m.connector_id}/${m.operation} status=${m.status} bytes=${m.bytes} sha256=${m.sha256.slice(0, 12)}`;
   const lines = staged.map((m) => `  - ${describe(m)}`);
   // "byte-for-byte" is only true for a response that carried exactly one envelope, where the stored
   // file is the substring the host delivered. A batch has no such substring per entry, so those are
@@ -275,9 +408,9 @@ async function main() {
   const fidelity = allVerbatim ? 'byte-for-byte' : 'complete (batch entries re-serialized from the same response)';
   const context = first
     ? [
-        `kabo: ${staged.length === 1 ? 'this envelope has' : `these ${staged.length} envelopes have`} already been written to disk ${fidelity}:`,
+        `kabo: ${staged.length === 1 ? 'this result has' : `these ${staged.length} results have`} already been written to disk ${fidelity}:`,
         ...lines,
-        'Do NOT retype or re-serialize an envelope into a file — the stored copy is already complete and yours would not be.',
+        'Do NOT retype or re-serialize any of them into a file — the stored copy is already complete and yours would not be.',
         `When this run's snapshot/ exists, move them in with one command:`,
         `  "${path.normalize(SAVE_ENVELOPE_BIN)}" --from ${stagingDir} --into <run dir>/snapshot`,
       ].join('\n')

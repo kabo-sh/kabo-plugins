@@ -137,7 +137,16 @@ async function main() {
   // skill_id/skill_version, which is more accurate).
 
   console.log(`Written: ${pkg.id}@${pkg.version} -> ${dest} (${pkg.files.length} file(s) + .meta.json)`);
-  console.log('Reminder: skill-verify must pass before execution.');
+  // State this as the next action, not as an outstanding obligation. Phrased as
+  // "skill-verify must pass before execution", a reader that has just unpacked
+  // successfully takes the unmet condition for a failed install and stops without
+  // ever running skill-verify -- observed 2026-09-05 on the Codex side, where a
+  // first-run agent announced the install had failed immediately after this line,
+  // while the 26 unpacked files passed both checksum and ed25519 on a manual verify
+  // moments later. Not-yet-verified and verify-failed are different states, and only
+  // the second one is a reason to stop, so say which one this is. Kept identical
+  // across both plugins so the two hosts cannot drift apart here.
+  console.log(`Unpack succeeded. Next step: run skill-verify ${dest} -- unpacking never verifies, so "not verified yet" is the expected state here and is not an install failure.`);
 }
 
 main().catch((err) => die(`skill-unpack failed: ${err.message}`));

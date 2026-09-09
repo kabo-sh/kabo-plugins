@@ -20,7 +20,9 @@
         "research-content-trends",
         "diagnose-reach-drop",
         "research-youtube-trends",
-        "review-creator-account"
+        "review-creator-account",
+        "price-creator-brand-deals",
+        "plan-platform-monetization"
       ],
       "operations": [
         "search_videos",
@@ -47,7 +49,9 @@
         "research-tiktok-trends",
         "research-content-trends",
         "plan-platform-monetization",
-        "recommend-publish-timing"
+        "recommend-publish-timing",
+        "analyze-content-video",
+        "price-creator-brand-deals"
       ],
       "operations": [
         "check_handle",
@@ -138,7 +142,9 @@
         "research-content-trends",
         "diagnose-reach-drop",
         "research-instagram-trends",
-        "review-creator-account"
+        "review-creator-account",
+        "price-creator-brand-deals",
+        "plan-platform-monetization"
       ],
       "operations": [
         "resolve_profile",
