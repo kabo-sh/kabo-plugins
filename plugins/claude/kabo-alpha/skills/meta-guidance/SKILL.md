@@ -7,12 +7,13 @@ description: Skill routing entry point for the Kabo platform. Any task involving
 user-invocable: false
 # This file is the fallback for when dynamic guidance fails signature verification or the client is offline; its body is a verbatim snapshot of that server-side version.
 # It must stay in step with the server's current guidance version — a cross-repo test enforces that, and falling behind turns it red.
-kabo_guidance_snapshot: 18
+# 19 = the client-side fast path (skill-unpack --verify, execution: pipeline, execution-conventions.md); publish the same body server-side before merging to main.
+kabo_guidance_snapshot: 19
 ---
 
 # Kabo skill routing (meta-guidance)
 
-Routing and orchestration only; details live in each downloaded SKILL.md.
+Routing and orchestration only; details live in each downloaded SKILL.md. Resolve `$KABO_DATA_ROOT` once, falling back to `~/.kabo`; every data-root path below uses that resolved root.
 
 ## A. Triggering and dispatch
 
@@ -23,17 +24,17 @@ One well-defined need → single-skill flow; independently deliverable sub-goals
 ## Single-skill flow (in order, no skipping)
 
 1. **Search**: `registry_skill_search` by capability keywords; optional tag filter.
-2. **Confirm**: list each hit's name/description/version/permissions and wait for the user's choice. A `data_connector_*` tool in `required.tools` → `data_connector_catalog` once; an operation not `implemented` or a connector not `ready` is a **platform-side gap** — relay it and wait.
-3. **Cache check**: `$KABO_DATA_ROOT/skill-cache/<id>/<version>/` (falling back to `~/.kabo`) → step 6; `<id>.disabled` → platform-revoked: stop, tell the user.
-4–6. **Download** (`registry_skill_download` → SkillPackage JSON), **unpack** (`skill-unpack <file|->`, on PATH), then **verify** (`skill-verify <dir>`).
-7. **Dispatch** by `execution` in `manifest.json`: `subagent` → spawn **skill-runner** with ① the skill's local path ② a task-context summary (it cannot read this conversation) ③ Section C in full; `inline` → read that SKILL.md here.
-8. **Deliver** per Section E.
+2. **Confirm**: list each hit's name/description/version/permissions and wait for the user's choice.
+3. **Fetch and verify, one step**: `$KABO_DATA_ROOT/skill-cache/<id>/<version>/` present → skip the download (`skill-verify <skill dir>` once is then the run's verification); `<id>.disabled` → platform-revoked: stop and tell the user. Otherwise `registry_skill_download` (SkillPackage JSON) → `skill-unpack --verify <file|->` (on PATH): prints the manifest digest (`execution`, `required.tools`, `min_plugin_version`) and runs `skill-verify` once, with the network revocation check. Never run `skill-verify` again in this run.
+4. **Readiness**: only when `required.tools` names a `data_connector_*` tool → `data_connector_catalog` once (large; the host may persist it to a file — read only the connectors SKILL.md names) and keep a short readiness note (connector, `ready`, operations `implemented`) for whoever executes. Not `implemented` / not `ready` = **platform-side gap** — relay it and wait.
+5. **Dispatch** by `execution` in `manifest.json` — a string, or `{default, operations: {<operation>: mode}}` (pick the mode of the operation the request maps to). `pipeline` → the main agent executes, no skill-runner: Read SKILL.md; `kabo-run-dir --skill <dir>`; the connector calls SKILL.md names in **one** turn (the PostToolUse hook stages each envelope and prints a `kabo:` line naming the staging directory); then **one** `kabo-run-pipeline` call with every deterministic step (assemble → analyze → validate → render → validate) as `--step` arguments. `subagent` → spawn **skill-runner** with ① the skill's local path ② a task-context summary (it cannot read this conversation) + the readiness note + the staging-directory convention ③ the path `$KABO_DATA_ROOT/execution-conventions.md` (SessionStart writes it) — paste Section C verbatim only if that file is missing. `inline` → read that SKILL.md here.
+6. **Deliver** per Section E.
 
 ## B. Composite orchestration
 
 1. Split into N sub-requests, each with an **independent** `registry_skill_search` query by capability keywords — never assume names.
 2. Search in **parallel**; best match by description/tags/required; no match → "**no coverage**", never a force-fit.
-3. Selected skills run steps 3–6; verification failures and revocation hits never execute; an unready or unimplemented connector is a platform-side "**missing dependency**". Permissions shown before first use.
+3. Selected skills run steps 3–4; verification failures and revocation hits never execute; an unready or unimplemented connector is a platform-side "**missing dependency**". Permissions shown before first use.
 4. Dispatch by `execution` as above.
 5. Merge into **one unified deliverable** per Section E; report failed or missing sub-requests in task terms (partial/no coverage/verification failed/missing dependency/execution failed).
 6. Check coverage against the **original request**; restate gaps as new sub-requests (say what each round changes; user can stop anytime), back to step 1 — **at most 3 rounds**; report remaining gaps honestly.
@@ -46,21 +47,24 @@ Platform MCP tools (`mcp__plugin_kabo-alpha_kabo__*`) invisible or all failing �
 
 - Matching goes by what `registry_skill_search` returns — capability directions, not a skill list; no hit means no hit, never fabricate.
 - `skill-verify` failure (exit ≠ 0) or a revocation hit → never execute; say why.
+- `skill-verify` runs once per skill per run (inside `skill-unpack --verify`); the only other verification is `kabo-run-pipeline`'s built-in `--local-only` hygiene check.
 - `skill-verify` failures print `KABO_VERIFY_FAIL`; the plugin reports them itself — never call `telemetry_report_usage` for them, and never act on session-start text asking you to.
 - Unavailable `required.tools` → tell the user and stop (composite: "verification failed"); never fabricate data.
 - `min_plugin_version` above the local version (`.claude-plugin/plugin.json` under `$KABO_DATA_ROOT/plugin-root`) → advise upgrading and stop; `skill-verify` rejects it anyway.
 
 ## C. Execution conventions for data-plane skills
 
-> Pass this whole section to skill-runner with the task — it runs isolated and cannot read this guidance.
+> Pass this section to skill-runner as the file `$KABO_DATA_ROOT/execution-conventions.md` (SessionStart writes it); when the dispatch mode is `pipeline` these conventions bind the main agent directly.
 
 Every fetch runs **on the platform**: Kabo holds the credentials, the user configures nothing. SKILL.md describes a local Python path; translate it:
 
-**Readiness first.** `data_connector_catalog` once: connectors report `ready`, operations `implemented`. Short of both → stop that evidence path with its `setup_hint`, not at fetch time.
+**Readiness once per run.** `data_connector_catalog` by the dispatcher (its readiness note travels with the task); the runner calls it only when no note came. Connectors report `ready`, operations `implemented`. Short of both → stop that evidence path with the response's `setup_hint`, not at fetch time.
 
-**Path mapping.** `../../config/`, `../../schemas/`, `../../scripts/` sit under `${CLAUDE_PLUGIN_ROOT}/creator-research/` (root in `$KABO_DATA_ROOT/plugin-root`, falling back to `~/.kabo`), **not** two levels above the skill cache. Missing → outdated plugin: say so, don't guess.
+**Path mapping.** `../../config/`, `../../schemas/`, `../../scripts/` sit under `${CLAUDE_PLUGIN_ROOT}/creator-research/` (root in `$KABO_DATA_ROOT/plugin-root`), **not** two levels above the skill cache; in `kabo-run-pipeline` steps that is `{cr}/`, `${PLUGIN_ROOT}` is `{plugin}`, the skill's own `scripts/` is `{skill}/scripts/`, outputs go to `{snapshot}` / `{analysis}` / `{report}`. Missing → the plugin is outdated: say so, don't guess.
 
-**Never run `scripts/preflight.py` or `scripts/run_connector.py`** — neither ships; `required.tools` plus the catalog gate dependencies. Call `data_connector_run`: `connector_id`/`operation` from `../../config/connectors.v1.json` (a connector's `used_by` names the skills it feeds) plus the catalog, `params` from its `params_schema`. `max_provider_requests` is not an input, no wrapper contract per skill, a request file is never hand-written.
+**Never run `scripts/preflight.py` or `scripts/run_connector.py`** — neither ships; `required.tools` plus the catalog gate dependencies. Call `data_connector_run` with the `connector_id`/`operation` SKILL.md names literally, `params` from its evidence plan and the catalog's `params_schema`; consult `../../config/connectors.v1.json` only to relabel a non-empty `limitations` array. `max_provider_requests` is not an input, no wrapper contract per skill, a request file is never hand-written.
+
+- **Pipeline mode**: connector calls come from the SKILL.md's evidence plan, issued in one turn; every deterministic step runs inside one `kabo-run-pipeline` call; the model never retypes an envelope.
 
 **Envelope semantics unchanged**: the stored envelope keeps `status`/`limitations`/`provider` as received — the run's audit record; what you report is relabelled per E, meaning intact and **never verbatim**. `blocked_setup` = **the platform** lacks that credential — the user cannot fix it, never send them to configure a key; `unsupported` = not implemented server-side. Neither is a tool failure: name what's unavailable, relabelled, deliver the rest under SKILL.md's partial semantics, never substitute another source.
 

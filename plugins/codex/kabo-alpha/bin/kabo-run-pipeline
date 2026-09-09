@@ -1,0 +1,547 @@
+#!/usr/bin/env node
+// kabo-run-pipeline - run a Skill's fixed deterministic tail as one command inside one run directory.
+//
+// Every data-plane Skill ends the same way: drain the staged envelopes into snapshot/, assemble a
+// snapshot, analyze it, validate, render the Creator-facing report, validate the render. None of
+// those steps needs a model decision, yet the skill-runner used to issue them as 4-8 separate Bash
+// calls with a model turn between each (measured 2026-09-07 on diagnose-reach-drop@0.2.0: 22
+// subagent turns and 8 Bash calls around 7.6 s of real work, inside a 280 s run). This command takes
+// the whole sequence as --step arguments and runs it in one process, so the runner spends exactly
+// one turn on it and the main agent can run a "pipeline"-execution Skill with no subagent at all.
+//
+// Placeholders, expanded in every step before it runs (each value becomes one single-quoted word for
+// /bin/sh, so a placeholder is written bare, never inside quotes):
+//   {run}        this run's directory             {skill}      the verified skill cache directory
+//   {plugin}     this plugin's root                {cr}         {plugin}/creator-research
+//   {snapshot}   {run}/snapshot                    {analysis}   {run}/analysis
+//   {report}     {run}/report                      {owner}      {run}/owner
+//   {language}   the --language tag                {param.k}    the value given as --param k=v
+//   {envelopes}  "--envelope <path>" for every {run}/snapshot/envelope-NN.json in numeric order,
+//                joined by spaces; the empty string when there are none
+// Any other {word} token is an error before the first step runs: a typo must not reach the shell as
+// a literal brace string and surface three steps later as a Python traceback. So is a placeholder
+// inside '...', "...", backticks or a here-document: there the single quotes this process adds are
+// text, not quoting - "{param.handle}" hands the analyzer 'handle' with the apostrophes as part of
+// the handle, and a $(...) or backtick inside a --param value, which sh would otherwise never
+// interpret, runs. A brace preceded by "$" is a shell parameter expansion and is left alone.
+//
+// A Skill may ship the sequence itself. When no --step is given, manifest.json's
+//   "pipeline": [{"name": "<label>", "cmd": "<command using the same placeholders>"}, ...]
+// is used in order. manifest.json is inside the signed package, so a shipped pipeline is covered by
+// the same signature as the scripts it names. Skills published before this shape existed have no
+// "pipeline" key and keep receiving their steps from the dispatcher's --step arguments.
+//
+// After the steps, in this order: hygiene (refuse if Python left __pycache__ or *.pyc under the
+// skill cache - the cache is signed evidence and this process never deletes anything in it), harden
+// (0700 directories / 0600 files under the run), skill-verify --local-only on the skill cache (the
+// dispatcher verified the package against the network minutes ago; this re-check proves the code
+// that just ran is still the code that was signed, and a red result is a failed run), then finalize
+// run-manifest.json with the artifacts and the provider requests the envelopes record.
+//
+// stdout is relay-safe. Every line this process prints is run-relative ("<run-id> → report/X.md"),
+// and the steps' own stdout is captured and scrubbed of the run/skill/plugin absolute prefixes
+// before it is forwarded: the skill scripts print the output path they wrote, which is an absolute
+// path under the user's home, and the runner relays stdout off the machine. stderr is inherited
+// unchanged and may name absolute paths for diagnostics.
+//
+// This process opens no socket and reads no credential. The only subprocesses it starts are the
+// steps, kabo-save-envelope and skill-verify --local-only, none of which touch the network either.
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
+import { spawnSync } from 'node:child_process';
+import { fileURLToPath } from 'node:url';
+
+import { PLUGIN_VERSION, isSafeName, readJsonSilent, sha256hex, workRoot } from '../scripts/lib/common.js';
+
+const USAGE = `Usage: kabo-run-pipeline --run-id <id> --skill <skill-dir> [--staging <dir>] [--language <tag>]
+                         [--param k=v]... [--report <file-name>] (--step '<shell command>')...
+
+  --run-id    a run id printed by kabo-run-dir (the run directory must already exist)
+  --skill     the skill cache directory the steps belong to (skill-verify must have passed on it)
+  --staging   the directory where the host staged connector envelopes (Claude Code's PostToolUse
+              hook names it on a "kabo:" line); drained into {run}/snapshot before the first step.
+              Hosts without staging (Codex) omit it and the runner writes snapshot/envelope-NN.json
+              itself before calling the pipeline
+  --language  the value of the {language} placeholder
+  --param     the value of a {param.<k>} placeholder (repeatable)
+  --report    the one file under {run}/report to announce as creator_report (default: every file)
+  --step      one shell command, run via /bin/sh -c with cwd {run}; repeatable, run in order,
+              stopping at the first non-zero exit. Placeholders stand bare (write {param.handle},
+              not "{param.handle}"): each value is quoted for the shell as it is substituted. Omit
+              to use the "pipeline" array in the skill's manifest.json.
+
+Prints one "step n/N ok|FAILED" line per step, "drained=<n>" when --staging was given, one
+"creator_report: <run-id> → report/<file>" line per report file, and
+"run-manifest: <run-id> → run-manifest.json". Exit 0 when every step, the hygiene check and
+skill-verify --local-only passed; exit 1 with a one-sentence reason on stderr otherwise.`;
+
+const BIN_DIR = path.dirname(fileURLToPath(import.meta.url));
+const PLUGIN_ROOT = path.resolve(BIN_DIR, '..');
+const SAVE_ENVELOPE_BIN = path.join(BIN_DIR, 'kabo-save-envelope');
+const VERIFY_BIN = path.join(BIN_DIR, 'skill-verify');
+
+/** Longest a step is echoed on stdout: enough to recognise the step, never a whole command line. */
+const STEP_ECHO_CHARS = 60;
+/** Captured stdout budget per step; the scripts print a one-line JSON status, so this is generous. */
+const STEP_STDOUT_MAX_BYTES = 64 * 1024 * 1024;
+
+const PLACEHOLDER = /(?<!\$)\{(run|skill|plugin|cr|snapshot|analysis|report|owner|language|envelopes|param\.[A-Za-z0-9_-]+)\}/g;
+const PLACEHOLDER_ONE = new RegExp(`^${PLACEHOLDER.source}$`);
+// Case-insensitive on purpose while PLACEHOLDER is not: {Snapshot} must be refused, not shipped to sh.
+const PLACEHOLDER_LIKE = /(?<!\$)\{[A-Za-z][A-Za-z0-9_.-]*\}/g;
+const CONTEXT_LABEL = { "'": 'single quotes', '"': 'double quotes', '`': 'backticks', '<<': 'a here-document' };
+
+const pipelineStart = Date.now();
+
+function fail(message) {
+  console.error(`${message}\n\n${USAGE}`);
+  process.exit(1);
+}
+
+/** A precondition that stops the run before anything was touched: one sentence, no usage dump. */
+function refuse(message) {
+  console.error(message);
+  process.exit(1);
+}
+
+/**
+ * stdout goes through fd 1 directly, not process.stdout: the drain and verify children write to the
+ * same descriptor, and spawnSync never yields to the event loop, so a queued asynchronous write of
+ * ours could land after a child's line or be cut off by process.exit.
+ */
+function out(text) {
+  const buf = Buffer.from(text, 'utf8');
+  let offset = 0;
+  while (offset < buf.length) {
+    try {
+      offset += fs.writeSync(1, buf, offset, buf.length - offset);
+    } catch (error) {
+      if (error?.code !== 'EAGAIN') throw error;
+    }
+  }
+}
+
+function shellQuote(value) {
+  return `'${String(value).replace(/'/g, `'\\''`)}'`;
+}
+
+/**
+ * The innermost sh context each character of a template sits in: null at the top level, "'" or '"'
+ * inside quotes, '`' inside backticks, '$(' inside a command substitution (a fresh quoting context,
+ * so a bare placeholder there is fine), '<<' from a here-document operator to the end of the
+ * template (the body is expanded like a double-quoted string, and it is not worth locating where it
+ * ends). One question is asked of it - is this placeholder bare? - and where sh grammar is subtler
+ * than this (parentheses inside $(...), quotes inside backticks) it errs towards "no".
+ */
+function shellContexts(cmd) {
+  const contexts = new Array(cmd.length).fill(null);
+  const stack = [];
+  for (let i = 0; i < cmd.length; i += 1) {
+    const top = stack.length > 0 ? stack[stack.length - 1] : null;
+    const ch = cmd[i];
+    contexts[i] = top;
+    if (top === "'") {
+      if (ch === "'") stack.pop();
+    } else if (top === '<<') {
+      // Nothing leaves a here-document.
+    } else if (ch === '\\') {
+      i += 1;
+      if (i < cmd.length) contexts[i] = top;
+    } else if (top === '`') {
+      if (ch === '`') stack.pop();
+    } else if (top === '"') {
+      if (ch === '"') stack.pop();
+      else if (ch === '`') stack.push('`');
+      else if (ch === '$' && cmd[i + 1] === '(') { stack.push('$('); i += 1; contexts[i] = top; }
+    } else if (ch === "'" || ch === '"' || ch === '`') {
+      stack.push(ch);
+    } else if (ch === '$' && cmd[i + 1] === '(') {
+      stack.push('$('); i += 1; contexts[i] = top;
+    } else if (ch === ')' && top === '$(') {
+      stack.pop();
+    } else if (ch === '<' && cmd[i + 1] === '<' && cmd[i + 2] !== '<') {
+      stack.push('<<'); i += 1; contexts[i] = top;
+    }
+  }
+  return contexts;
+}
+
+// ---------- arguments ----------
+
+const args = process.argv.slice(2);
+if (args.length === 0 || args.includes('--help') || args.includes('-h')) {
+  console.log(USAGE);
+  process.exit(args.length === 0 ? 1 : 0);
+}
+
+const opts = { runId: null, skill: null, staging: null, language: null, report: null, params: new Map(), steps: [] };
+function valueOf(flag, index) {
+  const value = args[index + 1];
+  if (value === undefined) fail(`${flag} requires a value`);
+  return value;
+}
+for (let i = 0; i < args.length; i += 1) {
+  const arg = args[i];
+  switch (arg) {
+    case '--run-id': opts.runId = valueOf(arg, i); i += 1; break;
+    case '--skill': opts.skill = valueOf(arg, i); i += 1; break;
+    case '--staging': opts.staging = valueOf(arg, i); i += 1; break;
+    case '--language': opts.language = valueOf(arg, i); i += 1; break;
+    case '--report': opts.report = valueOf(arg, i); i += 1; break;
+    case '--step': opts.steps.push(valueOf(arg, i)); i += 1; break;
+    case '--param': {
+      const pair = valueOf(arg, i);
+      i += 1;
+      const eq = pair.indexOf('=');
+      const key = eq > 0 ? pair.slice(0, eq) : '';
+      if (!/^[A-Za-z0-9_-]+$/.test(key)) fail(`--param expects k=v with a [A-Za-z0-9_-] key, got ${JSON.stringify(pair)}`);
+      if (opts.params.has(key)) fail(`--param ${key} was given twice`);
+      opts.params.set(key, pair.slice(eq + 1));
+      break;
+    }
+    default: fail(`Unknown argument: ${arg}`);
+  }
+}
+if (!opts.runId) fail('--run-id is required');
+if (!opts.skill) fail('--skill is required');
+// The run id is joined into a path under the work root; the same traversal rule as skill ids applies.
+if (!isSafeName(opts.runId) || !/^[A-Za-z0-9][A-Za-z0-9._-]*$/.test(opts.runId)) fail(`illegal run id: ${JSON.stringify(opts.runId)}`);
+if (opts.report !== null && (!isSafeName(opts.report) || opts.report.startsWith('.'))) fail(`--report expects a bare file name, got ${JSON.stringify(opts.report)}`);
+
+const runId = opts.runId;
+const runDir = path.join(workRoot(), runId);
+const skillDir = path.resolve(opts.skill);
+const stagingDir = opts.staging ? path.resolve(opts.staging) : null;
+
+function isDirectory(p) {
+  try { return fs.statSync(p).isDirectory(); } catch { return false; }
+}
+function isRegularFile(p) {
+  try { return fs.lstatSync(p).isFile(); } catch { return false; }
+}
+
+if (!isDirectory(runDir)) refuse(`run ${runId} has no work directory yet; reserve it with kabo-run-dir first`);
+if (!isDirectory(skillDir)) refuse(`skill directory does not exist: ${skillDir}`);
+
+const subdirs = {
+  snapshot: path.join(runDir, 'snapshot'),
+  analysis: path.join(runDir, 'analysis'),
+  report: path.join(runDir, 'report'),
+  owner: path.join(runDir, 'owner'),
+};
+for (const dir of Object.values(subdirs)) fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
+
+// ---------- steps and placeholders ----------
+
+let steps = opts.steps;
+if (steps.length === 0) {
+  const manifest = readJsonSilent(path.join(skillDir, 'manifest.json'));
+  const shipped = manifest && Array.isArray(manifest.pipeline) ? manifest.pipeline : [];
+  if (shipped.length === 0) refuse('no --step was given and the skill manifest declares no "pipeline" array');
+  steps = shipped.map((entry, index) => {
+    if (!entry || typeof entry.cmd !== 'string' || entry.cmd.trim() === '') {
+      refuse(`manifest pipeline entry ${index + 1} has no "cmd" string`);
+    }
+    return entry.cmd;
+  });
+}
+
+{
+  const problems = [];
+  steps.forEach((cmd, index) => {
+    const contexts = shellContexts(cmd);
+    for (const match of cmd.matchAll(PLACEHOLDER_LIKE)) {
+      if (!PLACEHOLDER_ONE.test(match[0])) problems.push(`unknown placeholder ${match[0]} in step ${index + 1}`);
+    }
+    for (const match of cmd.matchAll(PLACEHOLDER)) {
+      const key = match[1];
+      const context = contexts[match.index];
+      if (context !== null && context !== '$(') {
+        problems.push(`{${key}} in step ${index + 1} is inside ${CONTEXT_LABEL[context]}, where the quoting the pipeline adds is text; write it bare`);
+      }
+      if (key === 'language' && opts.language === null) problems.push(`{language} in step ${index + 1} but --language was not given`);
+      if (key.startsWith('param.') && !opts.params.has(key.slice(6))) {
+        problems.push(`{${key}} in step ${index + 1} but --param ${key.slice(6)}=... was not given`);
+      }
+    }
+  });
+  if (problems.length > 0) refuse(`${problems.join('; ')}; nothing was run`);
+}
+
+const values = {
+  run: runDir,
+  skill: skillDir,
+  plugin: PLUGIN_ROOT,
+  cr: path.join(PLUGIN_ROOT, 'creator-research'),
+  ...subdirs,
+  language: opts.language,
+};
+const echoValues = {
+  run: '{run}',
+  skill: '{skill}',
+  plugin: '{plugin}',
+  cr: '{plugin}/creator-research',
+  snapshot: '{run}/snapshot',
+  analysis: '{run}/analysis',
+  report: '{run}/report',
+  owner: '{run}/owner',
+  language: opts.language,
+};
+
+function listEnvelopes() {
+  return fs.readdirSync(subdirs.snapshot)
+    .map((name) => /^envelope-(\d+)\.json$/.exec(name))
+    .filter(Boolean)
+    .sort((a, b) => Number(a[1]) - Number(b[1]))
+    .map((match) => path.join(subdirs.snapshot, match[0]));
+}
+
+function expand(template, envelopes, forEcho) {
+  return template.replace(PLACEHOLDER, (whole, key) => {
+    if (key === 'envelopes') {
+      return envelopes
+        .map((p) => (forEcho ? `--envelope {run}/snapshot/${path.basename(p)}` : `--envelope ${shellQuote(p)}`))
+        .join(' ');
+    }
+    const value = key.startsWith('param.') ? opts.params.get(key.slice(6)) : (forEcho ? echoValues : values)[key];
+    return forEcho ? String(value) : shellQuote(value);
+  });
+}
+
+/** Absolute prefixes back to their placeholders, plus the home directory as a last line of defence. */
+const scrubTable = [[runDir, '{run}'], [skillDir, '{skill}'], [PLUGIN_ROOT, '{plugin}']]
+  .sort((a, b) => b[0].length - a[0].length);
+function scrub(text) {
+  let result = text;
+  for (const [abs, token] of scrubTable) {
+    result = result.split(`${abs}/`).join(token === '{run}' ? '' : `${token}/`).split(abs).join(token);
+  }
+  const home = os.homedir();
+  if (home && home !== '/') result = result.split(home).join('~');
+  return result;
+}
+
+function echoLine(text) {
+  const clean = scrub(text).replace(/[\x00-\x1f\x7f]/g, ' ');
+  return Array.from(clean).slice(0, STEP_ECHO_CHARS).join('');
+}
+
+// ---------- run ----------
+
+// Set here, once, so every child - the drain, each step, the verifier - inherits it.
+process.umask(0o077);
+
+let failure = null;
+let drained = null;
+
+if (stagingDir !== null) {
+  drained = 0;
+  if (isDirectory(stagingDir)) {
+    const before = listEnvelopes().length;
+    const result = spawnSync(process.execPath, [SAVE_ENVELOPE_BIN, '--from', stagingDir, '--into', subdirs.snapshot], { stdio: 'inherit' });
+    if (result.status !== 0) failure = 'kabo-save-envelope could not drain the staging directory, so no step was run';
+    else drained = listEnvelopes().length - before;
+  }
+}
+
+if (failure === null) {
+  const envelopes = listEnvelopes();
+  const total = steps.length;
+  for (let index = 0; index < total; index += 1) {
+    const command = expand(steps[index], envelopes, false);
+    const echo = echoLine(expand(steps[index], envelopes, true));
+    const startedAt = process.hrtime.bigint();
+    const result = spawnSync('/bin/sh', ['-c', command], {
+      cwd: runDir,
+      env: { ...process.env, PYTHONDONTWRITEBYTECODE: '1' },
+      stdio: ['inherit', 'pipe', 'inherit'],
+      encoding: 'utf8',
+      maxBuffer: STEP_STDOUT_MAX_BYTES,
+    });
+    const seconds = Number(process.hrtime.bigint() - startedAt) / 1e9;
+    if (result.stdout) out(scrub(result.stdout));
+    if (result.error) {
+      out(`step ${index + 1}/${total} FAILED exit=spawn\n`);
+      failure = `step ${index + 1} of ${total} could not be started: ${result.error.message}`;
+      break;
+    }
+    if (result.status !== 0) {
+      const code = result.status ?? `signal:${result.signal}`;
+      out(`step ${index + 1}/${total} FAILED exit=${code}\n`);
+      failure = `step ${index + 1} of ${total} exited ${code} (${echo})`;
+      break;
+    }
+    out(`step ${index + 1}/${total} ok ${seconds.toFixed(1)}s  ${echo}\n`);
+  }
+}
+
+// ---------- hygiene, harden, verify ----------
+
+/**
+ * Every entry under dir, depth first, with its "/"-joined run-relative name. Symlinks are listed
+ * but never entered, the rule harden() applies: fs.readdirSync({recursive: true}) walks through a
+ * symlinked directory, so a link a step left under analysis/ pointing at the skill cache - or at the
+ * home directory - would have its whole target hashed into the run manifest as run artifacts.
+ */
+function entriesUnder(dir, rel = '') {
+  const found = [];
+  for (const dirent of fs.readdirSync(dir, { withFileTypes: true })) {
+    const entryRel = rel ? `${rel}/${dirent.name}` : dirent.name;
+    const full = path.join(dir, dirent.name);
+    found.push({ dirent, rel: entryRel, full });
+    if (!dirent.isSymbolicLink() && dirent.isDirectory()) found.push(...entriesUnder(full, entryRel));
+  }
+  return found;
+}
+
+function bytecodeUnder(dir) {
+  return entriesUnder(dir)
+    .filter(({ dirent }) => (dirent.isDirectory() && dirent.name === '__pycache__') || (dirent.isFile() && /\.py[co]$/.test(dirent.name)))
+    .map(({ rel }) => rel)
+    .sort();
+}
+
+if (failure === null) {
+  const hits = bytecodeUnder(skillDir);
+  if (hits.length > 0) {
+    failure = `Python bytecode was written under the skill cache (${hits.join(', ')}); the cache is signed evidence, so remove it by hand before running again`;
+  }
+}
+
+// The manifest vouches for artifacts by content hash; a symlink's content is whatever its target
+// holds later, so it is not an artifact and the run cannot be reported as ok with one in place.
+if (failure === null) {
+  const links = ['analysis', 'report'].flatMap((kind) => entriesUnder(subdirs[kind])
+    .filter(({ dirent }) => dirent.isSymbolicLink())
+    .map(({ rel }) => `${kind}/${rel}`));
+  if (links.length > 0) {
+    failure = `${links.join(', ')} ${links.length === 1 ? 'is a symlink' : 'are symlinks'}; run artifacts must be regular files`;
+  }
+}
+
+/** Symlinks are skipped on purpose: chmod follows them, and a link out of the run must not be touched. */
+function harden(dir) {
+  fs.chmodSync(dir, 0o700);
+  for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+    if (entry.isSymbolicLink()) continue;
+    const full = path.join(dir, entry.name);
+    if (entry.isDirectory()) harden(full);
+    else if (entry.isFile()) fs.chmodSync(full, 0o600);
+  }
+}
+try {
+  harden(runDir);
+} catch (error) {
+  if (failure === null) failure = `could not harden the run directory: ${error.message}`;
+}
+
+if (failure === null) {
+  const result = spawnSync(process.execPath, [VERIFY_BIN, '--local-only', skillDir], { stdio: 'inherit' });
+  if (result.status !== 0) failure = 'skill-verify --local-only went red on the skill cache after the run, so its output cannot be trusted';
+}
+
+// ---------- deliverables and the run manifest ----------
+
+let reportNames = [];
+if (failure === null) {
+  if (opts.report !== null) {
+    if (isRegularFile(path.join(subdirs.report, opts.report))) reportNames = [opts.report];
+    else failure = `every step passed but report/${opts.report} does not exist`;
+  } else {
+    reportNames = fs.readdirSync(subdirs.report, { withFileTypes: true })
+      .filter((entry) => entry.isFile())
+      .map((entry) => entry.name)
+      .sort();
+  }
+}
+
+function artifactsUnder(kind) {
+  return entriesUnder(subdirs[kind])
+    .filter(({ dirent }) => dirent.isFile())
+    .map(({ rel, full }) => ({ kind, path_or_uri: `${kind}/${rel}`, sha256: sha256hex(fs.readFileSync(full)) }))
+    .sort((a, b) => a.path_or_uri.localeCompare(b.path_or_uri));
+}
+
+function providerRequests() {
+  return listEnvelopes().map((file) => {
+    const envelope = readJsonSilent(file);
+    if (!envelope || typeof envelope !== 'object') {
+      return { connector_id: null, operation: null, status: 'unreadable', retrieved_at: null };
+    }
+    return {
+      connector_id: envelope.connector_id ?? null,
+      operation: envelope.operation ?? null,
+      status: envelope.status ?? null,
+      retrieved_at: envelope.retrieved_at ?? null,
+    };
+  });
+}
+
+/**
+ * Which host ran the skill. Read from the plugin layout, not from the environment or a literal: this
+ * file is shipped byte for byte by the Claude Code and Codex variants, neither host exports its own
+ * name to a Bash child, and the one thing that tells the variants apart wherever they are installed
+ * is which host manifest directory sits beside bin/ - the directory each host needs in order to
+ * recognise the plugin at all.
+ */
+function hostAgent() {
+  if (fs.existsSync(path.join(PLUGIN_ROOT, '.claude-plugin'))) return 'claude-code';
+  if (fs.existsSync(path.join(PLUGIN_ROOT, '.codex-plugin'))) return 'codex';
+  return 'kabo-plugin';
+}
+
+/**
+ * Close the record kabo-run-dir --skill opened. A run reserved without --skill has no record yet, so
+ * one is created with the same shape; its started_at is the directory's birth time, the closest
+ * thing to the moment that run began.
+ */
+function finalizeRunManifest(status) {
+  const file = path.join(runDir, 'run-manifest.json');
+  let record = readJsonSilent(file);
+  if (!record || typeof record !== 'object' || Array.isArray(record)) {
+    const manifest = readJsonSilent(path.join(skillDir, 'manifest.json'));
+    const birth = fs.statSync(runDir).birthtimeMs;
+    record = {
+      run_id: runId,
+      request_id: runId,
+      skill_id: manifest && typeof manifest.name === 'string' && manifest.name ? manifest.name : 'unknown',
+      plugin_version: PLUGIN_VERSION,
+      started_at: new Date(birth > 0 ? birth : pipelineStart).toISOString(),
+      finished_at: null,
+      duration_seconds: null,
+      status: 'running',
+      runtime: { agent: hostAgent(), environment: 'local' },
+      dependencies: {},
+      provider_requests: [],
+      fallbacks: [],
+      artifacts: [],
+    };
+  }
+  const finished = Date.now();
+  const startedMs = Date.parse(record.started_at);
+  record.finished_at = new Date(finished).toISOString();
+  record.duration_seconds = Math.max(0, finished - (Number.isFinite(startedMs) ? startedMs : pipelineStart)) / 1000;
+  record.status = status;
+  const requests = providerRequests();
+  if (drained !== null || requests.length > 0) record.provider_requests = requests;
+  record.artifacts = [...artifactsUnder('analysis'), ...artifactsUnder('report')];
+  fs.writeFileSync(file, `${JSON.stringify(record, null, 2)}\n`, { mode: 0o600 });
+  fs.chmodSync(file, 0o600);
+}
+
+try {
+  finalizeRunManifest(failure === null ? 'ok' : 'failed');
+} catch (error) {
+  if (failure === null) failure = `could not finalize run-manifest.json: ${error.message}`;
+}
+
+if (drained !== null) out(`drained=${drained}\n`);
+for (const name of reportNames) out(`creator_report: ${runId} → report/${name}\n`);
+out(`run-manifest: ${runId} → run-manifest.json\n`);
+
+if (failure !== null) {
+  console.error(failure);
+  process.exit(1);
+}
+process.exit(0);

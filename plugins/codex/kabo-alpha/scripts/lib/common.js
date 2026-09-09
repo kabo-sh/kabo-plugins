@@ -17,7 +17,7 @@ import path from 'node:path';
 import os from 'node:os';
 import crypto from 'node:crypto';
 import { fileURLToPath } from 'node:url';
-export const PLUGIN_VERSION = '0.20.2';
+export const PLUGIN_VERSION = '0.21.0';
 export const SUPPORTED_API_VERSION = '1.0.0';
 export const DEFAULT_ENDPOINT = 'https://kabo.sh';
 export const CACHE_TTL_MS = 14 * 24 * 60 * 60 * 1000; // skill cache TTL: 14 days
@@ -120,6 +120,28 @@ export function disabledMarkerPath(skillId) {
   return path.join(cacheRoot(), `${skillId}.disabled`);
 }
 /**
+ * Snapshot of the last revocation list this machine received: <data root>/revocation-sync.json =
+ * {synced_at, revocations, server_api_version}. Written by SessionStart and by every live query
+ * bin/skill-verify makes; read by skill-verify in place of its own GET /api/sync while the snapshot
+ * is younger than REVOCATION_SYNC_TTL_MS.
+ *
+ * Why it exists: one measured skill run (2026-09-07) verified the same cached skill three times, and
+ * each verification paid a live revocation GET of 1-3 s for a list SessionStart had fetched minutes
+ * earlier. The kill-switch semantics do not change - a stale or missing snapshot still means a live
+ * query, the local .disabled marker is still checked first in every mode, and a revocation can
+ * therefore be at most TTL late on a machine that is online (the pre-existing offline path already
+ * tolerated unbounded staleness by design).
+ *
+ * The file is in the 0700 data root next to the .disabled markers, so it carries the same local
+ * trust: whoever can plant an empty fresh snapshot can also delete a marker. Nothing in it is
+ * secret (the list is served by a public endpoint).
+ */
+export function revocationSyncPath() {
+  return path.join(dataRoot(), 'revocation-sync.json');
+}
+/** How long a revocation snapshot may stand in for a live query. Ten minutes: long enough to cover every verification of one skill run, short enough that a kill-switch still lands within the session */
+export const REVOCATION_SYNC_TTL_MS = 10 * 60 * 1000;
+/**
  * Safety check: is a "single-segment directory name" such as a skill id / version legal?
  * Same constraints as assertSafeRelPath in bin/skill-unpack (reject empty, ".", "..", backslash, NUL),
  * plus "must not contain '/'" - used to validate ids that come from server responses (such as
@@ -180,11 +202,20 @@ export function ensurePrivateDir(dir) {
   fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
   try { fs.chmodSync(dir, 0o700); } catch { /* a pre-existing directory may be owned differently */ }
 }
-/** Write a JSON file silently (creating directories, kept 0700 - see ensurePrivateDir); never throws on failure */
+/**
+ * Write a JSON file silently (creating directories, kept 0700 - see ensurePrivateDir); never throws
+ * on failure. The file itself is 0600: everything under the data root is private state, and the
+ * chmod heals files an older plugin wrote 0644 (`mode` only applies on creation).
+ */
 export function writeJsonSilent(file, obj) {
+  return writeTextSilent(file, JSON.stringify(obj));
+}
+/** Same contract as writeJsonSilent for a plain text file (the Markdown files SessionStart derives from the guidance) */
+export function writeTextSilent(file, text) {
   try {
     ensurePrivateDir(path.dirname(file));
-    fs.writeFileSync(file, JSON.stringify(obj));
+    fs.writeFileSync(file, text, { mode: 0o600 });
+    try { fs.chmodSync(file, 0o600); } catch { /* a pre-existing file may be owned differently */ }
     return true;
   } catch {
     return false;
@@ -647,12 +678,22 @@ export async function refreshKeyset(endpoint = apiEndpoint(), timeoutMs = 3000) 
  *     file" into an outbound call an attacker can drive, so fail immediately.
  *   - key_id is not among the pinned keys (or there is no pin at all) -> it may be a rotation, so one
  *     refresh and retry is allowed.
+ *   - opts.offline: that refresh is off the table too - the pinned keys are the only keys, and when
+ *     none of them verifies the answer is public_key_unavailable (the key that would be needed is
+ *     not on hand and this mode may not fetch it). `skill-verify --local-only` runs this way as the
+ *     post-run hygiene check inside kabo-run-pipeline: the same skill passed a full online
+ *     verification moments earlier in the same run, so a rotation cannot be what a failure here
+ *     means, and a keyset refresh per run was a network round trip that bought nothing. The first
+ *     rule is unchanged in this mode - a pinned key with a matching key_id that fails is still
+ *     signature_invalid, never softened.
  *
+ * @param {{endpoint?: string, timeoutMs?: number, offline?: boolean}} [opts]
  * @returns {{ok: boolean, reason: string|null}} reason is one of signature_invalid | public_key_unavailable
  */
 export async function verifySignedChecksum(checksum, signature, keyId, opts = {}) {
   const endpoint = opts.endpoint || apiEndpoint();
   const timeoutMs = Number.isFinite(opts.timeoutMs) ? opts.timeoutMs : 3000;
+  const offline = opts.offline === true;
 
   /** @returns {true|false|null} null = there is not a single key */
   const attempt = (keyset) => {
@@ -673,6 +714,7 @@ export async function verifySignedChecksum(checksum, signature, keyId, opts = {}
     reason: result === null ? 'public_key_unavailable' : 'signature_invalid',
   });
   if (first === false && pinnedHasKeyId) return { ok: false, reason: 'signature_invalid' };
+  if (offline) return { ok: false, reason: 'public_key_unavailable' };
   if (keysetRefreshed) return verdict(first);
 
   keysetRefreshed = true;
@@ -686,13 +728,16 @@ export async function verifySignedChecksum(checksum, signature, keyId, opts = {}
  * General multi-key signature verification (for non-checksum cases such as the guidance envelope):
  * call attempt(pem) once per pinned key, and only if all fail and key_id does not match a pinned key
  * does it refresh the keyset once and retry.
- * Same semantics as verifySignedChecksum, only with "verify the checksum signature" abstracted into a
- * callback.
+ * Same semantics as verifySignedChecksum, opts.offline included, only with "verify the checksum
+ * signature" abstracted into a callback.
+ * @param {(pem: string) => boolean} attempt verify once with one public key, returning true on success (a thrown exception counts as failure)
+ * @param {{endpoint?: string, keyId?: string|null, timeoutMs?: number, offline?: boolean}} [opts]
  */
 export async function ensureVerified(attempt, opts = {}) {
   const endpoint = opts.endpoint || apiEndpoint();
   const keyId = typeof opts.keyId === 'string' && opts.keyId !== '' ? opts.keyId : null;
   const timeoutMs = Number.isFinite(opts.timeoutMs) ? opts.timeoutMs : 3000;
+  const offline = opts.offline === true;
 
   const tryKeyset = (keyset) => {
     const keys = keyset && Array.isArray(keyset.keys) ? keyset.keys : [];
@@ -713,6 +758,7 @@ export async function ensureVerified(attempt, opts = {}) {
   if (pinned && keyId && pinned.keys.some((k) => k.kid === keyId)) {
     return { ok: false, reason: 'signature_invalid' };
   }
+  if (offline) return { ok: false, reason: 'public_key_unavailable' };
   if (keysetRefreshed) return failure();
   keysetRefreshed = true;
 
@@ -876,6 +922,32 @@ export function guidanceCachePath(endpoint = apiEndpoint()) {
   return path.join(dataRoot(), `meta-guidance.${bucket}.json`);
 }
 
+/**
+ * The guidance body of the current session as plain Markdown: <data root>/meta-guidance.current.md.
+ *
+ * SessionStart writes the exact text it injected between the sentinels (or, when no verified
+ * dynamic guidance was available, the body of the static skills/meta-guidance/SKILL.md - Codex
+ * client deltas included), so that a process which cannot see the model context - the skill-runner
+ * subagent, a bin/ script - can read the same rules from disk instead of having them re-typed into
+ * a dispatch. Unbucketed on purpose: it is "what this session runs on", not a per-endpoint cache;
+ * the signed envelope cache above is what carries provenance.
+ */
+export function guidanceBodyPath() {
+  return path.join(dataRoot(), 'meta-guidance.current.md');
+}
+
+/**
+ * The "## C." section of that body on its own: <data root>/execution-conventions.md.
+ *
+ * Section C is the ~3 KB block every skill-runner dispatch used to carry verbatim - measured at
+ * 25 s of the main agent typing it out per run. The dispatcher now passes this path instead, and
+ * the runner reads it first. Derived from the same body as guidanceBodyPath(), never authored
+ * separately, so the two files cannot disagree.
+ */
+export function executionConventionsPath() {
+  return path.join(dataRoot(), 'execution-conventions.md');
+}
+
 /** Guidance caches for all endpoints (used by logout cleanup) */
 export function guidanceCachePaths() {
   try {
@@ -1030,4 +1102,55 @@ export function verifyGuidanceEnvelope(envelope, pem, opts = {}) {
   }
 
   return { ok: true, reason: null };
+}
+
+// ---------- Guidance body: section extraction (pure, no I/O) ----------
+//
+// The dynamic guidance content and the static skills/meta-guidance/SKILL.md carry the same body -
+// the static file is a verbatim snapshot with a YAML front matter block in front of it and, on this
+// variant, a "## Codex client deltas" section before the snapshot. SessionStart derives two on-disk
+// files from whichever body the session runs on (see guidanceBodyPath / executionConventionsPath),
+// so both shapes have to go through one extractor.
+
+/**
+ * Drop a leading YAML front matter block (`---` on the first line up to the next `---` line).
+ * Text that does not start with a delimiter line, or whose block is never closed, is returned as
+ * is: an unterminated `---` is content, not front matter.
+ */
+export function stripFrontMatter(text) {
+  if (typeof text !== 'string') return '';
+  const lines = text.split('\n');
+  if (lines[0].trim() !== '---') return text;
+  for (let i = 1; i < lines.length; i += 1) {
+    if (lines[i].trim() === '---') return lines.slice(i + 1).join('\n');
+  }
+  return text;
+}
+
+/**
+ * The lettered section `## <letter>.` of a guidance body, heading line included, trimmed.
+ *
+ * A section runs up to the next **lettered** heading (`## D.`), not the next `##` of any kind: the
+ * body has unlettered headings too (`## Red lines`, `## Single-skill flow`, and here
+ * `## Codex client deltas` - "C" followed by a word, not a dot, so it is neither a match for C nor
+ * a terminator) and those sit before C, never inside it - so "the C section" is exactly the text
+ * between `## C.` and `## D.`, which is the block the routing tells the dispatcher to pass to
+ * skill-runner.
+ * @returns {string|null} null when the letter is not a single capital or the section is absent
+ */
+export function extractGuidanceSection(text, letter) {
+  if (typeof letter !== 'string' || !/^[A-Z]$/.test(letter)) return null;
+  const lines = stripFrontMatter(text).split('\n');
+  const isLettered = (line) => /^## [A-Z]\./.test(line);
+  const start = lines.findIndex((line) => line.startsWith(`## ${letter}.`));
+  if (start < 0) return null;
+  let end = lines.length;
+  for (let i = start + 1; i < lines.length; i += 1) {
+    if (isLettered(lines[i])) {
+      end = i;
+      break;
+    }
+  }
+  const section = lines.slice(start, end).join('\n').trim();
+  return section || null;
 }
