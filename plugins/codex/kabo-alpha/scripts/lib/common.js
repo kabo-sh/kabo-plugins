@@ -917,9 +917,10 @@ export function readAndPrunePendingReports(now = Date.now()) {
 
 
 /** last-known-good cache of signature-verified meta-guidance (bucketed per endpoint, same rule as publicKeysPath) */
+// Keep v19 out of the legacy cache: old clients must retain their own rollback floor.
 export function guidanceCachePath(endpoint = apiEndpoint()) {
   const bucket = sha256hex(String(endpoint)).slice(0, 16);
-  return path.join(dataRoot(), `meta-guidance.${bucket}.json`);
+  return path.join(dataRoot(), `meta-guidance.fast-path.${bucket}.json`);
 }
 
 /**
@@ -952,7 +953,7 @@ export function executionConventionsPath() {
 export function guidanceCachePaths() {
   try {
     return fs.readdirSync(dataRoot())
-      .filter((f) => /^meta-guidance\.[0-9a-f]{16}\.json$/.test(f) || f === 'meta-guidance.json')
+      .filter((f) => /^meta-guidance\.(?:fast-path\.)?[0-9a-f]{16}\.json$/.test(f) || f === 'meta-guidance.json')
       .map((f) => path.join(dataRoot(), f));
   } catch {
     return [];

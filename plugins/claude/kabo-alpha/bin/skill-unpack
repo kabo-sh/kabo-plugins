@@ -104,29 +104,16 @@ function digestToken(value) {
 function manifestDigest(dest, pkg) {
   const parsed = readJsonSilent(path.join(dest, 'manifest.json'));
   const manifest = parsed && typeof parsed === 'object' ? parsed : {};
-  let execution = '-';
-  if (typeof manifest.execution === 'string') {
-    execution = digestToken(manifest.execution);
-  } else if (manifest.execution && typeof manifest.execution === 'object' && !Array.isArray(manifest.execution)) {
-    // The object form is rebuilt from allowlisted keys and values, never stringified as found: only
-    // the {default, operations: {<operation>: mode}} shape the dispatcher reads survives.
-    const ex = manifest.execution;
-    const safe = {};
-    if (ex.default !== undefined) safe.default = digestToken(ex.default);
-    if (ex.operations && typeof ex.operations === 'object' && !Array.isArray(ex.operations)) {
-      safe.operations = {};
-      for (const [op, mode] of Object.entries(ex.operations)) {
-        if (DIGEST_TOKEN.test(op)) safe.operations[op] = digestToken(mode);
-      }
-    }
-    execution = JSON.stringify(safe);
-  }
+  // Keep the legacy routing field a string; operation overrides live in pipeline_operations.
+  const execution = digestToken(manifest.execution);
   const tools = manifest.required && Array.isArray(manifest.required.tools)
     ? manifest.required.tools.map(digestToken)
     : [];
   // id/version are control-character-free already (assertSafeRelPath); the allowlist keeps them from
   // passing for another field. The "Written:" line above carries them verbatim.
   return `manifest: execution=${execution}`
+    + ` has_pipeline=${Array.isArray(manifest.pipeline) && manifest.pipeline.length > 0}`
+    + ` pipeline_operations=${JSON.stringify(Object.fromEntries(Object.entries(manifest.pipeline_operations ?? {}).map(([operation, steps]) => [digestToken(operation), Array.isArray(steps) ? steps.length : 0])))}`
     + ` required.tools=${tools.length > 0 ? tools.join(',') : '-'}`
     + ` min_plugin_version=${digestToken(manifest.min_plugin_version)}`
     + ` skill=${digestToken(pkg.id)}@${digestToken(pkg.version)}`;

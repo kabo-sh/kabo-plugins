@@ -27,7 +27,7 @@ const server = http.createServer((request, response) => {
   if (mode === 'offline') { response.writeHead(503); response.end('{}'); return; }
   if (request.url === '/api/sync') {
     response.end(JSON.stringify({ server_api_version: '1.0.0', catalog: [], revocations: [] }));
-  } else if (request.url === '/api/meta-guidance') response.end(JSON.stringify(current));
+  } else if (request.url === `/api/meta-guidance?plugin=${manifest.version}`) response.end(JSON.stringify(current));
   else { response.writeHead(404); response.end('{}'); }
 });
 await new Promise((resolve, reject) => { server.once('error', reject); server.listen(0, '127.0.0.1', resolve); });

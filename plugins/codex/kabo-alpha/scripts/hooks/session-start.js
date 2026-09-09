@@ -5,7 +5,7 @@
 //       verification it falls back to the built-in static SKILL.md);
 //   (3) the pending-reports queue: after pruning, the entries awaiting relay are injected too, and the
 //       main agent relays them over the authorized MCP connection.
-// Both requests take no arguments, carry no identity, and send zero user data up. Any exception exits 0
+// The guidance request carries only the plugin version; neither request carries identity or user data. Any exception exits 0
 // and never blocks the session.
 //
 // Besides the injected context it leaves files under the data root ($KABO_CODEX_DATA, else
@@ -29,7 +29,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import {
-  apiEndpoint, cacheRoot, dataRoot, disabledMarkerPath, ensurePrivateDir, pluginRootMarkerPath,
+  PLUGIN_VERSION, apiEndpoint, cacheRoot, dataRoot, disabledMarkerPath, ensurePrivateDir, pluginRootMarkerPath,
   revocationSyncPath, guidanceBodyPath, executionConventionsPath,
   readStdinJson, readJsonSilent, writeJsonSilent, writeTextSilent, fetchJsonSilent,
   isSafeName, compareSemver,
@@ -200,7 +200,7 @@ async function resolveGuidance(endpoint) {
   const cachePath = guidanceCachePath(endpoint);
   const cached = readJsonSilent(cachePath);
 
-  const fresh = await fetchJsonSilent(`${endpoint}/api/meta-guidance`, {}, REQUEST_TIMEOUT_MS);
+  const fresh = await fetchJsonSilent(`${endpoint}/api/meta-guidance?plugin=${encodeURIComponent(PLUGIN_VERSION)}`, {}, REQUEST_TIMEOUT_MS);
   if (!fresh && !cached) return null;
 
   const resource = `${endpoint}/mcp`;

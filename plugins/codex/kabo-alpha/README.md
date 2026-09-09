@@ -74,17 +74,27 @@ The onboarding profile `$kabo-start` writes lives at `<data root>/onboarding-pro
 
 ## Execution modes and the fast path
 
-A skill's `manifest.json` declares how it runs, in `execution`:
+A skill keeps `execution: "subagent"` (or `"inline"`) for older plugins. New clients first select a non-empty signed `pipeline` array; a matching `pipeline_operations[operation]` overrides the default, including an empty array that disables it for that operation. Mixed skills declare only their deterministic operations:
 
-| `execution` | Who runs it | How |
-|---|---|---|
-| `pipeline` | the main task — no subagent | Read `SKILL.md` → `kabo-run-dir --skill <dir>` → the connector calls the SKILL.md names, in one assistant turn → write each completed response byte-for-byte to `work/<run-id>/snapshot/envelope-NN.json` → one `kabo-run-pipeline` call carrying every deterministic step as `--step` arguments → Read the report → reply |
-| `subagent` | a Codex subagent running `$skill-runner` | the same fixed sequence (PRE: `kabo-run-dir --skill` + `python3 --version`; FETCH: the connector calls in one turn; POST: the envelope files, then one `kabo-run-pipeline` without `--staging`), plus only the semantic pass the SKILL.md explicitly requires; returns a summary of about 300 tokens |
-| `inline` | the main task | reads the SKILL.md and follows it |
+```json
+{
+  "execution": "subagent",
+  "pipeline_operations": {
+    "engagement-rate": [
+      {"name": "analyze", "cmd": "python3 {skill}/scripts/analyze.py --handle {param.handle} --output {analysis}/result.json"},
+      {"name": "render", "cmd": "python3 {skill}/scripts/render.py {analysis}/result.json --output {report}/REPORT.md"}
+    ]
+  }
+}
+```
 
-`execution` may also be an object — `{"default": "subagent", "operations": {"engagement-rate": "pipeline"}}` — giving one operation of a skill its own mode; the dispatcher picks the mode of the operation the user's request maps to. A deterministic skill is one with no model work between fetch and report: every step is a script its SKILL.md documents, and for it a subagent is pure overhead.
+The main agent fetches evidence and calls `kabo-run-pipeline --operation engagement-rate` once, omitting `--step`: the bin reads the selected signed commands. With no selected array the existing subagent/inline flow remains. A semantic pass still runs in skill-runner, which batches its deterministic tail using `--step`. Placeholders in templates stand bare; values are shell-quoted by the bin.
 
-**Fetch and verify are one step.** On this host the downloaded package never touches a file: `registry_skill_download`'s structured result is streamed once through the echo-free raw PTY bridge, whose command now ends in `'<plugin-root>/bin/skill-unpack' --verify - '<data-root>/skill-cache'` (the flag may sit anywhere in the argument list, so it goes before the `-` that means stdin). `skill-unpack --verify` writes the cache directory, prints one manifest digest line — `manifest: execution=<mode> required.tools=<list> min_plugin_version=<x.y.z> skill=<id>@<version>` — and then runs `skill-verify <dest>` with stdio inherited, exiting with its code, so the bridge command's exit status is the verification result. The digest exists so the dispatcher never opens `manifest.json` separately; the chained verify exists so verification never runs twice. A cache hit skips the download and runs `skill-verify <dir>` once instead — the revocation check still happens every run.
+SessionStart requests `GET /api/meta-guidance?plugin=0.21.0`. The coordinated server serves v19 from 0.21.0 and preserves v18 for older or unspecified versions. New clients store signed envelopes in `meta-guidance.fast-path.<endpoint-hash>.json`, isolated from legacy rollback floors. The signed body stays within 8000 characters and the complete injection within 10000.
+
+Catalog calls accept `connector_ids` or `skill_id` (both intersect). Skill filtering uses the optional manifest `required.connectors` declarations, each with `connector_id` and `operations`; an empty result is not evidence of readiness. Search may return `connectors_ready` for these declared dependencies, letting the executor reuse that note; legacy skills query explicit connector IDs once.
+
+**Fetch and verify are one step.** On this host the downloaded package never touches a file: `registry_skill_download`'s structured result is streamed once through the echo-free raw PTY bridge, whose command now ends in `'<plugin-root>/bin/skill-unpack' --verify - '<data-root>/skill-cache'` (the flag may sit anywhere in the argument list, so it goes before the `-` that means stdin). `skill-unpack --verify` writes the cache directory, prints one manifest digest line — `manifest: execution=<mode> has_pipeline=<boolean> pipeline_operations=<operations> required.tools=<list> min_plugin_version=<x.y.z> skill=<id>@<version>` — and then runs `skill-verify <dest>` with stdio inherited, exiting with its code, so the bridge command's exit status is the verification result. The digest exists so the dispatcher never opens `manifest.json` separately; the chained verify exists so verification never runs twice. A cache hit skips the download and runs `skill-verify <dir>` once instead — the revocation check still happens every run.
 
 **Files SessionStart writes** (under the data root, `$KABO_CODEX_DATA` or `~/.kabo/codex`, mode 0600):
 
@@ -119,11 +129,9 @@ An unknown placeholder is an error before any step runs, and so is a placeholder
 
 **Measured motivation.** One run of the deterministic skill `diagnose-reach-drop@0.2.0` on 2026-09-07 (on the Claude variant; the control plane has the same shape here) took 280 seconds end to end; the real data fetch was 7.6 seconds of it. The rest was control plane: 34 model turns, three `skill-verify` runs (each a live `GET /api/sync`, 1–3 s), `data_connector_catalog` pulled twice (53 KB each, overflowing the host's tool-result cap and forcing a file read-back), `connectors.v1.json` parsed twice, the main agent hand-typing the ~3 KB Section C into the subagent dispatch (25 s), the subagent spending 22 turns and 8 Bash calls on a fixed deterministic sequence, and a 1,886-token subagent summary. The fast path removes each of those: deterministic skills run as one pipeline command from the main task, semantic skills keep a slimmer subagent, and verification happens once — inside the bridge on this host.
 
-**Server-side follow-ups this branch depends on.**
+**Coordinated rollout.** Deploy the server's versioned v18/v19 guidance and optional pipeline/catalog contract before releasing plugin 0.21.0. Run the explicit cross-release E2E against both 0.20.2/v18 and 0.21.0/v19; ordinary CI uses the public conformance vector without reading the other repository.
 
-- Publish guidance body v19 — the snapshot below the Codex deltas in `skills/meta-guidance/SKILL.md` on this branch (byte-identical to the Claude variant's); the cross-repo snapshot test is red until the two match.
-- Declare `execution: "pipeline"` (or the object form) in the manifests of deterministic skills and operations. Candidates: `diagnose-reach-drop`, `recommend-publish-timing`, `plan-platform-monetization`, `review-creator-account`'s engagement-rate operation, `research-tiktok-trends`' trending-sounds operation, `analyze-content-video`'s transcript and cover operations. Until a manifest says so, a skill keeps running through `$skill-runner`.
-- Optional: a filter parameter on `data_connector_catalog`, so a dispatcher can ask for the one or two connectors a SKILL.md names instead of the 53 KB whole.
+Content authors then add signed `pipeline` / `pipeline_operations` arrays, bare placeholders and `required.connectors` dependencies, while preserving `execution: "subagent"` and the older SKILL.md path. Candidates include diagnose-reach-drop, recommend-publish-timing, plan-platform-monetization, and deterministic operations in review-creator-account, research-tiktok-trends and analyze-content-video. Until content declares a pipeline, the plugin retains the subagent path; its verification and orchestration optimizations still apply.
 
 ## Creator research support files
 
@@ -145,7 +153,7 @@ The following is never collected, and reading or serializing it is forbidden at 
 
 ### Subagent limitations
 
-A plain Codex subagent's `agent_type` is the host profile, not the task name, and a plugin cannot force-install a project/user custom-agent profile along with the package — so even when the host one day offers an MCP-capable hook type, per-subagent attribution will stay unreliable. `SubagentStop` has no structured success field, and neither output nor the transcript may be read to infer one. This is the other half of why dropping the unparseable telemetry hooks costs so little: what they could have attributed was never trustworthy to begin with. Skills whose manifest declares `execution: pipeline` never spawn a subagent at all — the main task issues the connector calls and one `kabo-run-pipeline` command — so for them there is nothing to attribute client-side; the platform's server-side tool telemetry covers those calls like any other.
+A plain Codex subagent's `agent_type` is the host profile, not the task name, and a plugin cannot force-install a project/user custom-agent profile along with the package — so even when the host one day offers an MCP-capable hook type, per-subagent attribution will stay unreliable. `SubagentStop` has no structured success field, and neither output nor the transcript may be read to infer one. This is the other half of why dropping the unparseable telemetry hooks costs so little: what they could have attributed was never trustworthy to begin with. Skills with a selected non-empty pipeline array never spawn a subagent at all — the main task issues the connector calls and one `kabo-run-pipeline` command — so for them there is nothing to attribute client-side; the platform's server-side tool telemetry covers those calls like any other.
 
 ## Development validation
 

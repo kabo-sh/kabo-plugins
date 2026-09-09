@@ -7,7 +7,7 @@
 // calls with a model turn between each (measured 2026-09-07 on diagnose-reach-drop@0.2.0: 22
 // subagent turns and 8 Bash calls around 7.6 s of real work, inside a 280 s run). This command takes
 // the whole sequence as --step arguments and runs it in one process, so the runner spends exactly
-// one turn on it and the main agent can run a "pipeline"-execution Skill with no subagent at all.
+// one turn on it and the main agent can run a Skill with a signed pipeline with no subagent at all.
 //
 // Placeholders, expanded in every step before it runs (each value becomes one single-quoted word for
 // /bin/sh, so a placeholder is written bare, never inside quotes):
@@ -63,6 +63,7 @@ const USAGE = `Usage: kabo-run-pipeline --run-id <id> --skill <skill-dir> [--sta
               hook names it on a "kabo:" line); drained into {run}/snapshot before the first step.
               Hosts without staging (Codex) omit it and the runner writes snapshot/envelope-NN.json
               itself before calling the pipeline
+  --operation select pipeline_operations[operation], falling back to the default pipeline array
   --language  the value of the {language} placeholder
   --param     the value of a {param.<k>} placeholder (repeatable)
   --report    the one file under {run}/report to announce as creator_report (default: every file)
@@ -175,7 +176,7 @@ if (args.length === 0 || args.includes('--help') || args.includes('-h')) {
   process.exit(args.length === 0 ? 1 : 0);
 }
 
-const opts = { runId: null, skill: null, staging: null, language: null, report: null, params: new Map(), steps: [] };
+const opts = { runId: null, skill: null, staging: null, operation: null, language: null, report: null, params: new Map(), steps: [] };
 function valueOf(flag, index) {
   const value = args[index + 1];
   if (value === undefined) fail(`${flag} requires a value`);
@@ -187,6 +188,7 @@ for (let i = 0; i < args.length; i += 1) {
     case '--run-id': opts.runId = valueOf(arg, i); i += 1; break;
     case '--skill': opts.skill = valueOf(arg, i); i += 1; break;
     case '--staging': opts.staging = valueOf(arg, i); i += 1; break;
+    case '--operation': opts.operation = valueOf(arg, i); i += 1; break;
     case '--language': opts.language = valueOf(arg, i); i += 1; break;
     case '--report': opts.report = valueOf(arg, i); i += 1; break;
     case '--step': opts.steps.push(valueOf(arg, i)); i += 1; break;
@@ -237,8 +239,12 @@ for (const dir of Object.values(subdirs)) fs.mkdirSync(dir, { recursive: true, m
 let steps = opts.steps;
 if (steps.length === 0) {
   const manifest = readJsonSilent(path.join(skillDir, 'manifest.json'));
-  const shipped = manifest && Array.isArray(manifest.pipeline) ? manifest.pipeline : [];
-  if (shipped.length === 0) refuse('no --step was given and the skill manifest declares no "pipeline" array');
+  // An explicit empty operation override disables the default pipeline for that operation.
+  const operations = manifest?.pipeline_operations;
+  const selected = opts.operation !== null && operations && Object.hasOwn(operations, opts.operation)
+    ? operations[opts.operation] : manifest?.pipeline;
+  const shipped = Array.isArray(selected) ? selected : [];
+  if (shipped.length === 0) refuse('no --step was given and the selected operation has no non-empty pipeline array');
   steps = shipped.map((entry, index) => {
     if (!entry || typeof entry.cmd !== 'string' || entry.cmd.trim() === '') {
       refuse(`manifest pipeline entry ${index + 1} has no "cmd" string`);

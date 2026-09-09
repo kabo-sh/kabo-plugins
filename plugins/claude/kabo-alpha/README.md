@@ -53,7 +53,7 @@ The installer offers to start this same sign-in right after installing and then 
 
 **Without this plugin at all.** In claude.ai or the Claude chat desktop app you can add `https://kabo.sh/mcp` under **Settings → Connectors** as a custom connector and authorize it there. That surface is **data only**: the platform's data tools answer and nothing else — no meta-guidance routing, no signed skill download, no local signature verification, no skill-runner subagent. It is a fallback for people who cannot get the plugin flow to work — and it is a *different host*, not something to do inside Claude Code (see "Known limitation" below).
 
-Alongside the credential, the plugin reaches three **public read-only** endpoints: `GET /api/sync`, `GET /api/meta-guidance`, `GET /api/public-key`. They take no arguments, carry no identity, and upload no local data — the anonymous half of the client is unchanged.
+Alongside the credential, the plugin reaches three **public read-only** endpoints: `GET /api/sync`, `GET /api/meta-guidance`, `GET /api/public-key`. The guidance request carries the plugin version; these calls carry no identity and upload no local data — the anonymous half of the client is unchanged.
 
 Local development / self-hosted server: change the URL in this directory's `.mcp.json` (MCP side) and set `KABO_API_ENDPOINT` (public endpoint and sign-in side). The credential records the deployment it was issued for, and the helper refuses to present it to any other one.
 
@@ -65,7 +65,7 @@ Two tools on the platform's `kabo` server are the whole data plane:
 
 | Tool | What it does |
 |---|---|
-| `data_connector_catalog` | No input. Lists every connector with its `ready` state and every operation with its `implemented` flag and `params_schema`. Call it **before** promising evidence |
+| `data_connector_catalog` | Optional connector_ids / skill_id filters; no input returns every connector with its `ready` state and every operation with its `implemented` flag and `params_schema`. Call it **before** promising evidence |
 | `data_connector_run` | Runs one operation of one connector server-side and returns the V1 envelope (`status` / `limitations` / `provider`) |
 
 Two non-`completed` statuses are **platform-side gaps, not tool failures and not something you can fix**:
@@ -119,17 +119,27 @@ How fast each surface actually stops: **this machine, the same second** (the cre
 
 ## Execution modes and the fast path
 
-A skill's `manifest.json` declares how it runs, in `execution`:
+A skill keeps `execution: "subagent"` (or `"inline"`) for older plugins. New clients first select a non-empty signed `pipeline` array; a matching `pipeline_operations[operation]` overrides the default, including an empty array that disables it for that operation. Mixed skills declare only their deterministic operations:
 
-| `execution` | Who runs it | How |
-|---|---|---|
-| `pipeline` | the main agent — no subagent | Read `SKILL.md` → `kabo-run-dir --skill <dir>` → the connector calls the SKILL.md names, in one assistant turn (the PostToolUse hook stages every envelope and prints a `kabo:` line naming the staging directory) → one `kabo-run-pipeline` call carrying every deterministic step as `--step` arguments → Read the report → reply |
-| `subagent` | skill-runner | the same fixed sequence in at most three Bash calls (PRE: `kabo-run-dir --skill` + `python3 --version`; FETCH: the connector calls in one turn; POST: one `kabo-run-pipeline` with `--staging`), plus only the semantic pass the SKILL.md explicitly requires; returns a summary of about 300 tokens |
-| `inline` | the main agent | reads the SKILL.md and follows it |
+```json
+{
+  "execution": "subagent",
+  "pipeline_operations": {
+    "engagement-rate": [
+      {"name": "analyze", "cmd": "python3 {skill}/scripts/analyze.py --handle {param.handle} --output {analysis}/result.json"},
+      {"name": "render", "cmd": "python3 {skill}/scripts/render.py {analysis}/result.json --output {report}/REPORT.md"}
+    ]
+  }
+}
+```
 
-`execution` may also be an object — `{"default": "subagent", "operations": {"engagement-rate": "pipeline"}}` — giving one operation of a skill its own mode; the dispatcher picks the mode of the operation the user's request maps to. A deterministic skill is one with no model work between fetch and report: every step is a script its SKILL.md documents, and for it a subagent is pure overhead.
+The main agent fetches evidence and calls `kabo-run-pipeline --operation engagement-rate` once, omitting `--step`: the bin reads the selected signed commands. With no selected array the existing subagent/inline flow remains. A semantic pass still runs in skill-runner, which batches its deterministic tail using `--step`. Placeholders in templates stand bare; values are shell-quoted by the bin.
 
-**Fetch and verify are one step.** `skill-unpack --verify <file>` writes the cache directory, prints one manifest digest line — `manifest: execution=<mode> required.tools=<list> min_plugin_version=<x.y.z> skill=<id>@<version>` — and then runs `skill-verify <dest>` with stdio inherited, exiting with its code. The digest exists so the dispatcher never opens `manifest.json` separately; the chained verify exists so verification never runs twice. A cache hit skips the download and runs `skill-verify <dir>` once instead — the revocation check still happens every run.
+SessionStart requests `GET /api/meta-guidance?plugin=0.21.0`. The coordinated server serves v19 from 0.21.0 and preserves v18 for older or unspecified versions. New clients store signed envelopes in `meta-guidance.fast-path.<endpoint-hash>.json`, isolated from legacy rollback floors. The signed body stays within 8000 characters and the complete injection within 10000.
+
+Catalog calls accept `connector_ids` or `skill_id` (both intersect). Skill filtering uses the optional manifest `required.connectors` declarations, each with `connector_id` and `operations`; an empty result is not evidence of readiness. Search may return `connectors_ready` for these declared dependencies, letting the executor reuse that note; legacy skills query explicit connector IDs once.
+
+**Fetch and verify are one step.** `skill-unpack --verify <file>` writes the cache directory, prints one manifest digest line — `manifest: execution=<mode> has_pipeline=<boolean> pipeline_operations=<operations> required.tools=<list> min_plugin_version=<x.y.z> skill=<id>@<version>` — and then runs `skill-verify <dest>` with stdio inherited, exiting with its code. The digest exists so the dispatcher never opens `manifest.json` separately; the chained verify exists so verification never runs twice. A cache hit skips the download and runs `skill-verify <dir>` once instead — the revocation check still happens every run.
 
 **Files SessionStart writes** (under `~/.kabo`, mode 0600):
 
@@ -160,11 +170,9 @@ An unknown placeholder is an error before any step runs. Every value is single-q
 
 **Measured motivation.** One run of the deterministic skill `diagnose-reach-drop@0.2.0` on 2026-09-07 took 280 seconds end to end; the real data fetch was 7.6 seconds of it. The rest was control plane: 34 model turns, three `skill-verify` runs (each a live `GET /api/sync`, 1–3 s), `data_connector_catalog` pulled twice (53 KB each, overflowing the host's tool-result cap and forcing a file read-back), `connectors.v1.json` parsed twice, the main agent hand-typing the ~3 KB Section C into the subagent dispatch (25 s), the subagent spending 22 turns and 8 Bash calls on a fixed deterministic sequence, and a 1,886-token subagent summary. The fast path removes each of those: deterministic skills run as one pipeline command from the main agent, semantic skills keep a slimmer subagent, and verification happens once.
 
-**Server-side follow-ups this branch depends on.**
+**Coordinated rollout.** Deploy the server's versioned v18/v19 guidance and optional pipeline/catalog contract before releasing plugin 0.21.0. Run the explicit cross-release E2E against both 0.20.2/v18 and 0.21.0/v19; ordinary CI uses the public conformance vector without reading the other repository.
 
-- Publish guidance body v19 — the body of `skills/meta-guidance/SKILL.md` on this branch; the cross-repo snapshot test is red until the two match.
-- Declare `execution: "pipeline"` (or the object form) in the manifests of deterministic skills and operations. Candidates: `diagnose-reach-drop`, `recommend-publish-timing`, `plan-platform-monetization`, `review-creator-account`'s engagement-rate operation, `research-tiktok-trends`' trending-sounds operation, `analyze-content-video`'s transcript and cover operations. Until a manifest says so, a skill keeps running through skill-runner.
-- Optional: a filter parameter on `data_connector_catalog`, so a dispatcher can ask for the one or two connectors a SKILL.md names instead of the 53 KB whole.
+Content authors then add signed `pipeline` / `pipeline_operations` arrays, bare placeholders and `required.connectors` dependencies, while preserving `execution: "subagent"` and the older SKILL.md path. Candidates include diagnose-reach-drop, recommend-publish-timing, plan-platform-monetization, and deterministic operations in review-creator-account, research-tiktok-trends and analyze-content-video. Until content declares a pipeline, the plugin retains the subagent path; its verification and orchestration optimizations still apply.
 
 ## Dynamic meta-guidance
 

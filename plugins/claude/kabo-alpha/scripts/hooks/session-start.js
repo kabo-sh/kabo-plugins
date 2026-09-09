@@ -82,7 +82,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import {
-  apiEndpoint, cacheRoot, credentialsPath, disabledMarkerPath, ensurePrivateDir, guidanceCachePath, pluginRootMarkerPath,
+  PLUGIN_VERSION, apiEndpoint, cacheRoot, credentialsPath, disabledMarkerPath, ensurePrivateDir, guidanceCachePath, pluginRootMarkerPath,
   nodePathMarkerPath, writeNodePathMarker,
   revocationSyncPath, guidanceBodyPath, executionConventionsPath,
   readStdinJson, readJsonSilent, writeJsonSilent, writeTextSilent, fetchJsonSilent,
@@ -445,7 +445,7 @@ async function resolveGuidance(endpoint) {
   const cachePath = guidanceCachePath(endpoint);
   const cached = readJsonSilent(cachePath);
 
-  const fresh = await fetchJsonSilent(`${endpoint}/api/meta-guidance`, {}, REQUEST_TIMEOUT_MS);
+  const fresh = await fetchJsonSilent(`${endpoint}/api/meta-guidance?plugin=${encodeURIComponent(PLUGIN_VERSION)}`, {}, REQUEST_TIMEOUT_MS);
   if (!fresh && !cached) return null; // offline with no cache: no guidance to inject, save the effort
 
   const resource = `${endpoint}/mcp`;
