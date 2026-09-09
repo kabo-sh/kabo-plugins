@@ -29,11 +29,25 @@ Already cloned this repo? Skip the network: `./install.sh --repo /path/to/kabo-p
 
 ### Upgrading, or repairing a broken install
 
-Run the same one-line command again. On a machine that already has the plugin it refreshes the marketplace clone and runs `claude plugin update`, and if the host answers `Plugin "kabo-alpha" not found` — the plugin is installed but the marketplace it came from can no longer be resolved — it re-registers the marketplace from GitHub and reinstalls the plugin. Your sign-in is kept: the credential lives under `~/.kabo`, which the installer never touches. Restart Claude Code afterwards.
+Run the same one-line command again. For Claude Code, it refreshes the marketplace clone and runs `claude plugin update`, and if the host answers `Plugin "kabo-alpha" not found` — the plugin is installed but the marketplace it came from can no longer be resolved — it re-registers the marketplace from GitHub and reinstalls the plugin. Your Claude sign-in is kept: the credential lives under `~/.kabo`, which the installer never touches.
 
-By hand, the equivalent is `claude plugin marketplace update kabo-plugins` followed by `claude plugin update kabo-alpha@kabo-plugins`; a plain `claude plugin update` on its own compares against whatever the local clone holds, so if the refresh fails silently it reports the old version as the latest.
+For an existing Git marketplace that follows this repository's `main`, the manual update commands are:
 
-The rest of this section is the same thing by hand.
+```bash
+# Claude Code
+claude plugin marketplace update kabo-plugins
+claude plugin update kabo-alpha@kabo-plugins
+
+# Codex
+codex plugin marketplace upgrade kabo-plugins-codex --json
+codex plugin add kabo-alpha@kabo-plugins-codex --json
+```
+
+Run only the pair for the host you use, and stop if the marketplace refresh fails: updating against a stale snapshot can report the old version as the latest. Restart that host, start a new session, then run `claude plugin list --json` or `codex plugin list --json` and confirm that `kabo-alpha` has the intended version and `enabled: true`. A successful command alone is not proof of an upgrade.
+
+A marketplace pinned to a tag or commit stays pinned when refreshed; inspect that source before deciding to move it to `main`. For a local-path marketplace, its maintainer must first update the local checkout while preserving local changes; a Git marketplace refresh does not update that directory. Do not remove/re-add a marketplace, clear Skill caches, or sign out as a routine upgrade step.
+
+Registry Skill updates are separate from Plugin updates. If your installed Plugin already meets the requested Skill's minimum version, a Registry catalog change alone does not require reinstalling the Plugin. First-time installation instructions follow.
 
 ### Claude Code
 
