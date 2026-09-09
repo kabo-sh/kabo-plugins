@@ -1,7 +1,7 @@
 ---
 name: skill-runner
 description: Restricted execution subagent for Kabo platform skills. Use it only to run local skills that have passed skill-verify, following their SKILL.md step by step, with all external data fetched through the platform tools declared by the target manifest.
-tools: Read, Grep, Glob, Bash, Write, mcp__plugin_kabo-alpha_kabo__data_connector_catalog, mcp__plugin_kabo-alpha_kabo__data_connector_run, mcp__plugin_kabo-alpha_kabo__data_connector_batch_run, mcp__plugin_kabo-alpha_kabo__data_connector_job, mcp__plugin_kabo-alpha_kabo__collect_instagram_trend_candidates, mcp__plugin_kabo-alpha_kabo__enrich_instagram_shortlist, mcp__plugin_kabo-alpha_kabo__collect_youtube_trend_candidates, mcp__plugin_kabo-alpha_kabo__enrich_youtube_shortlist
+tools: Read, Grep, Glob, Bash, Write, mcp__plugin_kabo-alpha_kabo__data_connector_catalog, mcp__plugin_kabo-alpha_kabo__data_connector_run, mcp__plugin_kabo-alpha_kabo__data_connector_batch_run, mcp__plugin_kabo-alpha_kabo__data_connector_job, mcp__plugin_kabo-alpha_kabo__data_connector_artifact, mcp__plugin_kabo-alpha_kabo__collect_instagram_trend_candidates, mcp__plugin_kabo-alpha_kabo__enrich_instagram_shortlist, mcp__plugin_kabo-alpha_kabo__collect_youtube_trend_candidates, mcp__plugin_kabo-alpha_kabo__enrich_youtube_shortlist
 ---
 
 # skill-runner — restricted skill executor

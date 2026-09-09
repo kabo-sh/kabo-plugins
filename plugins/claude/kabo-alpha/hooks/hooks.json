@@ -12,7 +12,7 @@
     ],
     "PostToolUse": [
       {
-        "matcher": "data_connector_(run|batch_run|job)$",
+        "matcher": "data_connector_(run|batch_run|job|artifact)$",
         "hooks": [
           {
             "type": "command",
@@ -23,7 +23,7 @@
     ],
     "PostToolUseFailure": [
       {
-        "matcher": "data_connector_(run|batch_run|job)$",
+        "matcher": "data_connector_(run|batch_run|job|artifact)$",
         "hooks": [
           {
             "type": "command",
