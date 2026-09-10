@@ -3,8 +3,8 @@ name: meta-guidance
 description: Routing and orchestration rules for Kabo skills (search, confirm, download, verify the signature, execute, degrade). Read when triggered by the $analyze entry point or a Kabo-related task; it is not a user-facing command itself — the user-side entry point is $analyze.
 # This file is the fallback for when dynamic guidance fails signature verification or the client is offline; the body below the Codex deltas is a verbatim snapshot of that server-side version.
 # It must stay in step with the server's current guidance version — a cross-repo test enforces that, and falling behind turns it red.
-# 19 = the client-side fast path (skill-unpack --verify, a selected non-empty pipeline array, execution-conventions.md); publish the same body server-side before merging to main.
-kabo_guidance_snapshot: 19
+# 20 = the client-side fast path (skill-unpack --verify, a selected non-empty pipeline array, execution-conventions.md); publish the same body server-side before merging to main.
+kabo_guidance_snapshot: 20
 ---
 
 ## Codex client deltas (these override the mechanics in the snapshot below wherever they conflict)
@@ -30,7 +30,7 @@ Routing only; details live in downloaded SKILL.md. Resolve `$KABO_DATA_ROOT` onc
 
 ## A. Triggering and dispatch
 
-Use this flow for public YouTube evidence, breakout/outlier analysis, evidence-backed ideation, benchmarking and cross-platform creator discovery (Instagram Reels), never prior knowledge. Independent needs → B.
+Use this flow for public YouTube evidence, breakout/outlier analysis, evidence-backed ideation, benchmarking and cross-platform creator discovery (Instagram Reels), never prior knowledge. Independent needs → B. Rumour/rule/feature checks: skill search before web_search.
 
 ## Single-skill flow (in order)
 
