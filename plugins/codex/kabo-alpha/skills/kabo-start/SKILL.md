@@ -110,7 +110,7 @@ Error branches — never a dead end, never silent:
 
 Intro: *Before anything runs: this is your account and your quota, so it is your call.*
 
-Before showing it, resolve the account-review skill via `registry_skill_search` (capability keywords, per `meta-guidance`) and put the matched skill's name / version / permissions into the option descriptions — this popup **doubles as the pre-run confirmation meta-guidance requires**. The description of *Yes, analyze it* **must** also carry: *Takes about {analysis_minutes} minutes and spends roughly {token_estimate} of your own quota* (values from the Estimates block). The cost is a condition of consent, not a footnote.
+Before showing it, resolve the account-review skill via `registry_skill_search` (empty query, then pick from the listing, per `meta-guidance`) and put the matched skill's name / version / permissions into the option descriptions — this popup **doubles as the pre-run confirmation meta-guidance requires**. The description of *Yes, analyze it* **must** also carry: *Takes about {analysis_minutes} minutes and spends roughly {token_estimate} of your own quota* (values from the Estimates block). The cost is a condition of consent, not a footnote.
 
 | id | header | question | options |
 |---|---|---|---|
@@ -244,7 +244,7 @@ The plan names what goes in slot one; it does not yet contain the thing itself. 
 
 Intro: *Your plan is set; the first slot is still empty. Pick how we fill it — or stop here, the plan is already saved.*
 
-Before the call, resolve the skill for the route the creator is most likely to take via `registry_skill_search` (capability keywords, per `meta-guidance`) and put the matched skill's name / version / permissions into the option descriptions, together with the second run's cost line: this popup **doubles as the pre-run confirmation for the second run**, exactly as step 5 does for the first. State that this is a further run against their own quota and that its size has not been measured yet — see the Estimates block, and never quote a number you do not have.
+Before the call, resolve the skill for the route the creator is most likely to take via `registry_skill_search` (empty query, then pick from the listing, per `meta-guidance`) and put the matched skill's name / version / permissions into the option descriptions, together with the second run's cost line: this popup **doubles as the pre-run confirmation for the second run**, exactly as step 5 does for the first. State that this is a further run against their own quota and that its size has not been measured yet — see the Estimates block, and never quote a number you do not have.
 
 | id | header | question | options |
 |---|---|---|---|

@@ -3,8 +3,8 @@ name: meta-guidance
 description: Routing and orchestration rules for Kabo skills (search, confirm, download, verify the signature, execute, degrade). Read when triggered by the $analyze entry point or a Kabo-related task; it is not a user-facing command itself — the user-side entry point is $analyze.
 # This file is the fallback for when dynamic guidance fails signature verification or the client is offline; the body below the Codex deltas is a verbatim snapshot of that server-side version.
 # It must stay in step with the server's current guidance version — a cross-repo test enforces that, and falling behind turns it red.
-# 21 = the client-side fast path (skill-unpack --verify, a selected non-empty pipeline array, execution-conventions.md); publish the same body server-side before merging to main.
-kabo_guidance_snapshot: 21
+# 22 = the client-side fast path (skill-unpack --verify, a selected non-empty pipeline array, execution-conventions.md) plus full-catalog routing: step 1 lists every accessible skill with an empty query instead of guessing a keyword; publish the same body server-side before merging to main.
+kabo_guidance_snapshot: 22
 ---
 
 ## Codex client deltas (these override the mechanics in the snapshot below wherever they conflict)
@@ -34,16 +34,16 @@ Never answer a platform rule, rumour, official feature, setting or ToS from memo
 
 ## Single-skill flow (in order)
 
-1. **Search**: `registry_skill_search` with one short capability keyword; optional tag. Matching is literal substring, not semantic search.
+1. **Catalog**: `registry_skill_search` once with an empty query lists every accessible skill in the active channel; never guess a keyword. Read descriptions/tags and choose. Optional tag = exact match.
 2. **Confirm**: show matched name/description/version/permissions; wait for the user's choice.
 3. **Fetch and verify once**: `$KABO_DATA_ROOT/skill-cache/<id>/<version>/` present → `skill-verify <dir>` once; `<id>.disabled` → revoked: stop. Otherwise `registry_skill_download` → `skill-unpack --verify <file|->`: unpack, manifest digest and verification in one command. Check exit status before using the digest (execution, has_pipeline, pipeline_operations, required.tools, min_plugin_version). No second main/runner verification; POST verifies local-only.
-4. **Readiness**: for `data_connector_*` dependencies, reuse this search's `connectors_ready: true` note. Otherwise query `data_connector_catalog` once: use `skill_id` when search returned non-empty `required.connectors`; for older skills use SKILL.md's explicit `connector_ids` directly. Keep ready/implemented flags and needed params schemas. An empty result never proves readiness. Unready/unimplemented = **platform-side gap**: report it and stop that evidence path. Pass the note; never repeat the check.
+4. **Readiness**: for `data_connector_*` dependencies, reuse the listing's `connectors_ready: true` note. Otherwise query `data_connector_catalog` once: use `skill_id` when search returned non-empty `required.connectors`; for older skills use SKILL.md's explicit `connector_ids` directly. Keep ready/implemented flags and needed params schemas. An empty result never proves readiness. Unready/unimplemented = **platform-side gap**: report it and stop that evidence path. Pass the note; never repeat the check.
 5. **Dispatch**: choose the operation from the request and SKILL.md. Its own `pipeline_operations[operation]` overrides `pipeline`; a non-empty selected array means main-agent pipeline execution. An empty override disables it. Otherwise use the unchanged string `execution`: `subagent` → skill-runner; `inline` → read SKILL.md here. Never infer a pipeline for a semantic operation. In pipeline mode read SKILL.md, reserve `kabo-run-dir --skill <dir>`, fetch, then call `kabo-run-pipeline --run-id <id> --skill <dir>` once, adding `--operation <operation>` when selected and language/params. It reads the signed array; omit --step. For subagents pass ① skill path ② task summary, operation, readiness note ③ `$KABO_DATA_ROOT/execution-conventions.md` (SessionStart writes it; paste C only if missing), plus resolved plugin/data/run roots and delivery language.
 6. **Deliver** per E.
 
 ## B. Composite orchestration
 
-Search independent needs in parallel; match description/tags/required, never force-fit. Show permissions first; run steps 3–5 per selection. No hit = no coverage; unavailable connectors = missing dependencies; failed verification/revocation blocks execution. Merge per E, reporting gaps against the original request. Try at most 3 rounds, stating what changes; the user can stop. D's one-primary-skill limit takes priority.
+Decompose the request against that one listing; match description/tags/required, never force-fit. Permissions first; run steps 3–5 each. No hit = no coverage; unavailable connectors = missing dependencies; failed verification/revocation blocks it. Merge per E, reporting gaps vs the request. At most 3 rounds, stating changes; the user can stop. D's one-primary-skill limit wins.
 
 ## Platform tools unavailable
 
