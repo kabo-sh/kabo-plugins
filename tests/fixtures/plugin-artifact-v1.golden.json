@@ -1,0 +1,166 @@
+{
+  "description": "Kabo plugin signed artifact v1 public conformance vector. The private key is test-only and must never be used in production.",
+  "format_version": 1,
+  "test_key": {
+    "algorithm": "ed25519",
+    "key_id": "e5788161e35d61d4",
+    "public_key_pem": "-----BEGIN PUBLIC KEY-----\nMCowBQYDK2VwAyEAxyjvsrwsOOvqeT/5BWAmNP9Rne7L7GwAxuXND+cKfPo=\n-----END PUBLIC KEY-----\n",
+    "private_key_pem": "-----BEGIN PRIVATE KEY-----\nMC4CAQAwBQYDK2VwBCIEIE8D9SwKm9g4FcEiaTWuQa5BrtDBlUnuyGV74wiGTRP8\n-----END PRIVATE KEY-----\n"
+  },
+  "canonical_manifest_utf8": "kabo.artifact-format\u00001\nSKILL.md\u00002d15f30e9feed15c702013f7dc9f00b9cf150809698b4fc817a12f40744b5734\nmanifest.json\u000052c8816347293959a6d5ef1a458910f46aa3306a015d015d7bc3f3a26d2960e3\nscripts/run.mjs\u0000320c10d6ed562866319c8d832d363ce1d66892b246d1e13d4fe9ebd3c3174338\n",
+  "file_sha256": {
+    "SKILL.md": "2d15f30e9feed15c702013f7dc9f00b9cf150809698b4fc817a12f40744b5734",
+    "manifest.json": "52c8816347293959a6d5ef1a458910f46aa3306a015d015d7bc3f3a26d2960e3",
+    "scripts/run.mjs": "320c10d6ed562866319c8d832d363ce1d66892b246d1e13d4fe9ebd3c3174338"
+  },
+  "skill_package": {
+    "format_version": 1,
+    "id": "golden-skill",
+    "version": "1.2.3",
+    "manifest": {
+      "name": "golden-skill",
+      "version": "1.2.3",
+      "description": "Public Kabo plugin conformance vector.",
+      "tags": ["golden", "conformance"],
+      "required": {
+        "server_api_min": "1.0.0",
+        "tools": ["mcp__plugin_kabo-alpha_kabo__data_connector_run"]
+      },
+      "execution": "Read SKILL.md and follow it exactly."
+    },
+    "files": [
+      {
+        "path": "manifest.json",
+        "content_base64": "eyJuYW1lIjoiZ29sZGVuLXNraWxsIiwidmVyc2lvbiI6IjEuMi4zIiwiZGVzY3JpcHRpb24iOiJQdWJsaWMgS2FibyBwbHVnaW4gY29uZm9ybWFuY2UgdmVjdG9yLiIsInRhZ3MiOlsiZ29sZGVuIiwiY29uZm9ybWFuY2UiXSwicmVxdWlyZWQiOnsic2VydmVyX2FwaV9taW4iOiIxLjAuMCIsInRvb2xzIjpbIm1jcF9fcGx1Z2luX2thYm8tYWxwaGFfa2Fib19fZGF0YV9jb25uZWN0b3JfcnVuIl19LCJleGVjdXRpb24iOiJSZWFkIFNLSUxMLm1kIGFuZCBmb2xsb3cgaXQgZXhhY3RseS4ifQo="
+      },
+      {
+        "path": "SKILL.md",
+        "content_base64": "LS0tCm5hbWU6IGdvbGRlbi1za2lsbAotLS0KCiMgR29sZGVuIFNraWxsCgpSZXR1cm4gdGhlIGV4YWN0IHdvcmQgYGdvbGRlbmAuCg=="
+      },
+      {
+        "path": "scripts/run.mjs",
+        "content_base64": "ZXhwb3J0IGNvbnN0IHJlc3VsdCA9IDQyOwo="
+      }
+    ],
+    "checksum": "90fc479812f8252a91eff4d261befc0fafa4a204c160d234b3adb035cefaed9a",
+    "signature": "EPDCCwPGxDe497+3gMGRYytxA7Gdns6re4WqcMer4sWr2WbTJn1mB9tb3mf5JVTyak+xy4E1duWln4mK/6oADA==",
+    "algorithm": "ed25519",
+    "key_id": "e5788161e35d61d4"
+  },
+  "sort_conformance": {
+    "description": "Non-BMP path ordering vector. UTF-16 code-unit order and UTF-8 byte order disagree on assets/～note.md (U+FF5E) versus assets/🎬-clip.md (U+1F3AC), so an implementation that sorts with a plain JS string comparison cannot reach the checksum below. Sorting by decoded code point is equivalent to UTF-8 byte order and is also correct. The files array is deliberately stored in utf16_code_unit_order, i.e. the wrong order: an implementation that forgets to sort at all then lands on the same wrong_sort_checksum a UTF-16 sort does, so \"no sort\" cannot pass either.",
+    "canonical_manifest_utf8": "kabo.artifact-format\u00001\nSKILL.md\u0000e77c643ad21811e0ff0da45fb76fd1ab2133eb4c766d1dff169b047eb36d8845\nassets/～note.md\u0000389ed6887e49a315f706f6c2b931b1dcf0d797c91437124f32eb98555c669758\nassets/🎬-clip.md\u0000aabd20ae0ed292fed27bd7f6e5e572d530b88c96f194855b9e8806e976eb2e36\nmanifest.json\u000036efff458ed43432a9dd019ba540dff88e6eae2066417414cb48aa0cfc8e681a\n",
+    "file_sha256": {
+      "SKILL.md": "e77c643ad21811e0ff0da45fb76fd1ab2133eb4c766d1dff169b047eb36d8845",
+      "assets/～note.md": "389ed6887e49a315f706f6c2b931b1dcf0d797c91437124f32eb98555c669758",
+      "assets/🎬-clip.md": "aabd20ae0ed292fed27bd7f6e5e572d530b88c96f194855b9e8806e976eb2e36",
+      "manifest.json": "36efff458ed43432a9dd019ba540dff88e6eae2066417414cb48aa0cfc8e681a"
+    },
+    "utf8_byte_order": [
+      "SKILL.md",
+      "assets/～note.md",
+      "assets/🎬-clip.md",
+      "manifest.json"
+    ],
+    "utf16_code_unit_order": [
+      "SKILL.md",
+      "assets/🎬-clip.md",
+      "assets/～note.md",
+      "manifest.json"
+    ],
+    "wrong_sort_checksum": "5ef6e7c335c29ab0309e4cd4b12d6e53ecfd7d10cfd38a1169c6af4ccc1204d8",
+    "skill_package": {
+      "format_version": 1,
+      "id": "golden-sort",
+      "version": "1.0.0",
+      "manifest": {
+        "name": "golden-sort",
+        "version": "1.0.0",
+        "description": "Non-BMP path ordering conformance vector.",
+        "tags": ["golden", "sort"],
+        "min_plugin_version": "0.14.0",
+        "execution": "Read SKILL.md and follow it exactly."
+      },
+      "files": [
+        {
+          "path": "SKILL.md",
+          "content_base64": "LS0tCm5hbWU6IGdvbGRlbi1zb3J0Ci0tLQoKIyBHb2xkZW4gU29ydAoKUmV0dXJuIHRoZSBleGFjdCB3b3JkIGBzb3J0ZWRgLgo="
+        },
+        { "path": "assets/🎬-clip.md", "content_base64": "Y2xpcAo=" },
+        { "path": "assets/～note.md", "content_base64": "bm90ZQo=" },
+        {
+          "path": "manifest.json",
+          "content_base64": "eyJuYW1lIjoiZ29sZGVuLXNvcnQiLCJ2ZXJzaW9uIjoiMS4wLjAiLCJkZXNjcmlwdGlvbiI6Ik5vbi1CTVAgcGF0aCBvcmRlcmluZyBjb25mb3JtYW5jZSB2ZWN0b3IuIiwidGFncyI6WyJnb2xkZW4iLCJzb3J0Il0sIm1pbl9wbHVnaW5fdmVyc2lvbiI6IjAuMTQuMCIsImV4ZWN1dGlvbiI6IlJlYWQgU0tJTEwubWQgYW5kIGZvbGxvdyBpdCBleGFjdGx5LiJ9Cg=="
+        }
+      ],
+      "checksum": "f93bb8d2d1c9b18146736c8da0b5a3f0ca1d4953e739bf05f39cf2fb9cf4ed4f",
+      "signature": "rj4jjTMbTuB176LgSfLrut95FOFwU6dCDdxBoyg0vuqofWLTgU5uzSZWq6M6pgZMKN19zmkq9oUbdSxdfwGaCw==",
+      "algorithm": "ed25519",
+      "key_id": "e5788161e35d61d4"
+    }
+  },
+  "pipeline_conformance": {
+    "description": "Optional pipeline arrays and connector dependencies preserve the execution string, canonical bytes and legacy verification.",
+    "canonical_manifest_utf8": "kabo.artifact-format\u00001\nSKILL.md\u00005da1fd29a62619797a51ce26ef3af1a5f5d5cfdd8f09ec9a64b2c88a65eede5f\nmanifest.json\u0000dd121a6184496cc2a69f727a680c573f9e093ace1ef21b4b1bdc8af16601949d\nscripts/run.mjs\u00006c7e1efb164c4738c4ee420c4be22e444415ac62c7b16e8b9249a2d83ccbb966\n",
+    "file_sha256": {
+      "SKILL.md": "5da1fd29a62619797a51ce26ef3af1a5f5d5cfdd8f09ec9a64b2c88a65eede5f",
+      "manifest.json": "dd121a6184496cc2a69f727a680c573f9e093ace1ef21b4b1bdc8af16601949d",
+      "scripts/run.mjs": "6c7e1efb164c4738c4ee420c4be22e444415ac62c7b16e8b9249a2d83ccbb966"
+    },
+    "skill_package": {
+      "format_version": 1,
+      "id": "golden-pipeline",
+      "version": "1.0.0",
+      "manifest": {
+        "name": "golden-pipeline",
+        "version": "1.0.0",
+        "description": "Additive pipeline contract with legacy subagent fallback.",
+        "execution": "subagent",
+        "min_plugin_version": "0.14.0",
+        "required": {
+          "tools": ["mcp__plugin_kabo-alpha_kabo__data_connector_run"],
+          "connectors": [
+            {
+              "connector_id": "youtube-public",
+              "operations": ["list_channel_uploads"]
+            }
+          ]
+        },
+        "pipeline": [
+          {
+            "name": "report",
+            "cmd": "node {skill}/scripts/run.mjs {report}/REPORT.md default"
+          }
+        ],
+        "pipeline_operations": {
+          "fixture": [
+            {
+              "name": "operation-report",
+              "cmd": "node {skill}/scripts/run.mjs {report}/REPORT.md fixture"
+            }
+          ],
+          "semantic": []
+        },
+        "tags": ["fixture", "pipeline"]
+      },
+      "files": [
+        {
+          "path": "manifest.json",
+          "content_base64": "ewogICJuYW1lIjogImdvbGRlbi1waXBlbGluZSIsCiAgInZlcnNpb24iOiAiMS4wLjAiLAogICJkZXNjcmlwdGlvbiI6ICJBZGRpdGl2ZSBwaXBlbGluZSBjb250cmFjdCB3aXRoIGxlZ2FjeSBzdWJhZ2VudCBmYWxsYmFjay4iLAogICJleGVjdXRpb24iOiAic3ViYWdlbnQiLAogICJtaW5fcGx1Z2luX3ZlcnNpb24iOiAiMC4xNC4wIiwKICAicmVxdWlyZWQiOiB7CiAgICAidG9vbHMiOiBbCiAgICAgICJtY3BfX3BsdWdpbl9rYWJvLWFscGhhX2thYm9fX2RhdGFfY29ubmVjdG9yX3J1biIKICAgIF0sCiAgICAiY29ubmVjdG9ycyI6IFsKICAgICAgewogICAgICAgICJjb25uZWN0b3JfaWQiOiAieW91dHViZS1wdWJsaWMiLAogICAgICAgICJvcGVyYXRpb25zIjogWwogICAgICAgICAgImxpc3RfY2hhbm5lbF91cGxvYWRzIgogICAgICAgIF0KICAgICAgfQogICAgXQogIH0sCiAgInBpcGVsaW5lIjogWwogICAgewogICAgICAibmFtZSI6ICJyZXBvcnQiLAogICAgICAiY21kIjogIm5vZGUge3NraWxsfS9zY3JpcHRzL3J1bi5tanMge3JlcG9ydH0vUkVQT1JULm1kIGRlZmF1bHQiCiAgICB9CiAgXSwKICAicGlwZWxpbmVfb3BlcmF0aW9ucyI6IHsKICAgICJmaXh0dXJlIjogWwogICAgICB7CiAgICAgICAgIm5hbWUiOiAib3BlcmF0aW9uLXJlcG9ydCIsCiAgICAgICAgImNtZCI6ICJub2RlIHtza2lsbH0vc2NyaXB0cy9ydW4ubWpzIHtyZXBvcnR9L1JFUE9SVC5tZCBmaXh0dXJlIgogICAgICB9CiAgICBdLAogICAgInNlbWFudGljIjogW10KICB9LAogICJ0YWdzIjogWwogICAgImZpeHR1cmUiLAogICAgInBpcGVsaW5lIgogIF0KfQo="
+        },
+        {
+          "path": "SKILL.md",
+          "content_base64": "LS0tCm5hbWU6IGdvbGRlbi1waXBlbGluZQpkZXNjcmlwdGlvbjogTG9jYWwgY29uZm9ybWFuY2UgZml4dHVyZS4KLS0tCgpSdW4gc2NyaXB0cy9ydW4ubWpzIHdpdGggdGhlIHJlcG9ydCBvdXRwdXQgcGF0aCBhbmQgdGhlIHNlbGVjdGVkIGxhYmVsLgo="
+        },
+        {
+          "path": "scripts/run.mjs",
+          "content_base64": "aW1wb3J0IGZzIGZyb20gJ25vZGU6ZnMnOwpmcy53cml0ZUZpbGVTeW5jKHByb2Nlc3MuYXJndlsyXSwgcHJvY2Vzcy5hcmd2WzNdICsgJ1xuJyk7Cg=="
+        }
+      ],
+      "checksum": "022cb11626765346db6c9ac89a5508243d08172724f94532b33af91c7da27f40",
+      "signature": "DvjcQnhoFdxz2uCXnuZhp96ump2kL1deTLbyXwPKTNFJFW3Xs6J8QRYIvt8cEzVC6h+aDxV/EgfFwiF0o+YsDA==",
+      "algorithm": "ed25519",
+      "key_id": "e5788161e35d61d4"
+    }
+  }
+}
