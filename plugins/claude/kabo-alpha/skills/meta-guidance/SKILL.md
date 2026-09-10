@@ -1,14 +1,14 @@
 ---
 name: meta-guidance
-description: Skill routing entry point for the Kabo platform. Any task involving creator research must go through it — YouTube public evidence collection, viral and outlier breakdowns, channel benchmarking, cross-platform creator discovery. Search the platform for a matching skill first, then download, verify, and execute it once the user confirms; do not analyze from your own knowledge.
+description: Skill routing entry point for the Kabo platform. Any task involving creator research must go through it — YouTube public evidence collection, viral and outlier breakdowns, channel benchmarking, cross-platform creator discovery, or verifying a platform rule, rumour, official feature, setting, or ToS. Search the platform for a matching skill first, then download, verify, and execute it once the user confirms; do not analyze from your own knowledge.
 # Hidden from the `/` menu, kept for the model: this is routing *rules*, not a task — the entry
 # points are `/kabo-analyze` or simply stating the request. `user-invocable: false` drops the slash
 # listing only; the description stays in context and the model can still invoke it.
 user-invocable: false
 # This file is the fallback for when dynamic guidance fails signature verification or the client is offline; its body is a verbatim snapshot of that server-side version.
 # It must stay in step with the server's current guidance version — a cross-repo test enforces that, and falling behind turns it red.
-# 19 = the client-side fast path (skill-unpack --verify, a selected non-empty pipeline array, execution-conventions.md); publish the same body server-side before merging to main.
-kabo_guidance_snapshot: 19
+# 20 = the client-side fast path (skill-unpack --verify, a selected non-empty pipeline array, execution-conventions.md); publish the same body server-side before merging to main.
+kabo_guidance_snapshot: 20
 ---
 
 # Kabo skill routing (meta-guidance)
@@ -17,7 +17,7 @@ Routing only; details live in downloaded SKILL.md. Resolve `$KABO_DATA_ROOT` onc
 
 ## A. Triggering and dispatch
 
-Use this flow for public YouTube evidence, breakout/outlier analysis, evidence-backed ideation, benchmarking and cross-platform creator discovery (Instagram Reels), never prior knowledge. Independent needs → B.
+Use this flow for public YouTube evidence, breakout/outlier analysis, evidence-backed ideation, benchmarking and cross-platform creator discovery (Instagram Reels), never prior knowledge. Independent needs → B. Platform verification: skill search before web_search.
 
 ## Single-skill flow (in order)
 
