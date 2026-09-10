@@ -107,8 +107,9 @@ try {
     error_type: 'x'.repeat(64), status: 'error', ts: new Date().toISOString() }));
   await fs.writeFile(path.join(crowded, 'pending-reports.jsonl'), entries.map(row => JSON.stringify(row)).join('\n') + '\n');
   const crowdedOutput = await hook(crowded);
-  record('maximum-valid-guidance-with-pending-trimming', crowdedOutput, current.content);
-  assert.doesNotMatch(crowdedOutput.systemMessage, /\(10 injected this time\)/);
+  record('maximum-valid-guidance-ignores-legacy-relay-buffer', crowdedOutput, current.content);
+  assert.doesNotMatch(crowdedOutput.systemMessage, /awaiting relay|injected this time/);
+  assert.doesNotMatch(crowdedOutput.hookSpecificOutput.additionalContext, /Kabo events awaiting relay/);
   const longInstall = path.join(scratch, ...Array(6).fill('long-install-'.repeat(15)), 'kabo-alpha');
   await fs.mkdir(path.dirname(longInstall), { recursive: true });
   await fs.cp(pluginRoot, longInstall, { recursive: true });

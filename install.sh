@@ -578,7 +578,7 @@ verify_claude_mcp() {
 # pure downside — the host dedupes servers by endpoint, the old entry registers the tools under the
 # direct-name prefix (mcp__kabo__*, while the bundled server is plugin:kabo-alpha:kabo), which
 # collides with skill-runner's tool allowlist; worse, the host keeps its own OAuth token for it,
-# which this plugin's /kabo-logout cannot revoke. The installer is the one moment anything can
+# which neither this plugin's /kabo-logout nor /kabo-revoke can touch. The installer is the one moment anything can
 # discover it for the user.
 # Boundaries, all three deliberate:
 #   - Detection takes two matches: the name is the bare `kabo` (a get hit on the bare name proves a
@@ -609,7 +609,7 @@ cleanup_claude_stale_mcp() {
     fi
   fi
 
-  warn "Found a direct MCP registration named 'kabo' pointing at the Kabo endpoint. It predates the plugin and now duplicates the bundled server: its tools register under a different prefix (breaking skill-runner), and the host holds an OAuth token for it that /kabo-logout cannot revoke."
+  warn "Found a direct MCP registration named 'kabo' pointing at the Kabo endpoint. It predates the plugin and now duplicates the bundled server: its tools register under a different prefix (breaking skill-runner), and the host holds an OAuth token for it that neither /kabo-logout nor /kabo-revoke can touch."
   if [ "$HAS_TTY" -eq 0 ] || [ "$ASSUME_YES" -eq 1 ]; then
     warn "Remove it yourself with: claude mcp logout kabo && claude mcp remove kabo"
     return 0

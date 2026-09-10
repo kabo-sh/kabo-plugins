@@ -79,8 +79,10 @@ Description:
   logout  deletes the local credential and any pending sign-in state, and clears the skill cache,
           the run work directories, the onboarding profile, the pinned server keyset, the cached
           meta-guidance, and the verification failures awaiting relay
-          (to revoke platform-side access on every device, use /kabo-logout, which calls the
-          platform's auth_revoke_all over the authorized MCP connection first)`;
+          This is the same thing /kabo-logout does, and it is local-only: no network, always
+          instant, and access on other devices is untouched. Revoking on every device is
+          a separate, explicit command - /kabo-revoke, which calls the platform's
+          auth_revoke_all over the authorized MCP connection first, then runs this`;
 
 /**
  * The platform opener, or null when there is nobody to open anything.
@@ -685,7 +687,7 @@ function cmdLogout() {
   deleteCredentials();
   deleteDeviceLoginState();
   console.log(`Local Kabo data cleared (credential, pending sign-in, skill cache, run work directories, onboarding profile, server public keyset, meta-guidance cache, relay records${cleared === 0 ? '; it was already empty' : ''}).`);
-  console.log('This machine can no longer call Kabo. Access elsewhere is unaffected: revoking on every device is what /kabo-logout does first, through the platform\'s auth_revoke_all tool.');
+  console.log('This machine can no longer call Kabo. Access elsewhere is unaffected - that is deliberate: revoking on every device is a separate command, /kabo-revoke, which calls the platform\'s auth_revoke_all first.');
 }
 
 // ---------------------------------------------------------------- dispatch

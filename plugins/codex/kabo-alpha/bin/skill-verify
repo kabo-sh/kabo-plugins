@@ -19,8 +19,7 @@
 //      continuity proof when necessary. --local-only tries the pinned keys only and never refreshes:
 //      no pinned key means public_key_unavailable, a pinned key that fails still means signature_invalid.
 //   5. manifest.min_plugin_version against PLUGIN_VERSION (after the signature, see below)
-// Exit 0 on success; on any failed step print the reason, exit 1, and leave one skill_verify_fail
-// event awaiting relay.
+// Exit 0 on success; on any failed step print the reason and KABO_VERIFY_FAIL, then exit 1.
 //
 // Why two modes (2026-09-07): one measured skill run verified the same cached skill three times, and
 // each time paid a live revocation GET (1-3 s) plus, on a cold process, a keyset round trip. The
@@ -33,7 +32,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import {
   readJsonSilent, disabledMarkerPath, revocationSyncPath, REVOCATION_SYNC_TTL_MS, GUIDANCE_CLOCK_SKEW_MS,
-  computeChecksum, artifactFormatOf, appendPendingReport, verifySignedChecksum,
+  computeChecksum, artifactFormatOf, verifySignedChecksum,
   compareSemver, PLUGIN_VERSION,
   isSafeName,
   apiEndpoint, writeJsonSilent, fetchJsonSilent,
@@ -46,24 +45,18 @@ const REVOCATION_TIMEOUT_MS = 2500;
 /**
  * Since 0.9.0 this script **no longer reports anything itself**: it is a shell subprocess and never
  * has an MCP connection, and keeping automatic reporting would mean keeping a client credentials file
- * - exactly the thing being removed. Instead it prints one machine-readable line as the final stderr
- * line, which meta-guidance directs the main agent to relay once on a best-effort basis.
- * That is a best-effort **quality signal**: the model may ignore it and it can be forged, so it is not
- * a security audit trail; the real security guarantee is local - a failed signature verification means
- * exit 1 and the skill does not run.
+ * - exactly the thing being removed. Its machine-readable stderr line is a local diagnostic;
+ * no failure event is buffered or relayed by the model. The security guarantee stays local:
+ * a failed signature verification means exit 1 and the skill does not run.
  */
 function fail(meta, reason, errorType) {
   console.error(`Verification failed: ${reason}`);
-  // Leave a line locally for relay: that stderr line is only relayed if the main agent happens to read
-  // this output, and a background run, a truncated output, or an interrupted session would lose the
-  // signal entirely. Writing it to disk lets it survive to the next session.
-  // Purely best-effort: if it cannot be written, the exit 1 below is unaffected - refusing to execute
-  // locally is the actual security guarantee.
-  appendPendingReport({
-    skill_id: meta && meta.id,
-    skill_version: meta && meta.version,
-    error_type: errorType,
-  });
+  // stderr is the whole local signal on this variant. Until 2026-09-03 a line was also buffered to
+  // <data root>/pending-reports.jsonl for the main agent to relay; that channel is retired (this
+  // variant holds no credential of its own, and the injected-prompt relay it depended on is not a
+  // thing a model should obey - see the pending-reports note in scripts/lib/common.js). Nothing is
+  // lost that mattered: refusing to execute locally is the actual security guarantee, and
+  // tool-level telemetry is recorded server-side.
   const cell = (v) => (v == null || v === '' ? '-' : String(v).replace(/\s+/g, '_'));
   console.error(
     `KABO_VERIFY_FAIL error_type=${cell(errorType)} ` +
@@ -281,6 +274,5 @@ async function main() {
 main().catch((err) => {
   console.error(`Verification failed: ${err.message}`);
   console.error('KABO_VERIFY_FAIL error_type=internal_error skill_id=- skill_version=-');
-  appendPendingReport({ error_type: 'internal_error' });
   process.exit(1);
 });

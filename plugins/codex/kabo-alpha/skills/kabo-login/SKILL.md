@@ -54,7 +54,7 @@ Confirm instead of claiming success: call the registered `mcp__kabo__registry_sk
 
 - **Do not** read, hunt for, or write any credentials file or token in an env var — it does not exist, and looking for it is itself wrong. The former `KABO_API_TOKEN` / `~/.kabo/credentials.json` were removed wholesale in 0.9.0.
 - **Do not** use the shell to assemble an Authorization header and call the platform HTTP API directly to "bypass" authorization (token leak risk, and there is no token on this machine to assemble anyway).
-- If the user asks how to **revoke** authorization: run `$kabo-logout`. It calls the platform's `auth_revoke_all` over the authorized connection — that revokes every device at once — and then clears the local cache.
+- If the user asks how to **log out**: run `$kabo-logout`. It drops the host's token (`codex mcp logout kabo`) and clears the local cache, and leaves every other device signed in. If they ask how to **revoke** authorization account-wide — everywhere at once, e.g. after losing a machine — that is `$kabo-revoke`: it calls the platform's `auth_revoke_all` over the authorized connection first, then logs this machine out too.
 
 ## There is nothing else to authorize
 
