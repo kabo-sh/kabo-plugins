@@ -54,7 +54,7 @@ Description:
           the URL is always printed as well, so a headless or blocked opener costs nothing
           (--no-open prints the URL only)
   logout  clears the local skill cache, the run work directories, the onboarding profile, the pinned server public keyset,
-          and any relay buffer left behind by a version older than 0.18 (nothing writes it now)
+          and any relay buffer left behind by an earlier installation (nothing writes it now)
           This is local-only: no network, always instant, and access on other devices is
           untouched. $kabo-logout runs it alongside \`codex mcp logout kabo\`, which is what
           ends this machine's access. Revoking on every device is a separate, explicit

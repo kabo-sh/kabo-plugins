@@ -37,6 +37,20 @@
 // The relay child fixes both: it is not a model, and a tool result is a confirmation to prune
 // against. additionalContext now carries the guidance and nothing else.
 //
+// Besides the injected context it leaves files under the data root for the processes that cannot
+// see the model context (bin/* started from Bash, the skill-runner subagent):
+//   (3) plugin-root and node-path (see recordPluginRoot)
+//   (4) revocation-sync.json - the list from (1) with its synced_at, so bin/skill-verify can answer
+//       its own revocation check from this snapshot while it is younger than REVOCATION_SYNC_TTL_MS
+//       (10 min) instead of paying a live GET per verification (measured 2026-09-07: 1-3 s each,
+//       three per skill run). Written only when (1) actually answered; a stale file makes
+//       skill-verify go live, never silent.
+//   (5) meta-guidance.current.md and execution-conventions.md - the guidance body the session runs
+//       on (the injected dynamic content, or the static SKILL.md body when there is none) and its
+//       "## C." section. Written on EVERY start, offline included, so the dispatcher can hand
+//       skill-runner the conventions as a path instead of re-typing ~3 KB into each dispatch
+//       (measured: 25 s of the main agent's time per run). Neither file is injected itself.
+//
 // Two deliberate nuances since the two-phase login rework (2026-08). First, the hook checks whether
 // the credential file EXISTS - fs.existsSync and nothing more - to tell a signed-out user so at
 // session start; before this, the first sign of "not signed in" was a 401 in the middle of a task.
@@ -78,10 +92,12 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import {
-  apiEndpoint, cacheRoot, credentialsPath, disabledMarkerPath, ensurePrivateDir, guidanceCachePath, pluginRootMarkerPath,
+  PLUGIN_VERSION, apiEndpoint, cacheRoot, credentialsPath, disabledMarkerPath, ensurePrivateDir, guidanceCachePath, pluginRootMarkerPath,
   nodePathMarkerPath, writeNodePathMarker,
-  readStdinJson, readJsonSilent, writeJsonSilent, fetchJsonSilent,
+  revocationSyncPath, guidanceBodyPath, executionConventionsPath,
+  readStdinJson, readJsonSilent, writeJsonSilent, writeTextSilent, fetchJsonSilent,
   isSafeName, compareSemver, ensureVerified, verifyGuidanceEnvelope,
+  stripFrontMatter, extractGuidanceSection,
   GUIDANCE_BEGIN, GUIDANCE_END, MAX_ADDITIONAL_CONTEXT_CHARS,
 } from '../lib/common.js';
 
@@ -443,7 +459,7 @@ async function resolveGuidance(endpoint) {
   const cachePath = guidanceCachePath(endpoint);
   const cached = readJsonSilent(cachePath);
 
-  const fresh = await fetchJsonSilent(`${endpoint}/api/meta-guidance`, {}, REQUEST_TIMEOUT_MS);
+  const fresh = await fetchJsonSilent(`${endpoint}/api/meta-guidance?plugin=${encodeURIComponent(PLUGIN_VERSION)}`, {}, REQUEST_TIMEOUT_MS);
   if (!fresh && !cached) return null; // offline with no cache: no guidance to inject, save the effort
 
   const resource = `${endpoint}/mcp`;
@@ -488,15 +504,45 @@ function buildAdditionalContext(envelope) {
 }
 
 /**
- * The relay section.
+ * Put the guidance this session runs on where a process outside the model context can read it:
+ * the whole body at guidanceBodyPath(), its "## C." section at executionConventionsPath().
  *
- * skill-verify is a Bash subprocess with no MCP connection, so failures can only land in a local
- * file; the main agent is the only party on this path that can ride the authorized connection, so
- * filing them depends on this prompt. Carrying event_id verbatim is the key: the server is idempotent
- * on (user_id, event_id), a repeated relay is swallowed as a duplicate, and therefore the client does
- * not need to (and should not) delete relayed entries - deleting them means they can never be filed
- * again, while a repeated relay is harmless.
+ * `injected` is the envelope whose content actually went into additionalContext, or null - the
+ * files follow what the model sees, so when the dynamic guidance was missing, failed verification
+ * or was dropped for length, both files come from the static SKILL.md body (front matter stripped),
+ * the same fallback the routing itself uses. Both are derived from ONE body; the only cross-over is
+ * a body with no C section at all, where the static section is written rather than nothing, since
+ * a runner reading an absent file would fall back to conventions it cannot see.
+ * Best-effort like every write in this hook: nothing here throws, and a failure only changes the
+ * summary sentence.
+ * @returns {'dynamic'|'static'|null} which body the files came from; null = could not write both
  */
+function persistGuidanceFiles(pluginRoot, injected) {
+  try {
+    let staticBody = null;
+    try {
+      staticBody = stripFrontMatter(fs.readFileSync(path.join(pluginRoot, 'skills', 'meta-guidance', 'SKILL.md'), 'utf8'));
+    } catch { /* a plugin without its fallback file: only the dynamic body can serve */ }
+    let body = null;
+    let source = null;
+    if (injected && typeof injected.content === 'string' && injected.content.trim()) {
+      body = injected.content;
+      source = 'dynamic';
+    } else if (staticBody !== null && staticBody.trim()) {
+      body = staticBody;
+      source = 'static';
+    }
+    if (body === null) return null;
+    const conventions = extractGuidanceSection(body, 'C')
+      || (staticBody !== null ? extractGuidanceSection(staticBody, 'C') : null);
+    const wroteBody = writeTextSilent(guidanceBodyPath(), `${body.trim()}\n`);
+    const wroteConventions = conventions !== null && writeTextSilent(executionConventionsPath(), `${conventions}\n`);
+    return wroteBody && wroteConventions ? source : null;
+  } catch {
+    return null;
+  }
+}
+
 /**
  * Drain the relay buffer through `bin/kabo-headers --relay`, the same one-file discipline the probe
  * uses: no token byte enters this process, and the child answers with an exit code plus at most one
@@ -577,6 +623,15 @@ async function main() {
   if (registry) {
     const revocations = Array.isArray(registry.revocations) ? registry.revocations : [];
     const catalog = Array.isArray(registry.catalog) ? registry.catalog : [];
+    // Snapshot the list for bin/skill-verify (see revocationSyncPath in common.js). Written before
+    // the markers are applied so that even a failure in applyRevocations leaves the newer list
+    // behind; ids are kept as received - skill-verify compares against a name that already passed
+    // isSafeName, so an odd id in this file can never match anything on disk.
+    writeJsonSilent(revocationSyncPath(), {
+      synced_at: new Date().toISOString(),
+      revocations: revocations.filter((id) => typeof id === 'string'),
+      server_api_version: typeof registry.server_api_version === 'string' ? registry.server_api_version : null,
+    });
     const { applied, evicted } = applyRevocations(revocations);
     const updates = countUpdates(catalog, scanInstalledVersions());
     parts.push(`kabo-alpha: platform catalog synced (server API ${registry.server_api_version || '?'})`);
@@ -628,6 +683,12 @@ async function main() {
   } else {
     parts.push('dynamic guidance too long, fell back to the built-in static version');
   }
+  // The on-disk copy follows the injected one: only an envelope that survived the cap above is
+  // what the model sees, so only that one may be what the runner reads.
+  const conventionsSource = persistGuidanceFiles(pluginRoot, additionalContext ? envelope : null);
+  parts.push(conventionsSource
+    ? `execution conventions on disk (${conventionsSource})`
+    : 'execution conventions could not be written to disk');
   // Only a relay that actually happened says anything; every failure mode is silent (the events are
   // idempotent and wait for the next session).
   if (relaySentence) parts.push(relaySentence);
