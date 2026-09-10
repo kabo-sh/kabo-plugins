@@ -30,7 +30,7 @@ Routing only; details live in downloaded SKILL.md. Resolve `$KABO_DATA_ROOT` onc
 
 ## A. Triggering and dispatch
 
-Use this flow for public YouTube evidence, breakout/outlier analysis, evidence-backed ideation, benchmarking and cross-platform creator discovery (Instagram Reels), never prior knowledge. Independent needs → B. Rumour/rule/feature checks: skill search before web_search.
+Use this flow for public YouTube evidence, breakout/outlier analysis, evidence-backed ideation, benchmarking and cross-platform creator discovery (Instagram Reels), never prior knowledge. Independent needs → B. Platform verification: skill search before web_search.
 
 ## Single-skill flow (in order)
 
