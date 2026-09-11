@@ -3,7 +3,7 @@ name: meta-guidance
 description: Routing and orchestration rules for Kabo skills (search, confirm, download, verify the signature, execute, degrade). Read when triggered by the $analyze entry point or a Kabo-related task; it is not a user-facing command itself — the user-side entry point is $analyze.
 # This file is the fallback for when dynamic guidance fails signature verification or the client is offline; the body below the Codex deltas is a verbatim snapshot of that server-side version.
 # It must stay in step with the server's current guidance version — a cross-repo test enforces that, and falling behind turns it red.
-# 23 = v22 catalog listing, plus §E composite delivery (two creator_report files → one reply; never mere paths) and a tighter §D second-skill rule. Publish the same body server-side before merging to main.
+# 23 = v22 catalog listing, plus §E: every creator_report becomes one reply (never mere paths); no one-primary-skill cap. Publish the same body server-side before merging to main.
 kabo_guidance_snapshot: 23
 ---
 
@@ -22,7 +22,7 @@ The snapshot is written for the Claude Code client. Everything about routing, ev
 - **Subagent dispatch** (`execution: subagent`): resolve the sibling runner instruction file at `<plugin-root>/skills/skill-runner/SKILL.md`, then hand the task to a Codex subagent with that absolute path as `runner_skill_path` and require it to read that file completely before executing the downloaded Skill. Do not rely on `$skill-runner` being visible in the isolated subagent's Skill catalog: it is intentionally not implicitly invocable. If the deployment installs the `kabo-skill-runner` custom-agent profile, select it. Dispatch with no inherited conversation turns (`fork_turns: "none"`), because the task payload is the complete execution contract and inheriting the main thread only increases model context. The payload carries ① the skill's local path ② the task summary + the catalog readiness note ③ the path `<data root>/execution-conventions.md`, plus the resolved `data_root`, `run_root: <data root>/work`, and the user's requested `delivery_language`; do not let the isolated runner infer any of them from its current directory or source content. `${CLAUDE_PLUGIN_ROOT}`, the Claude-only `~/.kabo/plugin-root` and `$KABO_DATA_ROOT/plugin-root` placeholders in the snapshot all mean the Codex `<plugin-root>` recorded as one line in `<data root>/plugin-root`; pass the resolved absolute path, never a Claude placeholder literally. The runner does not run `skill-verify`: the bridge verified the skill, and `kabo-run-pipeline` performs the hygiene check and the `--local-only` pass.
 - **Wait without model work**: after dispatch, wait for the runner to finish. Do not send progress questions or create a model continuation solely to poll it; only intervene after an explicit failure or timeout.
 - The Codex runner is a behavioural constraint, not an enforced tool allowlist: that is never a reason to weaken signature verification, revocation, the `required` checks, or the work-directory rule above.
-- **Validated report passthrough**: when a **single** runner's validated `creator_report` already matches the user's language, return that file body verbatim (the markdown, never a path). Do not re-title, summarize, reorder, shorten, expand, or add a measurement paragraph. Translate only when the report language differs, while preserving its headings, paragraph order, links and facts. Two or more reports: Section E wins — one reply to the original ask; do not dump both bodies or their paths.
+- **Validated report passthrough**: when a **single** runner's validated `creator_report` already matches the user's language, return that file body verbatim (the markdown, never a path). Do not re-title, summarize, reorder, shorten, expand, or add a measurement paragraph. Translate only when the report language differs, while preserving its headings, paragraph order, links and facts. More than one report: Section E wins — one reply to the ask from all of them; do not dump report bodies or paths side by side.
 
 # Kabo skill routing (meta-guidance)
 
@@ -43,7 +43,7 @@ Never answer a platform rule, rumour, official feature, setting or ToS from memo
 
 ## B. Composite orchestration
 
-Decompose the request against that one listing; match description/tags/required, never force-fit. Permissions first; run steps 3–5 each. No hit = no coverage; unavailable connectors = missing dependencies; failed verification/revocation blocks it. Merge per E, reporting gaps vs the request. At most 3 rounds, stating changes; the user can stop. D's one-primary-skill limit wins.
+Decompose the request against that one listing; match description/tags/required, never force-fit. Permissions first; run steps 3–5 each. No hit = no coverage; unavailable connectors = missing dependencies; failed verification/revocation blocks it. Merge per E, reporting gaps vs the request. At most 3 rounds, stating changes; the user can stop.
 
 ## Platform tools unavailable
 
@@ -78,8 +78,7 @@ Kabo tools invisible or all failing → `/kabo-login` on Claude, the installed l
 - Never hide a failed skill/connector with web search, another skill or prior knowledge. State the failed step and missing evidence. Missing dependencies differ from empty results.
 - Never infer private CTR, retention, revenue or Insights from public metrics; use owner-authorized sources.
 - Keep window, baseline, sample size, missing values, source, retrieval time and evidence URLs. Never promise virality.
-- One primary skill per run; a second only for a second independent need, at most one.
 
 ## E. Creator-facing delivery
 
-Read each creator_report. One: relay structure and facts; never re-synthesize from the summary. Two: one reply from both to the ask, never mere paths. Natural Markdown in the user's language; translate only if needed. Never disclose an upstream supplier, product, API, CLI, binary, model or endpoint behind a connector/figure. Relabel it with the capability from connectors.v1.json (or the platform), keeping every substantive clause and constraint. Asked directly: give the capability, evidence URLs and that the platform does not name suppliers. Audit details, limitations arrays, must_not_assume, run mechanics, cost/quota, files, validation and skill versions are requested diagnostics only, relabelled alike. Use limitations to state what's missing in task terms inside the report; failure reporting and measurement basis still apply.
+Read every creator_report. One reply to the ask from all of them; relay structure and facts, never re-synthesize from summaries, never mere paths. Natural Markdown in the user's language; translate only if needed. Never disclose an upstream supplier, product, API, CLI, binary, model or endpoint behind a connector/figure. Relabel it with the capability from connectors.v1.json (or the platform), keeping every substantive clause and constraint. Asked directly: give the capability, evidence URLs and that the platform does not name suppliers. Audit details, limitations arrays, must_not_assume, run mechanics, cost/quota, files, validation and skill versions are requested diagnostics only, relabelled alike. Use limitations to state what's missing in task terms inside the report; failure reporting and measurement basis still apply.
