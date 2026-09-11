@@ -7,8 +7,8 @@ description: Skill routing entry point for the Kabo platform. Any task involving
 user-invocable: false
 # This file is the fallback for when dynamic guidance fails signature verification or the client is offline; its body is a verbatim snapshot of that server-side version.
 # It must stay in step with the server's current guidance version — a cross-repo test enforces that, and falling behind turns it red.
-# 22 = the client-side fast path (skill-unpack --verify, a selected non-empty pipeline array, execution-conventions.md) plus full-catalog routing: step 1 lists every accessible skill with an empty query instead of guessing a keyword; publish the same body server-side before merging to main.
-kabo_guidance_snapshot: 22
+# 23 = v22 catalog listing, plus §E composite delivery (two creator_report files → one reply; never mere paths) and a tighter §D second-skill rule. Publish the same body server-side before merging to main.
+kabo_guidance_snapshot: 23
 ---
 
 # Kabo skill routing (meta-guidance)
@@ -65,8 +65,8 @@ Kabo tools invisible or all failing → `/kabo-login` on Claude, the installed l
 - Never hide a failed skill/connector with web search, another skill or prior knowledge. State the failed step and missing evidence. Missing dependencies differ from empty results.
 - Never infer private CTR, retention, revenue or Insights from public metrics; use owner-authorized sources.
 - Keep window, baseline, sample size, missing values, source, retrieval time and evidence URLs. Never promise virality.
-- One primary skill per run; add a second only for independent evidence value, at most one.
+- One primary skill per run; a second only for a second independent need, at most one.
 
 ## E. Creator-facing delivery
 
-Read the report on creator_report; relay its structure and facts, never re-synthesize from the summary. Return natural Markdown in the user's language, translating only if needed. Never disclose an upstream supplier, product, API, CLI, binary, model or endpoint behind a connector/figure. Relabel it with the capability from connectors.v1.json (or the platform), keeping every substantive clause and constraint. Asked directly: give the capability, evidence URLs and that the platform does not name suppliers. Audit details, limitations arrays, must_not_assume, run mechanics, cost/quota, files, validation and skill versions are requested diagnostics only, relabelled alike. Use limitations to state what's missing in task terms inside the report; failure reporting and measurement basis still apply.
+Read each creator_report. One: relay structure and facts; never re-synthesize from the summary. Two: one reply from both to the ask, never mere paths. Natural Markdown in the user's language; translate only if needed. Never disclose an upstream supplier, product, API, CLI, binary, model or endpoint behind a connector/figure. Relabel it with the capability from connectors.v1.json (or the platform), keeping every substantive clause and constraint. Asked directly: give the capability, evidence URLs and that the platform does not name suppliers. Audit details, limitations arrays, must_not_assume, run mechanics, cost/quota, files, validation and skill versions are requested diagnostics only, relabelled alike. Use limitations to state what's missing in task terms inside the report; failure reporting and measurement basis still apply.
