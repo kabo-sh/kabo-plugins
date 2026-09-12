@@ -77,7 +77,9 @@ if (!fs.existsSync(from)) {
 function stagedPairs(dir) {
   const stems = new Map();
   for (const name of fs.readdirSync(dir)) {
-    const match = /^(\d{2,})\.(json|meta)$/.exec(name);
+    // `.art` is a binary artifact body (a keyframe). It pairs with the same `.meta` sidecar and
+    // travels the same verify-then-move path; only the read mode and the written extension differ.
+    const match = /^(\d{2,})\.(json|art|meta)$/.exec(name);
     if (!match) continue;
     const entry = stems.get(match[1]) ?? {};
     entry[match[2]] = path.join(dir, name);
@@ -86,8 +88,12 @@ function stagedPairs(dir) {
   const complete = [];
   const partial = [];
   for (const [stem, entry] of [...stems.entries()].sort(([a], [b]) => a.localeCompare(b))) {
-    if (entry.json && entry.meta) complete.push({ stem, envelope: entry.json, meta: entry.meta });
-    else partial.push({ stem, has: entry.json ? 'envelope without sidecar' : 'sidecar without envelope' });
+    const body = entry.json ?? entry.art;
+    if (body && entry.meta) {
+      complete.push({ stem, envelope: body, meta: entry.meta, binary: Boolean(entry.art) });
+    } else {
+      partial.push({ stem, has: body ? 'envelope without sidecar' : 'sidecar without envelope' });
+    }
   }
   return { complete, partial };
 }
@@ -110,7 +116,7 @@ if (listOnly) {
   for (const pair of pairs) {
     const meta = JSON.parse(fs.readFileSync(pair.meta, 'utf8'));
     console.log(
-      `${pair.stem} ${meta.connector_id}/${meta.operation} status=${meta.status} bytes=${meta.bytes} sha256=${meta.sha256}`,
+      `${pair.stem} ${describeMeta(meta)}`,
     );
   }
   console.log(`staged=${pairs.length}`);
@@ -126,10 +132,59 @@ for (const name of fs.readdirSync(into)) {
   if (match) next = Math.max(next, Number(match[1]));
 }
 
+/**
+ * Frames get their own counter and their own name.
+ *
+ * Numbering them alongside envelopes would make `envelope-07.jpg` — a name that reads as an
+ * envelope and is not one. The evidence object points at these files by path, so the name is part
+ * of the contract, not a label.
+ */
+const artifactCounters = new Map();
+for (const name of fs.readdirSync(into)) {
+  const match = /^([a-z]+)-(\d+)\./.exec(name);
+  if (!match || match[1] === 'envelope') continue;
+  const [, kind, seq] = match;
+  artifactCounters.set(kind, Math.max(artifactCounters.get(kind) ?? 0, Number(seq)));
+}
+
+/**
+ * Artifacts are named by **what they are**, each kind on its own counter.
+ *
+ * The first live run wrote a transcript as `frame-0002.vtt` - a name that says "frame" about
+ * something that is not one. The evidence object points at these files by path, so the name is
+ * part of the contract, not a label.
+ */
+function artifactTarget(meta) {
+  const kind = /^[a-z]+$/.test(meta.kind ?? '') ? meta.kind : 'artifact';
+  const next = (artifactCounters.get(kind) ?? 0) + 1;
+  artifactCounters.set(kind, next);
+  const extension = ARTIFACT_EXTENSIONS[meta.content_type] ?? 'bin';
+  return `${kind === 'keyframes' ? 'frame' : kind}-${String(next).padStart(4, '0')}.${extension}`;
+}
+
+/** `content_type` -> file extension. Unknown types keep `.bin`: a wrong extension is worse. */
+/**
+ * How a staged entry describes itself.
+ *
+ * An artifact belongs to a *job*, not to a connector/operation pair — printing
+ * `undefined/undefined` for one (the first live run did) makes the report useless exactly where
+ * someone is trying to find out what landed.
+ */
+function describeMeta(meta) {
+  const tail = `status=${meta.status} bytes=${meta.bytes} sha256=${meta.sha256}`;
+  return meta.artifact
+    ? `${meta.kind} ${meta.object_ref} ${tail}`
+    : `${meta.connector_id}/${meta.operation} ${tail}`;
+}
+
+const ARTIFACT_EXTENSIONS = { 'image/jpeg': 'jpg', 'image/png': 'png', 'text/vtt': 'vtt', 'application/json': 'json' };
+
 const moved = [];
 for (const pair of pairs) {
   const meta = JSON.parse(fs.readFileSync(pair.meta, 'utf8'));
-  const bytes = fs.readFileSync(pair.envelope, 'utf8');
+  // Binary bodies are hashed and written as Buffers. Reading a JPEG as utf8 mangles it silently:
+  // the checksum then fails on a file that arrived intact, and the run loses evidence it had.
+  const bytes = fs.readFileSync(pair.envelope, pair.binary ? null : 'utf8');
   const actual = sha256hex(bytes);
   if (actual !== meta.sha256) {
     // Refuse loudly. A silent copy here would put an artifact in the audit trail that claims to be
@@ -139,8 +194,13 @@ for (const pair of pairs) {
     );
     process.exit(1);
   }
-  next += 1;
-  const target = path.join(into, `envelope-${String(next).padStart(2, '0')}.json`);
+  let target;
+  if (pair.binary) {
+    target = path.join(into, artifactTarget(meta));
+  } else {
+    next += 1;
+    target = path.join(into, `envelope-${String(next).padStart(2, '0')}.json`);
+  }
   fs.writeFileSync(target, bytes, { mode: 0o600 });
   // Only after the destination exists: an interrupted drain must leave the evidence somewhere.
   fs.rmSync(pair.envelope, { force: true });
@@ -150,7 +210,7 @@ for (const pair of pairs) {
 
 for (const entry of moved) {
   console.log(
-    `${entry.target} ${entry.meta.connector_id}/${entry.meta.operation} status=${entry.meta.status} bytes=${entry.meta.bytes} sha256=${entry.meta.sha256}`,
+    `${entry.target} ${describeMeta(entry.meta)}`,
   );
 }
 console.log(`staged=${moved.length}`);
