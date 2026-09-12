@@ -7,7 +7,7 @@ description: Skill routing entry point for the Kabo platform. Any task involving
 user-invocable: false
 # This file is the fallback for when dynamic guidance fails signature verification or the client is offline; its body is a verbatim snapshot of that server-side version.
 # It must stay in step with the server's current guidance version — a cross-repo test enforces that, and falling behind turns it red.
-# 23 = v22 catalog listing, plus §E one reply from every creator_report, no one-primary-skill cap, and §A named-handle/ER/monetization also search first. Publish the same body server-side before merging to main.
+# 23 = v22 catalog listing, plus §E one reply from every creator_report, no one-primary-skill cap, and §A one generic search-first rule. Publish the same body server-side before merging to main.
 kabo_guidance_snapshot: 23
 ---
 
@@ -17,7 +17,7 @@ Routing only; details live in downloaded SKILL.md. Resolve `$KABO_DATA_ROOT` onc
 
 ## A. Triggering and dispatch
 
-Never answer a creator-research question from memory or web_search — registry_skill_search first. That includes rules, settings, ToS, named-handle account work, follower-loss, funnel, continue/stop, ER, YT evidence, outliers, ideation, benchmarking, monetization and discovery. Independent needs → B.
+Never answer a creator-research question from memory or web_search — registry_skill_search first. Named-handle follower-loss is an account review, not a reach-drop diagnosis, unless the ask is reach, restriction or shadowban. Independent needs → B.
 
 ## Single-skill flow (in order)
 
