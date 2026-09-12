@@ -3,7 +3,7 @@ name: meta-guidance
 description: Routing and orchestration rules for Kabo skills (search, confirm, download, verify the signature, execute, degrade). Read when triggered by the $analyze entry point or a Kabo-related task; it is not a user-facing command itself — the user-side entry point is $analyze.
 # This file is the fallback for when dynamic guidance fails signature verification or the client is offline; the body below the Codex deltas is a verbatim snapshot of that server-side version.
 # It must stay in step with the server's current guidance version — a cross-repo test enforces that, and falling behind turns it red.
-# 23 = v22 catalog listing, plus §E: every creator_report becomes one reply (never mere paths); no one-primary-skill cap. Publish the same body server-side before merging to main.
+# 23 = v22 catalog listing, plus §E one reply from every creator_report, no one-primary-skill cap, and §A named-handle/ER/monetization also search first. Publish the same body server-side before merging to main.
 kabo_guidance_snapshot: 23
 ---
 
@@ -30,7 +30,7 @@ Routing only; details live in downloaded SKILL.md. Resolve `$KABO_DATA_ROOT` onc
 
 ## A. Triggering and dispatch
 
-Never answer a platform rule, rumour, official feature, setting or ToS from memory or web_search — registry_skill_search first. Same for YT evidence, outliers, ideation, benchmarking and discovery. Independent needs → B.
+Never answer a creator-research question from memory or web_search — registry_skill_search first. That includes rules, settings, ToS, named-handle account work, follower-loss, funnel, continue/stop, ER, YT evidence, outliers, ideation, benchmarking, monetization and discovery. Independent needs → B.
 
 ## Single-skill flow (in order)
 

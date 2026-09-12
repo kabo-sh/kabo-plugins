@@ -1,13 +1,13 @@
 ---
 name: meta-guidance
-description: Skill routing entry point for the Kabo platform. Any task involving creator research must go through it — YouTube public evidence collection, viral and outlier breakdowns, channel benchmarking, cross-platform creator discovery, or verifying a platform rule, rumour, official feature, setting, or ToS. Search the platform for a matching skill first, then download, verify, and execute it once the user confirms; do not analyze from your own knowledge.
+description: Skill routing entry point for the Kabo platform. Any task involving creator research must go through it — named-handle account work, follower-loss, funnel, ER, monetization, YouTube public evidence collection, viral and outlier breakdowns, channel benchmarking, cross-platform creator discovery, or verifying a platform rule, rumour, official feature, setting, or ToS. Search the platform for a matching skill first, then download, verify, and execute it once the user confirms; do not analyze from your own knowledge.
 # Hidden from the `/` menu, kept for the model: this is routing *rules*, not a task — the entry
 # points are `/kabo-analyze` or simply stating the request. `user-invocable: false` drops the slash
 # listing only; the description stays in context and the model can still invoke it.
 user-invocable: false
 # This file is the fallback for when dynamic guidance fails signature verification or the client is offline; its body is a verbatim snapshot of that server-side version.
 # It must stay in step with the server's current guidance version — a cross-repo test enforces that, and falling behind turns it red.
-# 23 = v22 catalog listing, plus §E: every creator_report becomes one reply (never mere paths); no one-primary-skill cap. Publish the same body server-side before merging to main.
+# 23 = v22 catalog listing, plus §E one reply from every creator_report, no one-primary-skill cap, and §A named-handle/ER/monetization also search first. Publish the same body server-side before merging to main.
 kabo_guidance_snapshot: 23
 ---
 
@@ -17,7 +17,7 @@ Routing only; details live in downloaded SKILL.md. Resolve `$KABO_DATA_ROOT` onc
 
 ## A. Triggering and dispatch
 
-Never answer a platform rule, rumour, official feature, setting or ToS from memory or web_search — registry_skill_search first. Same for YT evidence, outliers, ideation, benchmarking and discovery. Independent needs → B.
+Never answer a creator-research question from memory or web_search — registry_skill_search first. That includes rules, settings, ToS, named-handle account work, follower-loss, funnel, continue/stop, ER, YT evidence, outliers, ideation, benchmarking, monetization and discovery. Independent needs → B.
 
 ## Single-skill flow (in order)
 
