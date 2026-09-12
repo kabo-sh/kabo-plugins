@@ -1,5 +1,5 @@
 ---
-description: Kabo creator research entry point — search platform skills and run them (Instagram or YouTube competitor discovery and content analysis, public account review, named-handle follower-loss or funnel, continue/stop, engagement-rate calculation, monetization threshold gaps, YouTube evidence, breakout-video breakdown, channel benchmarking, cross-platform creator discovery)
+description: Kabo creator research entry point — search platform skills and run them (Instagram or YouTube competitor discovery and content analysis, public account review, named-handle follower-loss or funnel, continue/stop, engagement-rate calculation, brand identity copy such as channel names, handles or bios, brand-deal pricing, monetization threshold gaps, YouTube evidence, breakout-video breakdown, channel benchmarking, cross-platform creator discovery)
 argument-hint: "[what to analyze, e.g. why has this channel been growing lately https://youtube.com/@xxx]"
 ---
 
