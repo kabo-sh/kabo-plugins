@@ -142,6 +142,101 @@ def first_text(row: dict[str, Any], paths: tuple[tuple[str, ...], ...]) -> str |
     return None
 
 
+def first_number(row: dict[str, Any], paths: tuple[tuple[str, ...], ...]) -> float | None:
+    for path in paths:
+        number = as_number(dig(row, path))
+        if number is not None:
+            return number
+    return None
+
+
+PROFILE_OPERATIONS = frozenset({"resolve_profile", "resolve_channel", "check_handle"})
+GRID_CONTENT_OPERATIONS = frozenset({"list_posts", "list_reels"})
+
+
+def normalize_handle(value: Any) -> str | None:
+    text = as_text(value)
+    if text is None:
+        return None
+    handle = text.lstrip("@").lower()
+    return handle or None
+
+
+def identity_from_profile_envelope(envelope: dict[str, Any]) -> dict[str, Any]:
+    """Copy public bio / followers already present on a resolve_* envelope. Do not invent them."""
+    if str(envelope.get("operation") or "") not in PROFILE_OPERATIONS:
+        return {}
+    data = envelope.get("data")
+    if not isinstance(data, dict):
+        return {}
+    profile = data.get("profile")
+    if not isinstance(profile, dict):
+        profile = data
+    identity: dict[str, Any] = {}
+    handle = first_text(profile, (("username",), ("handle",), ("customUrl",), ("snippet", "customUrl")))
+    if handle:
+        identity["handle"] = handle.lstrip("@")
+    creator_id = first_text(profile, (("id",), ("pk",), ("user_id",), ("pk_id"), ("channel_id",)))
+    if creator_id:
+        identity["creator_id"] = creator_id
+    display_name = first_text(profile, (
+        ("full_name",), ("title",), ("name",), ("channelTitle",), ("snippet", "title"),
+    ))
+    if display_name:
+        identity["display_name"] = display_name
+    biography = first_text(profile, (("biography",), ("bio",), ("description",), ("snippet", "description")))
+    if biography:
+        identity["biography"] = biography
+    followers = first_number(profile, (
+        ("follower_count",), ("followers_count",), ("followers",), ("followerCount",),
+        ("edge_followed_by", "count"), ("statistics", "subscriberCount"), ("subscriberCount",),
+    ))
+    if followers is not None and followers >= 0:
+        identity["followers"] = followers
+    return identity
+
+
+def requested_instagram_grid_owner(envelopes: list[dict[str, Any]]) -> dict[str, str] | None:
+    """One resolve_profile means list_posts / list_reels rows belong on that grid, even as collabs."""
+    owners: list[dict[str, str]] = []
+    seen: set[tuple[str, str]] = set()
+    for envelope in envelopes:
+        identity = identity_from_profile_envelope(envelope)
+        creator_id = as_text(identity.get("creator_id"))
+        handle = normalize_handle(identity.get("handle"))
+        if creator_id is None or handle is None:
+            continue
+        key = (creator_id, handle)
+        if key in seen:
+            continue
+        seen.add(key)
+        owners.append({
+            "creator_id": creator_id,
+            "handle": handle,
+            "source_url": f"https://www.instagram.com/{handle}/",
+        })
+    return owners[0] if len(owners) == 1 else None
+
+
+def apply_profile_identity(creators: dict[str, dict[str, Any]], envelopes: list[dict[str, Any]]) -> None:
+    identities = [row for envelope in envelopes if (row := identity_from_profile_envelope(envelope))]
+    if not identities:
+        return
+    by_handle = {
+        key: row for row in identities
+        if (key := normalize_handle(row.get("handle")))
+    }
+    for creator in creators.values():
+        matched = by_handle.get(normalize_handle(creator.get("handle")) or "")
+        if matched is None and len(creators) == 1 and len(identities) == 1:
+            matched = identities[0]
+        if matched is None:
+            continue
+        for field in ("display_name", "biography", "followers"):
+            if field in matched and field not in creator:
+                creator[field] = matched[field]
+
+
 def as_number(value: Any) -> float | None:
     """A count, or None when the value is not one. Booleans are not counts."""
     if isinstance(value, bool) or value is None:
@@ -604,6 +699,7 @@ def build(args: argparse.Namespace) -> dict[str, Any]:
 
     creators: dict[str, dict[str, Any]] = {}
     items: dict[str, dict[str, Any]] = {}
+    grid_owner = requested_instagram_grid_owner(envelopes) if args.platform == "instagram" else None
     input_rows = 0
     skipped_unidentifiable = 0
     skipped_missing_content_id = 0
@@ -631,6 +727,16 @@ def build(args: argparse.Namespace) -> dict[str, Any]:
                 skipped_unidentifiable += 1
                 continue
             creator_id, creator_row = creator
+            if (
+                grid_owner is not None
+                and str(envelope.get("operation") or "") in GRID_CONTENT_OPERATIONS
+            ):
+                creator_id = grid_owner["creator_id"]
+                creator_row = {
+                    "creator_id": grid_owner["creator_id"],
+                    "handle": grid_owner["handle"],
+                    "source_url": grid_owner["source_url"],
+                }
             creators.setdefault(creator_id, creator_row)
             url = url_of(row, args.platform, content_id)
             seconds = duration_seconds(row)
@@ -671,6 +777,8 @@ def build(args: argparse.Namespace) -> dict[str, Any]:
                     existing["query_refs"] = sorted(set(existing.get("query_refs", []) + [query]))
                 continue
             items[content_id] = item
+
+    apply_profile_identity(creators, envelopes)
 
     # Count only final merged evidence. Incrementing while rows arrive leaves stale unknown or
     # duration-derived counts when a later duplicate supplies an explicit provider declaration.
