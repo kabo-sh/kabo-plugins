@@ -89,36 +89,30 @@ for (const host of ['claude', 'codex']) {
       '--operation','fixture'];
     const frame = Buffer.from('89504e470d0a1a0a0001020300ff', 'hex');
     const transcript = 'WEBVTT\n\n00:00.000 --> 00:01.000\nSynthetic transcript.\n';
-    if (host === 'claude') {
-      const session = 'integration-session';
-      const hook = (payload, toolId) => run(path.join(plugin,'scripts/hooks/persist-envelope.js'), [], env,
-        JSON.stringify({session_id:session,hook_event_name:'PostToolUse',tool_use_id:toolId,tool_response:JSON.stringify(payload)}));
-      const staged = await Promise.all(envelopes.map((envelope, i) => hook(envelope, `fixture-${i}`)));
-      for (const result of staged) { assert.equal(result.code,0); assert.match(result.stdout,/kabo:/); }
-      const artifacts = await hook({
-        structuredContent:{job_id:'fixture-job',artifacts:[
-          {object_ref:'fixture-frame',kind:'keyframes',sha256:common.sha256hex(frame),content_type:'image/png'},
-          {object_ref:'fixture-transcript',kind:'transcript',sha256:common.sha256hex(transcript),content_type:'text/vtt'},
-        ]},
-        content:[{type:'image',mimeType:'image/png',data:frame.toString('base64')},{type:'text',text:transcript}],
-      },'fixture-artifacts');
-      assert.equal(artifacts.code,0);
-      assert.match(artifacts.stdout,/keyframes/);
-      assert.match(artifacts.stdout,/transcript/);
-      pipelineArgs.push('--staging',path.join(data,'envelope-staging',session));
-    } else {
-      for (const [i,envelope] of envelopes.entries()) await fs.writeFile(path.join(snapshot,`envelope-0${i+1}.json`), JSON.stringify(envelope), {mode:0o600});
-    }
+    const session = 'integration-session';
+    const hook = (payload, toolId) => run(path.join(plugin,'scripts/hooks/persist-envelope.js'), [], env,
+      JSON.stringify({session_id:session,hook_event_name:'PostToolUse',tool_use_id:toolId,tool_response:JSON.stringify(payload)}));
+    const staged = await Promise.all(envelopes.map((envelope, i) => hook(envelope, `fixture-${i}`)));
+    for (const result of staged) { assert.equal(result.code,0); assert.match(result.stdout,/kabo:/); }
+    const artifacts = await hook({
+      structuredContent:{job_id:'fixture-job',artifacts:[
+        {object_ref:'fixture-frame',kind:'keyframes',sha256:common.sha256hex(frame),content_type:'image/png'},
+        {object_ref:'fixture-transcript',kind:'transcript',sha256:common.sha256hex(transcript),content_type:'text/vtt'},
+      ]},
+      content:[{type:'image',mimeType:'image/png',data:frame.toString('base64')},{type:'text',text:transcript}],
+    },'fixture-artifacts');
+    assert.equal(artifacts.code,0);
+    assert.match(artifacts.stdout,/keyframes/);
+    assert.match(artifacts.stdout,/transcript/);
+    pipelineArgs.push('--staging',path.join(data,'envelope-staging',session));
     const pipeline = await bin('kabo-run-pipeline',pipelineArgs);
     assert.equal(pipeline.code,0,pipeline.stderr);
     assert.match(pipeline.stdout,/creator_report:/);
     assert.equal(syncRequests,1,'The pipeline post-check must use local verification only');
     assert.equal(await fs.readFile(path.join(data,'work',runId,'report/REPORT.md'),'utf8'),'Synthetic integration fixture: 2 envelopes.');
-    if (host === 'claude') {
-      assert.deepEqual(await fs.readFile(path.join(snapshot,'frame-0001.png')),frame);
-      assert.equal(await fs.readFile(path.join(snapshot,'transcript-0001.vtt'),'utf8'),transcript);
-      assert.match(pipeline.stdout,/drained=2/);
-    }
+    assert.deepEqual(await fs.readFile(path.join(snapshot,'frame-0001.png')),frame);
+    assert.equal(await fs.readFile(path.join(snapshot,'transcript-0001.vtt'),'utf8'),transcript);
+    assert.match(pipeline.stdout,/drained=2/);
     const defaultRun = (await bin('kabo-run-dir',['--skill',skill])).stdout.trim();
     const defaultResult = await bin('kabo-run-pipeline',['--run-id',defaultRun,'--skill',skill]);
     assert.equal(defaultResult.code,0,defaultResult.stderr);
@@ -144,3 +138,15 @@ for (const host of ['claude', 'codex']) {
     assert.equal((await fs.stat(path.join(data,'work',runId,'report/REPORT.md'))).mode & 0o777,0o600);
   });
 }
+
+test('Codex hooks.json stages PostToolUse as command and never declares unknown events', async () => {
+  const hooks = JSON.parse(await fs.readFile(path.join(root, 'plugins/codex/kabo-alpha/hooks/hooks.json'), 'utf8'));
+  assert.deepEqual(Object.keys(hooks.hooks).sort(), ['PostToolUse', 'SessionStart']);
+  const persist = hooks.hooks.PostToolUse[0];
+  assert.match(persist.matcher, /data_connector_\(run\|batch_run\|job\|artifact\)\$/);
+  assert.equal(persist.hooks[0].type, 'command');
+  assert.match(persist.hooks[0].command, /persist-envelope\.js/);
+  const declared = JSON.stringify(hooks.hooks);
+  assert.doesNotMatch(declared, /mcp_tool/);
+  assert.doesNotMatch(declared, /PostToolUseFailure/);
+});

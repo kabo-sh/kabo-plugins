@@ -59,9 +59,9 @@ const USAGE = `Usage: kabo-run-pipeline --run-id <id> --skill <skill-dir> [--sta
 
   --run-id    a run id printed by kabo-run-dir (the run directory must already exist)
   --skill     the skill cache directory the steps belong to (skill-verify must have passed on it)
-  --staging   the directory where the host staged connector envelopes (Claude Code's PostToolUse
+  --staging   the directory where the host staged connector envelopes (a PostToolUse
               hook names it on a "kabo:" line); drained into {run}/snapshot before the first step.
-              Hosts without staging (Codex) omit it and the runner writes snapshot/envelope-NN.json
+              Omit only when nothing was staged; then the runner writes snapshot/envelope-NN.json
               itself before calling the pipeline
   --operation select pipeline_operations[operation], falling back to the default pipeline array
   --language  the value of the {language} placeholder
