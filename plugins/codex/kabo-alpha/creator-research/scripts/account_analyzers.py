@@ -272,10 +272,23 @@ def adapt_snapshot(
             source_coverage["pagination"] = source["pagination"]
         if isinstance(source.get("limitations"), list):
             source_coverage["limitations"] = source["limitations"]
+        focus = creators[focus_creator_id]
+        scope = {
+            "account": focus.get("handle", focus_creator_id),
+            "window": window,
+            "observed_at": parse_time(snapshot["observed_at"]).isoformat(),
+        }
+        for field in ("display_name", "biography"):
+            text = focus.get(field)
+            if isinstance(text, str) and text.strip():
+                scope[field] = text
+        followers = focus.get("followers")
+        if isinstance(followers, (int, float)) and not isinstance(followers, bool) and followers >= 0:
+            scope["followers"] = followers
         meta = {
             "snapshot_id": snapshot["snapshot_id"], "platform": snapshot.get("platform", "unknown"),
             "source_mode": source.get("source_mode", "public"),
-            "scope": {"account": creators[focus_creator_id].get("handle", focus_creator_id), "window": window, "observed_at": parse_time(snapshot["observed_at"]).isoformat()},
+            "scope": scope,
             "source_coverage": source_coverage,
             "account_metrics": {},
         }
