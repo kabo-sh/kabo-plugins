@@ -43,7 +43,7 @@ Never answer a creator-research question from memory or web_search — registry_
 
 ## B. Composite orchestration
 
-Decompose the request against that one listing; match description/tags/required, never force-fit. Permissions first; run steps 3–5 each. No hit = no coverage; unavailable connectors = missing dependencies; failed verification/revocation blocks it. Merge per E, reporting gaps vs the request. At most 3 rounds, stating changes; the user can stop.
+Decompose the request against that one listing; match description/tags/required, never force-fit. Permissions first; run steps 3–5 each. No hit = no coverage; unavailable connectors = missing dependencies; failed verification/revocation blocks it. Merge per E, reporting gaps vs the request. At most 3 rounds and 3 skills, each adding new evidence; the user can stop.
 
 ## Platform tools unavailable
 
