@@ -242,7 +242,7 @@ header "First move" · "How should we find your first piece of content?" — Rec
 | **I'll send a video I want to make my version of** | Ask in chat for the URL. Search for the breakout- or video-breakdown capability and run it on that video: hook, structure, and call to action, broken out as things that can be rebuilt. |
 | **Not now** | No run. Go straight to step 13. Accept it the first time, no reason asked. |
 
-**One primary skill for this step.** Meta-guidance rule D holds: these capabilities overlap and extra runs burn paid quota. Run the one that matches the chosen route; add a second only for independent evidence value, and at most one.
+**Keep this step to one skill.** Meta-guidance caps a run at three, but onboarding is not the place to spend them: these capabilities overlap and extra runs burn paid quota. Run the one that matches the chosen route; add a second only for independent evidence value.
 
 **Then, from whatever came back, produce all three of these in one reply:**
 
@@ -352,7 +352,7 @@ The profile is written after every group, so an interrupted run is a normal case
 
 - Question copy and options are fixed — replicate, don't improvise. The set is deliberately short; do not add questions back.
 - **Never invent numbers**: no fake scores, no invented social proof, no follower projections, and no cost estimate for a run that has never been measured. Every figure comes from a run, from the Estimates block, or is absent.
-- Both runs follow meta-guidance unchanged (verification, one primary skill per run, Section E delivery, failure semantics). Onboarding changes the framing around a run, never the evidence rules.
+- Both runs follow meta-guidance unchanged (verification, the per-run skill cap, Section E delivery, failure semantics). Onboarding changes the framing around a run, never the evidence rules.
 - **Every popup that precedes a run carries that run's cost line.** Step 5 does it for the account analysis; step 12 does it for the content run. A run the creator did not knowingly pay for is a bug.
 - A script you drafted yourself is labeled as yours, never as a skill's output, and never blended into the statements about retrieved data.
 - Never promise virality; the pact's measurable target derives from the creator's own history only.
