@@ -7,7 +7,7 @@ description: Skill routing entry point for the Kabo platform. Any task involving
 user-invocable: false
 # This file is the fallback for when dynamic guidance fails signature verification or the client is offline; its body is a verbatim snapshot of that server-side version.
 # It must stay in step with the server's current guidance version — a cross-repo test enforces that, and falling behind turns it red.
-# 23 = v22 catalog listing, plus §E one reply from every creator_report, no one-primary-skill cap, and §A one generic search-first rule. Publish the same body server-side before merging to main.
+# 24 = v23 plus PRE/FETCH/POST: a host hook may stage envelopes and name the directory on a `kabo:` line - pass it as --staging; write envelopes only when nothing was staged. Publish the same body server-side before merging to main.
 kabo_guidance_snapshot: 24
 ---
 

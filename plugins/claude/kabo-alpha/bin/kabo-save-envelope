@@ -156,10 +156,13 @@ for (const name of fs.readdirSync(into)) {
  */
 function artifactTarget(meta) {
   const kind = /^[a-z]+$/.test(meta.kind ?? '') ? meta.kind : 'artifact';
-  const next = (artifactCounters.get(kind) ?? 0) + 1;
-  artifactCounters.set(kind, next);
+  // Key the counter by the prefix actually written: the initialisation loop reads `frame-0001.*`
+  // back as `frame`, so counting keyframes under `keyframes` would reissue frame-0001 and overwrite it.
+  const prefix = kind === 'keyframes' ? 'frame' : kind;
+  const next = (artifactCounters.get(prefix) ?? 0) + 1;
+  artifactCounters.set(prefix, next);
   const extension = ARTIFACT_EXTENSIONS[meta.content_type] ?? 'bin';
-  return `${kind === 'keyframes' ? 'frame' : kind}-${String(next).padStart(4, '0')}.${extension}`;
+  return `${prefix}-${String(next).padStart(4, '0')}.${extension}`;
 }
 
 /** `content_type` -> file extension. Unknown types keep `.bin`: a wrong extension is worse. */
@@ -171,7 +174,8 @@ function artifactTarget(meta) {
  * someone is trying to find out what landed.
  */
 function describeMeta(meta) {
-  const tail = `status=${meta.status} bytes=${meta.bytes} sha256=${meta.sha256}`;
+  const tail = `status=${meta.status} bytes=${meta.bytes} sha256=${meta.sha256}` +
+    (meta.request_id ? ` request_id=${meta.request_id}` : '');
   return meta.artifact
     ? `${meta.kind} ${meta.object_ref} ${tail}`
     : `${meta.connector_id}/${meta.operation} ${tail}`;

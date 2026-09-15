@@ -233,10 +233,15 @@ function bytesFor(envelope, wholeText, singleton) {
  * (`01.json` / `01.meta`) - an anchor that never matches silently restarts at 1 on every call and
  * each connector response overwrites the last, which is worse than not staging at all.
  */
+/** POSIX single-quote a path for the command line the runner is told to paste. */
+function shellQuote(value) {
+  return `'${String(value).replace(/'/g, `'\\''`)}'`;
+}
+
 function nextSequence(dir) {
   let max = 0;
   for (const name of fs.readdirSync(dir)) {
-    const match = /^(\d{2,})\.(json|meta)$/.exec(name);
+    const match = /^(\d{2,})\.(json|art|meta|lock)$/.exec(name);
     if (match) max = Math.max(max, Number(match[1]));
   }
   return max + 1;
@@ -249,11 +254,13 @@ async function main() {
   // `PostToolUse` carries the result as `tool_response`; `PostToolUseFailure` carries the very same
   // bytes as `error` and has no `tool_response` at all.
   //
-  // Both are needed, because `isError` is a **call-level** signal on a batch. One `failed` envelope
-  // in a `data_connector_batch_run` flags the whole call, the host then routes it to the failure
-  // event, and the envelopes that *did* complete are sitting inside that payload. Listening only to
-  // the success event silently drops them in exactly the mixed-outcome batch where re-fetching is
-  // most expensive. A fully failed envelope gets staged too, which is right: what a runner may
+  // This file is byte-identical in both variants. A host that registers both events (the Claude
+  // variant does) needs both, because `isError` is a **call-level** signal on a batch. One `failed`
+  // envelope in a `data_connector_batch_run` flags the whole call, the host then routes it to the
+  // failure event, and the envelopes that *did* complete are sitting inside that payload. Listening
+  // only to the success event silently drops them in exactly the mixed-outcome batch where
+  // re-fetching is most expensive. Codex registers only `PostToolUse` (its event enum has no failure
+  // event), so there the `error` fallback simply never fires. A fully failed envelope gets staged too, which is right: what a runner may
   // *consume* is governed by the status matrix, but what happened should still be on disk.
   const toolResponse = event.tool_response ?? event.error;
   if (toolResponse === undefined || toolResponse === null) return;
@@ -294,6 +301,9 @@ async function main() {
       connector_id: envelope.connector_id,
       operation: envelope.operation,
       status: envelope.status,
+      // Staging numbers follow completion order, not request order. The envelope's own request id
+      // is what lets a runner pair a drained file back with the call (and the input) that made it.
+      request_id: typeof envelope.request_id === 'string' ? envelope.request_id : null,
       bytes: Buffer.byteLength(bytes, 'utf8'),
       sha256,
       verbatim,
@@ -313,7 +323,9 @@ async function main() {
     for (let attempt = 0; attempt < 64 && !written; attempt += 1) {
       const stem = path.join(stagingDir, String(sequence).padStart(2, '0'));
       try {
-        fs.writeFileSync(`${stem}.json`, bytes, { mode: 0o600, flag: 'wx' });
+        // Reserve the whole stem, not just this body's extension: an envelope (`.json`) and an
+        // artifact (`.art`) racing for the same number would otherwise both claim `<stem>.meta`.
+        fs.writeFileSync(`${stem}.lock`, '', { mode: 0o600, flag: 'wx' });
       } catch (error) {
         if (error?.code === 'EEXIST') {
           sequence += 1;
@@ -321,7 +333,18 @@ async function main() {
         }
         throw error;
       }
+      try {
+        fs.writeFileSync(`${stem}.json`, bytes, { mode: 0o600, flag: 'wx' });
+      } catch (error) {
+        fs.rmSync(`${stem}.lock`, { force: true });
+        if (error?.code === 'EEXIST') {
+          sequence += 1;
+          continue;
+        }
+        throw error;
+      }
       fs.writeFileSync(`${stem}.meta`, `${JSON.stringify(meta)}\n`, { mode: 0o600 });
+      fs.rmSync(`${stem}.lock`, { force: true });
       written = true;
     }
     if (!written) return;
@@ -371,7 +394,9 @@ async function main() {
     for (let attempt = 0; attempt < 64 && !written; attempt += 1) {
       const stem = path.join(stagingDir, String(sequence).padStart(2, '0'));
       try {
-        fs.writeFileSync(`${stem}.art`, body, { mode: 0o600, flag: 'wx' });
+        // Reserve the whole stem, not just this body's extension: an envelope (`.json`) and an
+        // artifact (`.art`) racing for the same number would otherwise both claim `<stem>.meta`.
+        fs.writeFileSync(`${stem}.lock`, '', { mode: 0o600, flag: 'wx' });
       } catch (error) {
         if (error?.code === 'EEXIST') {
           sequence += 1;
@@ -379,7 +404,18 @@ async function main() {
         }
         throw error;
       }
+      try {
+        fs.writeFileSync(`${stem}.art`, body, { mode: 0o600, flag: 'wx' });
+      } catch (error) {
+        fs.rmSync(`${stem}.lock`, { force: true });
+        if (error?.code === 'EEXIST') {
+          sequence += 1;
+          continue;
+        }
+        throw error;
+      }
       fs.writeFileSync(`${stem}.meta`, `${JSON.stringify(meta)}\n`, { mode: 0o600 });
+      fs.rmSync(`${stem}.lock`, { force: true });
       written = true;
     }
     if (!written) return;
@@ -412,15 +448,15 @@ async function main() {
         ...lines,
         'Do NOT retype or re-serialize any of them into a file — the stored copy is already complete and yours would not be.',
         `When this run's snapshot/ exists, move them in with one command:`,
-        `  "${path.normalize(SAVE_ENVELOPE_BIN)}" --from ${stagingDir} --into <run dir>/snapshot`,
+        `  ${shellQuote(path.normalize(SAVE_ENVELOPE_BIN))} --from ${shellQuote(stagingDir)} --into <run dir>/snapshot`,
       ].join('\n')
     : [`kabo: envelope staged (drain pending):`, ...lines].join('\n');
 
   // Echo back the event we were actually invoked for. The host matches `hookEventName` against the
-  // event it fired, and this one script is wired to both `PostToolUse` and `PostToolUseFailure`;
-  // hard-coding the success name would make the host drop this output on the failure path, so the
-  // runner would never see the `kabo:` line naming the staging directory and would hand-write the
-  // envelopes it was just handed for free.
+  // event it fired. Where a host wires this script to both `PostToolUse` and `PostToolUseFailure`
+  // (the Claude variant), hard-coding the success name would make it drop this output on the
+  // failure path, so the runner would never see the `kabo:` line naming the staging directory and
+  // would hand-write the envelopes it was just handed for free. Codex wires only `PostToolUse`.
   const eventName =
     event.hook_event_name === 'PostToolUseFailure' ? 'PostToolUseFailure' : 'PostToolUse';
   process.stdout.write(
