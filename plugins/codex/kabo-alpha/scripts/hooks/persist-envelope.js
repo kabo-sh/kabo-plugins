@@ -40,6 +40,7 @@
 // Always exit 0 with no stderr. A hook that breaks a user's run to report that an *optimization*
 // failed has inverted its own priorities: the runner's fallback (writing the file itself) still
 // works, so the worst case of staying silent is the slow path we had before.
+import crypto from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -297,6 +298,9 @@ async function main() {
     : path.join(dataRoot(), STAGING_DIRNAME, sessionId);
   ensurePrivateDir(stagingDir);
 
+  // Who holds a reserved stem: the drain reclaims a stale lock only when this process is gone, and
+  // only the exact lock it judged stale (the token), never a replacement written since.
+  const lockOwner = `${process.pid} ${crypto.randomUUID()}\n`;
   const singleton = envelopes.length === 1 && isEnvelope(parsed);
   const staged = [];
   const startSequence = nextSequence(stagingDir);
@@ -309,7 +313,7 @@ async function main() {
       connector_id: envelope.connector_id,
       operation: envelope.operation,
       status: envelope.status,
-      // Staging numbers follow completion order, not request order. The envelope's own request id
+      // Staging numbers carry no request order (each is reserved before its write finishes). The envelope's own request id
       // is what lets a runner pair a drained file back with the call (and the input) that made it.
       request_id: typeof envelope.request_id === 'string' ? envelope.request_id : null,
       bytes: Buffer.byteLength(bytes, 'utf8'),
@@ -333,7 +337,7 @@ async function main() {
       try {
         // Reserve the whole stem, not just this body's extension: an envelope (`.json`) and an
         // artifact (`.art`) racing for the same number would otherwise both claim `<stem>.meta`.
-        fs.writeFileSync(`${stem}.lock`, '', { mode: 0o600, flag: 'wx' });
+        fs.writeFileSync(`${stem}.lock`, lockOwner, { mode: 0o600, flag: 'wx' });
       } catch (error) {
         if (error?.code === 'EEXIST') {
           sequence += 1;
@@ -406,7 +410,7 @@ async function main() {
       try {
         // Reserve the whole stem, not just this body's extension: an envelope (`.json`) and an
         // artifact (`.art`) racing for the same number would otherwise both claim `<stem>.meta`.
-        fs.writeFileSync(`${stem}.lock`, '', { mode: 0o600, flag: 'wx' });
+        fs.writeFileSync(`${stem}.lock`, lockOwner, { mode: 0o600, flag: 'wx' });
       } catch (error) {
         if (error?.code === 'EEXIST') {
           sequence += 1;

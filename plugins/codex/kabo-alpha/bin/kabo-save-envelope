@@ -16,6 +16,7 @@
 // host delivered the result; recomputing it here proves the bytes that land in the run directory
 // are the bytes the connector returned, which is exactly the claim the audit trail makes and the
 // exact claim hand-copying could never support.
+import crypto from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
 
@@ -103,15 +104,54 @@ function stagedPairs(dir) {
  * Writing one envelope takes milliseconds; five minutes is far past any live writer.
  */
 const STALE_LOCK_MS = 5 * 60 * 1000;
+/** A lock records `<pid> <token>`; its owner is gone when signalling that pid fails with ESRCH. */
+function ownerGone(content) {
+  const pid = Number(String(content).trim().split(/\s+/)[0]);
+  if (!Number.isSafeInteger(pid) || pid <= 0) return true;
+  try {
+    process.kill(pid, 0);
+    return false;
+  } catch (error) {
+    return error?.code === 'ESRCH';
+  }
+}
+
+/**
+ * Reclaim a lock only when it is old, its owner process no longer exists, and it is still the very
+ * lock that was judged stale. The lock is first moved aside atomically (rename), then its content is
+ * compared with what was read: a live hook that reserved the stem in between gets its lock put back.
+ */
+function reclaimStaleLock(lock) {
+  let content;
+  try {
+    if (Date.now() - fs.statSync(lock).mtimeMs <= STALE_LOCK_MS) return;
+    content = fs.readFileSync(lock, 'utf8');
+  } catch {
+    return; // Gone already: the writer finished or another drain reclaimed it.
+  }
+  if (!ownerGone(content)) return;
+  const aside = `${lock}.reclaim-${crypto.randomUUID()}`;
+  try {
+    fs.renameSync(lock, aside);
+  } catch {
+    return; // Another drain moved it first.
+  }
+  if (fs.readFileSync(aside, 'utf8') === content) {
+    fs.rmSync(aside, { force: true });
+    return;
+  }
+  // Not the lock we judged stale: restore it unless its stem has been reserved again meanwhile.
+  try {
+    fs.linkSync(aside, lock);
+  } catch {
+    // The stem is held by a newer lock; the one we moved belonged to a writer that has since let go.
+  }
+  fs.rmSync(aside, { force: true });
+}
+
 if (!listOnly) {
   for (const name of fs.readdirSync(from)) {
-    if (!/^\d{2,}\.lock$/.test(name)) continue;
-    const lock = path.join(from, name);
-    try {
-      if (Date.now() - fs.statSync(lock).mtimeMs > STALE_LOCK_MS) fs.rmSync(lock, { force: true });
-    } catch {
-      // Gone already (the writer finished): nothing to clear.
-    }
+    if (/^\d{2,}\.lock$/.test(name)) reclaimStaleLock(path.join(from, name));
   }
 }
 

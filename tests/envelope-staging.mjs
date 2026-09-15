@@ -27,6 +27,12 @@ function run(command, args, env, input = '') {
   });
 }
 
+async function exitedPid() {
+  const child = spawn(process.execPath, ['-e', '']);
+  await new Promise(resolve => child.once('close', resolve));
+  return child.pid;
+}
+
 const envelope = (requestId) => ({
   connector_id: 'fixture', operation: 'search', status: 'completed', limitations: [],
   retrieved_at: '2026-09-15T00:00:00Z', request_id: requestId, data: { requestId },
@@ -97,9 +103,9 @@ for (const host of ['claude', 'codex']) {
     assert.deepEqual(JSON.parse(await fs.readFile(path.join(snapshot, 'envelope-01.json'), 'utf8')), envelope('req-1'));
   });
 
-  test(`${host}: the staged listing names each file's request so completion order can be undone`, async t => {
+  test(`${host}: the staged listing names each file's request so request order can be restored`, async t => {
     const { staging, hook, save } = await setup(t);
-    // The second request finishes first: staging numbers follow completion, not request order.
+    // The second request is staged first: staging numbers carry no request order.
     for (const [id, call] of [['req-b', 'call-2'], ['req-a', 'call-1']]) {
       const result = await hook(envelope(id), call);
       assert.equal(result.code, 0, result.stderr);
@@ -161,14 +167,27 @@ for (const host of ['claude', 'codex']) {
     await fs.mkdir(staging, { recursive: true, mode: 0o700 });
     const stale = path.join(staging, '05.lock');
     const live = path.join(staging, '06.lock');
-    await fs.writeFile(stale, '', { mode: 0o600 });
-    await fs.writeFile(live, '', { mode: 0o600 });
+    await fs.writeFile(stale, `${await exitedPid()} crashed-writer\n`, { mode: 0o600 });
+    await fs.writeFile(live, `${process.pid} live-writer\n`, { mode: 0o600 });
     const tenMinutesAgo = new Date(Date.now() - 10 * 60 * 1000);
     await fs.utimes(stale, tenMinutesAgo, tenMinutesAgo);
     const result = await save('--from', staging, '--into', path.join(data, 'snapshot'));
     assert.equal(result.code, 0, result.stderr);
     await assert.rejects(fs.stat(stale), { code: 'ENOENT' });
     await fs.stat(live);
+  });
+
+  test(`${host}: an old lock whose writer is still running is never reclaimed`, async t => {
+    const { data, staging, save } = await setup(t);
+    await fs.mkdir(staging, { recursive: true, mode: 0o700 });
+    const held = path.join(staging, '07.lock');
+    // Old by the clock, but its owner (this test process) is alive: it is being written, not orphaned.
+    await fs.writeFile(held, `${process.pid} slow-writer\n`, { mode: 0o600 });
+    const tenMinutesAgo = new Date(Date.now() - 10 * 60 * 1000);
+    await fs.utimes(held, tenMinutesAgo, tenMinutesAgo);
+    const result = await save('--from', staging, '--into', path.join(data, 'snapshot'));
+    assert.equal(result.code, 0, result.stderr);
+    assert.equal(await fs.readFile(held, 'utf8'), `${process.pid} slow-writer\n`);
   });
 
   test(`${host}: a batch whose later envelope cannot get a stem still reports the one it staged`, async t => {
@@ -187,3 +206,15 @@ for (const host of ['claude', 'codex']) {
     assert.equal(meta.request_id, 'req-first');
   });
 }
+
+test('codex runner instructions promise no staging order and keep partial evidence in fallback', async () => {
+  for (const skill of ['skill-runner', 'analyze']) {
+    const text = await fs.readFile(path.join(root, 'plugins/codex/kabo-alpha/skills', skill, 'SKILL.md'), 'utf8');
+    const step = text.split('\n').find(line => /\*\*Drain or write/.test(line));
+    assert.ok(step, skill);
+    assert.doesNotMatch(step, /numbered in completion order/, skill);
+    assert.match(step, /carry no request order/, skill);
+    assert.match(step, /request_id/, skill);
+    assert.match(step, /`completed`, `completed_partial` or `partial`/, skill);
+  }
+});
