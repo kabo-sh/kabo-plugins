@@ -596,6 +596,32 @@ def terminal_page(envelope: dict[str, Any]) -> bool:
     return False
 
 
+PAGINATED_OPERATIONS = ("list_posts", "list_reels", "list_account_posts", "list_channel_uploads")
+
+
+def derived_complete_operations(envelopes: list[dict[str, Any]]) -> set[str]:
+    """Paginated operations whose newest persisted page is the connector's own terminal page.
+
+    Judging `--complete-operation` by hand meant reading every page's cursor fields and remembering
+    which chain ended where. An account listing always starts from the newest post, so the chain
+    fetched last decides: if its final page says there is no more, the listing is whole. "Last" is
+    the latest retrieved_at, never the last --envelope, because persisted file numbers do not
+    promise fetch order. A newest page that is partial, failed or still carries a cursor proves
+    nothing, and the operation stays incomplete.
+    """
+    derived: set[str] = set()
+    for operation in PAGINATED_OPERATIONS:
+        pages = [envelope for envelope in envelopes if envelope.get("operation") == operation]
+        if not pages:
+            continue
+        stamped = [(parse_timestamp(page["retrieved_at"], "retrieved_at"), page) for page in pages]
+        newest_at = max(stamp for stamp, _ in stamped)
+        newest = [page for stamp, page in stamped if stamp == newest_at]
+        if all(page.get("status") == "completed" for page in newest) and any(terminal_page(page) for page in newest):
+            derived.add(operation)
+    return derived
+
+
 # ---------------------------------------------------------------------------
 # assembly
 # ---------------------------------------------------------------------------
@@ -634,6 +660,8 @@ def window_bounds(raw: str) -> tuple[datetime, datetime]:
 def build(args: argparse.Namespace) -> dict[str, Any]:
     envelopes = [load_envelope(path) for path in args.envelope]
     complete_operations = set(getattr(args, "complete_operation", None) or [])
+    if getattr(args, "derive_complete", False):
+        complete_operations |= derived_complete_operations(envelopes)
     available_operations = {
         str(envelope.get("operation")) for envelope in envelopes if envelope.get("operation")
     }
@@ -893,6 +921,15 @@ def main() -> int:
             "repeat only when every pagination chain for this operation reached a persisted "
             "terminal envelope (more_available=false, or YouTube coverage.next_page_token=null); "
             "intermediate cursors then do not make coverage incomplete"
+        ),
+    )
+    parser.add_argument(
+        "--derive-complete",
+        action="store_true",
+        help=(
+            "mark each paginated operation complete when its newest persisted page (latest "
+            "retrieved_at) is a completed connector-native terminal page; replaces judging "
+            "--complete-operation by hand, and never forces coverage complete otherwise"
         ),
     )
     parser.add_argument("--output", type=Path, required=True)
