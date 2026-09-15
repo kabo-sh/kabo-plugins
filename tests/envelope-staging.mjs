@@ -109,4 +109,81 @@ for (const host of ['claude', 'codex']) {
     assert.match(listed.stdout, /^01 fixture\/search .* request_id=req-b$/m);
     assert.match(listed.stdout, /^02 fixture\/search .* request_id=req-a$/m);
   });
+
+  test(`${host}: two subagents under one root session each drain only their own envelopes`, async t => {
+    const { data, env, staging } = await setup(t);
+    // Codex hands a spawned subagent's hook the *root* session id plus the subagent's own agent_id.
+    const call = (agentId, requestId) => run(process.execPath, [hookFile], env, JSON.stringify({
+      session_id: 'staging-session', agent_id: agentId, hook_event_name: 'PostToolUse',
+      tool_use_id: `call-${requestId}`, tool_response: JSON.stringify(envelope(requestId)),
+    }));
+    const [a, b] = await Promise.all([call('agent-a', 'req-a'), call('agent-b', 'req-b')]);
+    for (const result of [a, b]) assert.equal(result.code, 0, result.stderr);
+    const dirOf = (result) => JSON.parse(result.stdout).hookSpecificOutput.additionalContext
+      .split('\n').find(line => line.includes('--from')).match(/--from '([^']+)'/)[1];
+    assert.equal(dirOf(a), path.join(staging, 'agent-a'));
+    assert.equal(dirOf(b), path.join(staging, 'agent-b'));
+    for (const [agent, requestId] of [['agent-a', 'req-a'], ['agent-b', 'req-b']]) {
+      const snapshot = path.join(data, `run-${agent}`, 'snapshot');
+      const drained = await run(process.execPath, [saveFile, '--from', path.join(staging, agent), '--into', snapshot], env);
+      assert.equal(drained.code, 0, drained.stderr);
+      assert.match(drained.stdout, /^staged=1$/m);
+      assert.equal(JSON.parse(await fs.readFile(path.join(snapshot, 'envelope-01.json'), 'utf8')).request_id, requestId);
+    }
+    // The root session directory holds only the subagent folders; draining it takes nothing of theirs.
+    const root = await run(process.execPath, [saveFile, '--from', staging, '--into', path.join(data, 'run-root', 'snapshot')], env);
+    assert.equal(root.code, 0, root.stderr);
+    assert.match(root.stdout, /^staged=0$/m);
+  });
+
+  test(`${host}: an incomplete staged entry is reported and left while complete ones still move`, async t => {
+    const { data, staging, save } = await setup(t);
+    const snapshot = path.join(data, 'snapshot');
+    await fs.mkdir(staging, { recursive: true, mode: 0o700 });
+    const done = JSON.stringify(envelope('req-done'));
+    await fs.writeFile(path.join(staging, '01.json'), done, { mode: 0o600 });
+    await fs.writeFile(path.join(staging, '01.meta'), `${JSON.stringify({
+      connector_id: 'fixture', operation: 'search', status: 'completed',
+      bytes: Buffer.byteLength(done), sha256: sha256(done), verbatim: true, request_id: 'req-done',
+    })}\n`, { mode: 0o600 });
+    // Another hook has written its body and not yet its sidecar.
+    await fs.writeFile(path.join(staging, '02.json'), JSON.stringify(envelope('req-pending')), { mode: 0o600 });
+    const result = await save('--from', staging, '--into', snapshot);
+    assert.equal(result.code, 0, result.stderr);
+    assert.equal(await fs.readFile(path.join(snapshot, 'envelope-01.json'), 'utf8'), done);
+    assert.match(result.stderr, /02: envelope without sidecar/);
+    assert.match(result.stdout, /^incomplete=1 /m);
+    await fs.stat(path.join(staging, '02.json'));
+  });
+
+  test(`${host}: a stale lock is cleared at drain while a live one is kept`, async t => {
+    const { data, staging, save } = await setup(t);
+    await fs.mkdir(staging, { recursive: true, mode: 0o700 });
+    const stale = path.join(staging, '05.lock');
+    const live = path.join(staging, '06.lock');
+    await fs.writeFile(stale, '', { mode: 0o600 });
+    await fs.writeFile(live, '', { mode: 0o600 });
+    const tenMinutesAgo = new Date(Date.now() - 10 * 60 * 1000);
+    await fs.utimes(stale, tenMinutesAgo, tenMinutesAgo);
+    const result = await save('--from', staging, '--into', path.join(data, 'snapshot'));
+    assert.equal(result.code, 0, result.stderr);
+    await assert.rejects(fs.stat(stale), { code: 'ENOENT' });
+    await fs.stat(live);
+  });
+
+  test(`${host}: a batch whose later envelope cannot get a stem still reports the one it staged`, async t => {
+    const { staging, hook } = await setup(t);
+    await fs.mkdir(staging, { recursive: true, mode: 0o700 });
+    // 99999999999999999999 reads back as 1e20, and 1e20 + 1 === 1e20: after the first envelope
+    // takes stem "100000000000000000000", every retry for the second lands on that same stem, so
+    // the retry budget is exhausted deterministically instead of by a real race.
+    await fs.writeFile(path.join(staging, '99999999999999999999.lock'), '', { mode: 0o600 });
+    const result = await hook({ results: [envelope('req-first'), envelope('req-second')] }, 'call-batch');
+    assert.equal(result.code, 0, result.stderr);
+    const context = JSON.parse(result.stdout).hookSpecificOutput.additionalContext;
+    assert.match(context, /^kabo: /m);
+    assert.match(context, /fixture\/search status=completed/);
+    const meta = JSON.parse(await fs.readFile(path.join(staging, '100000000000000000000.meta'), 'utf8'));
+    assert.equal(meta.request_id, 'req-first');
+  });
 }

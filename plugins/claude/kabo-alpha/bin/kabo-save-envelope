@@ -98,17 +98,37 @@ function stagedPairs(dir) {
   return { complete, partial };
 }
 
+/**
+ * A `.lock` older than this belongs to a hook that died between reserving a stem and finishing it.
+ * Writing one envelope takes milliseconds; five minutes is far past any live writer.
+ */
+const STALE_LOCK_MS = 5 * 60 * 1000;
+if (!listOnly) {
+  for (const name of fs.readdirSync(from)) {
+    if (!/^\d{2,}\.lock$/.test(name)) continue;
+    const lock = path.join(from, name);
+    try {
+      if (Date.now() - fs.statSync(lock).mtimeMs > STALE_LOCK_MS) fs.rmSync(lock, { force: true });
+    } catch {
+      // Gone already (the writer finished): nothing to clear.
+    }
+  }
+}
+
 const { complete: pairs, partial } = stagedPairs(from);
+// An incomplete stem is reported and left where it is, and every complete pair still moves: one
+// entry another hook is still writing (or a crash orphaned) must not hold back the rest of the run's
+// evidence. Re-running this command later picks the straggler up once its sidecar lands.
 if (partial.length > 0) {
   console.error(
-    `incomplete staged entries in ${from} — the hook did not finish writing them:\n` +
-      partial.map((p) => `  ${p.stem}: ${p.has}`).join('\n') +
-      '\nNothing was moved. Re-run this command; if it persists, that response was not archived.',
+    `skipped incomplete staged entries in ${from} — the hook had not finished writing them; they stay in staging:\n` +
+      partial.map((p) => `  ${p.stem}: ${p.has}`).join('\n'),
   );
-  process.exit(1);
 }
+const incompleteNote = partial.length > 0 ? `incomplete=${partial.length} (left in staging)` : null;
 if (pairs.length === 0) {
   console.log('staged=0');
+  if (incompleteNote) console.log(incompleteNote);
   process.exit(0);
 }
 
@@ -218,4 +238,5 @@ for (const entry of moved) {
   );
 }
 console.log(`staged=${moved.length}`);
+if (incompleteNote) console.log(incompleteNote);
 process.exit(0);

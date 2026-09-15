@@ -286,7 +286,15 @@ async function main() {
   const sessionId = typeof event.session_id === 'string' ? event.session_id : '';
   if (!isSafeName(sessionId)) return;
 
-  const stagingDir = path.join(dataRoot(), STAGING_DIRNAME, sessionId);
+  // Partition again by the calling agent. A spawned subagent (one skill-runner per skill in a
+  // composite request) reports the *root* session id, so every runner in the request would share
+  // one directory and the first `--staging` drain would sweep the others' envelopes into its own
+  // snapshot. `agent_id` is set for those subagents (Codex 0.154 PostToolUse: session_id is the
+  // root thread, agent_id the spawned one); the main thread has none and keeps the session dir.
+  const agentId = typeof event.agent_id === 'string' && isSafeName(event.agent_id) ? event.agent_id : null;
+  const stagingDir = agentId
+    ? path.join(dataRoot(), STAGING_DIRNAME, sessionId, agentId)
+    : path.join(dataRoot(), STAGING_DIRNAME, sessionId);
   ensurePrivateDir(stagingDir);
 
   const singleton = envelopes.length === 1 && isEnvelope(parsed);
@@ -347,7 +355,9 @@ async function main() {
       fs.rmSync(`${stem}.lock`, { force: true });
       written = true;
     }
-    if (!written) return;
+    // Out of stems: stop staging this batch, but still report what already landed below - returning
+    // here would leave those files in staging with no `kabo:` line telling the runner they exist.
+    if (!written) break;
     staged.push(meta);
     sequence += 1;
   }
@@ -418,10 +428,14 @@ async function main() {
       fs.rmSync(`${stem}.lock`, { force: true });
       written = true;
     }
-    if (!written) return;
+    // Out of stems: stop staging this batch, but still report what already landed below - returning
+    // here would leave those files in staging with no `kabo:` line telling the runner they exist.
+    if (!written) break;
     staged.push(meta);
     sequence += 1;
   }
+
+  if (staged.length === 0) return;
 
   // What goes back to the model. Compact by design: this is injected after *every* connector call,
   // and a verbose reminder repeated a dozen times per run is its own context tax. The first one
