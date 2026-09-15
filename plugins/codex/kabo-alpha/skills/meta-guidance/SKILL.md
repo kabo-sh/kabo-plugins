@@ -4,7 +4,7 @@ description: Routing and orchestration rules for Kabo skills (search, confirm, d
 # This file is the fallback for when dynamic guidance fails signature verification or the client is offline; the body below the Codex deltas is a verbatim snapshot of that server-side version.
 # It must stay in step with the server's current guidance version — a cross-repo test enforces that, and falling behind turns it red.
 # 23 = v22 catalog listing, plus §E one reply from every creator_report, no one-primary-skill cap, and §A one generic search-first rule. Publish the same body server-side before merging to main.
-kabo_guidance_snapshot: 23
+kabo_guidance_snapshot: 24
 ---
 
 ## Codex client deltas (these override the mechanics in the snapshot below wherever they conflict)
