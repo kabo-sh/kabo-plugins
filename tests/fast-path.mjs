@@ -143,7 +143,19 @@ test('Codex hooks.json stages PostToolUse as command and never declares unknown 
   const hooks = JSON.parse(await fs.readFile(path.join(root, 'plugins/codex/kabo-alpha/hooks/hooks.json'), 'utf8'));
   assert.deepEqual(Object.keys(hooks.hooks).sort(), ['PostToolUse', 'SessionStart']);
   const persist = hooks.hooks.PostToolUse[0];
-  assert.match(persist.matcher, /data_connector_\(run\|batch_run\|job\|artifact\)\$/);
+  // Both families the hook stages: the connector tools, and the aggregate `collect_*` /
+  // `enrich_*` tools whose typed results it also has to reach.
+  assert.match(persist.matcher, /data_connector_\(run\|batch_run\|job\|artifact\)/);
+  const matches = new RegExp(persist.matcher);
+  for (const tool of ['mcp__plugin_kabo-alpha_kabo__data_connector_batch_run',
+                      'mcp__plugin_kabo-alpha_kabo__collect_instagram_trend_candidates',
+                      'mcp__plugin_kabo-alpha_kabo__collect_youtube_trend_candidates',
+                      'mcp__plugin_kabo-alpha_kabo__collect_public_metadata',
+                      'mcp__plugin_kabo-alpha_kabo__enrich_instagram_shortlist',
+                      'mcp__plugin_kabo-alpha_kabo__enrich_youtube_shortlist']) {
+    assert.ok(matches.test(tool), tool);
+  }
+  assert.ok(!matches.test('mcp__plugin_kabo-alpha_kabo__registry_skill_search'));
   assert.equal(persist.hooks[0].type, 'command');
   assert.match(persist.hooks[0].command, /persist-envelope\.js/);
   const declared = JSON.stringify(hooks.hooks);

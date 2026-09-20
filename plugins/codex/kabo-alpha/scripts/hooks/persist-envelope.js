@@ -124,6 +124,30 @@ function isEnvelope(value) {
 }
 
 /**
+ * A typed tool result: the aggregate tools (`collect_*`, `enrich_*`) do not return an envelope,
+ * they return the whole result with a `schema_version` of its own (`trend-candidate-set.v1` and
+ * the like) and none of connector_id / operation / limitations.
+ *
+ * Recognised by shape, like `isEnvelope` above, and deliberately not by listing schema names: a
+ * list drifts, and drifting here stops persistence silently. A plain object carrying only
+ * `items` and no `schema_version` is still not staged, or any JSON at all would become evidence.
+ *
+ * Why it has to be staged: without it these results reach no staging directory, so the Skill can
+ * only fall back to reading the Codex rollout — the copy recorded after the fence, wrapped in
+ * `<untrusted_data>`, at a path that moves with the host. The reading end
+ * (persist_envelope.py's staged_candidates) has had its typed branch all along; this is the
+ * producing end it was waiting for. Same fix as kabo-desktop b0da01f.
+ */
+function isTypedResult(value) {
+  return (
+    value !== null &&
+    typeof value === 'object' &&
+    !Array.isArray(value) &&
+    typeof value.schema_version === 'string'
+  );
+}
+
+/**
  * Strict base64 -> bytes, or `null`.
  *
  * `Buffer.from` is lenient: it skips characters outside the alphabet and returns a short buffer
@@ -204,6 +228,8 @@ function collectArtifacts(parsed) {
  */
 function collectEnvelopes(parsed) {
   if (isEnvelope(parsed)) return [parsed];
+  // Envelope first: when a value satisfies both, the envelope sidecar carries more.
+  if (isTypedResult(parsed)) return [parsed];
   if (parsed && typeof parsed === 'object') {
     // data_connector_batch_run: { results: [envelope | job, ...] }
     if (Array.isArray(parsed.results)) {
@@ -301,7 +327,10 @@ async function main() {
   // Who holds a reserved stem: the drain reclaims a stale lock only when this process is gone, and
   // only the exact lock it judged stale (the token), never a replacement written since.
   const lockOwner = `${process.pid} ${crypto.randomUUID()}\n`;
-  const singleton = envelopes.length === 1 && isEnvelope(parsed);
+  // A typed result must take the verbatim path: the reading end compares sha256 byte for
+  // byte, and re-serializing shifts key order or number literals, which it reads as damage.
+  const singleton =
+    envelopes.length === 1 && (isEnvelope(parsed) || isTypedResult(parsed));
   const staged = [];
   const startSequence = nextSequence(stagingDir);
   let sequence = startSequence;
@@ -309,19 +338,34 @@ async function main() {
   for (const envelope of envelopes) {
     const { text: bytes, verbatim } = bytesFor(envelope, text, singleton);
     const sha256 = sha256hex(bytes);
-    const meta = {
-      connector_id: envelope.connector_id,
-      operation: envelope.operation,
-      status: envelope.status,
-      // Staging numbers carry no request order (each is reserved before its write finishes). The envelope's own request id
-      // is what lets a runner pair a drained file back with the call (and the input) that made it.
-      request_id: typeof envelope.request_id === 'string' ? envelope.request_id : null,
-      bytes: Buffer.byteLength(bytes, 'utf8'),
-      sha256,
-      verbatim,
-      staged_at: new Date().toISOString(),
-      tool_use_id: typeof event.tool_use_id === 'string' ? event.tool_use_id : null,
-    };
+    const typed = !isEnvelope(envelope) && isTypedResult(envelope);
+    // Two sidecar shapes, told apart by whether `connector_id` is there: a typed one names its
+    // schema and carries no connector, which is exactly what persist_envelope.py's
+    // staged_candidates looks for. The cost is that a typed result is not counted by
+    // envelope-progress (it skips entries without connector_id / operation / status) — one
+    // uncounted entry is better than inventing a connector name to fill the field.
+    const meta = typed
+      ? {
+          schema_version: envelope.schema_version,
+          bytes: Buffer.byteLength(bytes, 'utf8'),
+          sha256,
+          verbatim,
+          staged_at: new Date().toISOString(),
+          tool_use_id: typeof event.tool_use_id === 'string' ? event.tool_use_id : null,
+        }
+      : {
+          connector_id: envelope.connector_id,
+          operation: envelope.operation,
+          status: envelope.status,
+          // Staging numbers carry no request order (each is reserved before its write finishes). The envelope's own request id
+          // is what lets a runner pair a drained file back with the call (and the input) that made it.
+          request_id: typeof envelope.request_id === 'string' ? envelope.request_id : null,
+          bytes: Buffer.byteLength(bytes, 'utf8'),
+          sha256,
+          verbatim,
+          staged_at: new Date().toISOString(),
+          tool_use_id: typeof event.tool_use_id === 'string' ? event.tool_use_id : null,
+        };
     // **Exclusive create, and step over a collision.** `nextSequence` read the directory in this
     // process, but the write happens later and other hook processes are running concurrently — the
     // runner is explicitly told to submit independent connector calls in the same turn, so two
@@ -448,10 +492,14 @@ async function main() {
   // Frames and envelopes are described differently because the runner does different things with
   // them: an envelope is JSON it must not retype, a frame is an image it has to *look at*. Calling
   // a keyframe an "envelope" (the first live run did) sends it looking for JSON that is not there.
-  const describe = (m) =>
-    m.artifact
-      ? `${m.kind} ${m.object_ref} bytes=${m.bytes} sha256=${m.sha256.slice(0, 12)}`
-      : `${m.connector_id}/${m.operation} status=${m.status} bytes=${m.bytes} sha256=${m.sha256.slice(0, 12)}`;
+  const describe = (m) => {
+    const size = `bytes=${m.bytes} sha256=${m.sha256.slice(0, 12)}`;
+    if (m.artifact) return `${m.kind} ${m.object_ref} ${size}`;
+    // A typed result has no connector triple; naming it by its schema keeps this line readable
+    // instead of printing `undefined/undefined` at the runner.
+    if (m.schema_version) return `${m.schema_version} ${size}`;
+    return `${m.connector_id}/${m.operation} status=${m.status} ${size}`;
+  };
   const lines = staged.map((m) => `  - ${describe(m)}`);
   // "byte-for-byte" is only true for a response that carried exactly one envelope, where the stored
   // file is the substring the host delivered. A batch has no such substring per entry, so those are

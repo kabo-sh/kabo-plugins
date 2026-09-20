@@ -236,9 +236,13 @@ function artifactTarget(meta) {
 function describeMeta(meta) {
   const tail = `status=${meta.status} bytes=${meta.bytes} sha256=${meta.sha256}` +
     (meta.request_id ? ` request_id=${meta.request_id}` : '');
-  return meta.artifact
-    ? `${meta.kind} ${meta.object_ref} ${tail}`
-    : `${meta.connector_id}/${meta.operation} ${tail}`;
+  if (meta.artifact) return `${meta.kind} ${meta.object_ref} ${tail}`;
+  // A typed result carries a schema instead of a connector triple; without this the drain
+  // reported it as `undefined/undefined status=undefined`.
+  if (meta.schema_version) {
+    return `${meta.schema_version} bytes=${meta.bytes} sha256=${meta.sha256}`;
+  }
+  return `${meta.connector_id}/${meta.operation} ${tail}`;
 }
 
 const ARTIFACT_EXTENSIONS = { 'image/jpeg': 'jpg', 'image/png': 'png', 'text/vtt': 'vtt', 'application/json': 'json' };
