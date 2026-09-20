@@ -14,7 +14,7 @@
     ],
     "PostToolUse": [
       {
-        "matcher": "data_connector_(run|batch_run|job|artifact)$",
+        "matcher": "(data_connector_(run|batch_run|job|artifact)|(collect|enrich)_[a-z0-9_]+)$",
         "hooks": [
           {
             "type": "command",
