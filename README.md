@@ -1,14 +1,81 @@
-# kabo-plugins
+# Kabo — creator research skills for Claude Code and Codex
 
-The official [**Kabo**](https://kabo.sh/?utm_source=github&utm_medium=referral&utm_campaign=202608_plugins_readme&utm_content=readme_hero) plugin marketplace — the client for the creator-focused Skill distribution platform.
+**See which videos take off on YouTube, Instagram, and TikTok. Learn why. Make yours — with the public evidence attached.**
 
-Kabo lets you search, download, and execute creator research skills inside Claude Code and Codex: YouTube and Instagram public-evidence collection, outlier and viral breakdowns, channel benchmarking, and emerging-creator discovery. Every skill is signed and distributed by the platform, and the client verifies the signature locally before executing it.
+Kabo is an AI partner for creators. This repository installs the [Kabo](https://kabo.sh/?utm_source=github&utm_medium=referral&utm_campaign=202610_plugins_readme&utm_content=readme_hero) plugin into Claude Code or Codex: ask a question in plain language and get a report built from public channel, account, and video data, with sources, dates, and limits stated.
 
-Creator research data is fetched by Kabo's servers, so there are no provider keys to configure. Usage telemetry is limited to event-level metadata — which skill ran and whether it succeeded; no prompt, tool, or skill-output content is collected.
+**Free to use.** Every Kabo account gets a free daily allowance.
 
-Beyond the plugin, Kabo publishes a free, no-signup toolbox for YouTube, Instagram, and TikTok creators — calculators, checkers, and generators that run without an account — at [kabo.sh/tools](https://kabo.sh/tools?utm_source=github&utm_medium=referral&utm_campaign=202608_plugins_readme&utm_content=readme_tools).
+## What you can do
 
-## Install
+| Job | What Kabo does | Platforms |
+|---|---|---|
+| **Spot what's working now** | Scans current trends and the patterns behind high performers; reads the daily Instagram and TikTok trending-audio boards (usage counts, daily growth, fastest risers) and TikTok's rising search terms; surfaces emerging creators | YouTube · Instagram · TikTok |
+| **Study competitors** | Finds comparable accounts, compares their recent content against each account's own baseline, and names positioning gaps | YouTube · Instagram · TikTok |
+| **Review an account** | What works, what hurts, and what to continue, stop, or test; engagement rate; follower loss. Ask for a **deep review** and Kabo also watches the account's videos — frames and transcript — at every step | YouTube · Instagram · TikTok |
+| **Diagnose a reach drop** | Works out whether a drop, stall, or audience mismatch is real and where it comes from | YouTube · Instagram · TikTok |
+| **Break down a video** | Timestamped diagnosis of the hook, pacing, and retention risk — for your video, someone else's, or an unpublished cut on your machine — plus how it was edited | Any public video link or local file |
+| **Decide what to make next** | Content ideas from your account, trends, competitors, and comments, then scripts, hooks, and titles for the one you pick | YouTube · Instagram · TikTok |
+| **Plan when to post** | A four-week content calendar (CSV/ICS export) and posting times drawn from your own history — never a generic "best time" chart | YouTube · Instagram · TikTok |
+| **Build your brand** | Channel names, bios, and usernames within each platform's limits, a profile visual spec, and a media kit for brand outreach | YouTube · Instagram · TikTok |
+| **Make money** | Eligibility and threshold gaps for each platform's monetization programs; line-item pricing and a negotiation reply for a brand-deal brief | YouTube · Instagram · TikTok |
+| **Check a platform rule** | Verifies rules, thresholds, features, and rumours against official help pages, with quotes, links, and retrieval dates | YouTube · Instagram · TikTok |
+
+New here? Run `/kabo-start`: a short questionnaire, one real analysis of your own account, a 90-day plan, and your first piece of content.
+
+### Example requests
+
+```text
+/kabo-analyze why has https://youtube.com/@channel been growing lately?
+/kabo-analyze which TikTok sounds are rising fastest today?
+/kabo-analyze break down the hook of this Reel: <public link>
+/kabo-analyze find TikTok accounts in my niche I should study
+/kabo-analyze do a deep review of @handle on Instagram — watch the videos
+/kabo-analyze my Instagram reach dropped this month — what changed?
+/kabo-analyze how far is my channel from YouTube monetization?
+/kabo-analyze what should I charge for this sponsorship brief? <paste brief>
+```
+
+## How it works
+
+1. **You ask in plain language.** Kabo picks the matching research skill and shows it to you before anything runs.
+2. **Kabo fetches the public data.** Data is collected on Kabo's servers, so there are no API keys to set up. Every skill is signed by the platform and verified on your machine before it executes.
+3. **You get a report with its evidence.** Findings come with source links, the time window, the sample size, and what could not be measured.
+
+What Kabo does not do:
+
+- **It does not publish for you.** It analyzes, plans, and drafts; posting stays with you.
+- **It does not guess private metrics.** Click-through rate, retention, revenue, and Insights are never inferred from public views or likes.
+- **It does not promise virality.** When the evidence is thin, the report says so.
+
+## Quick start
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/kabo-sh/kabo-plugins/main/install.sh | bash
+```
+
+The installer finds Claude Code and/or Codex on your machine, installs the plugin, and offers to sign you in to Kabo right away. Then start a new session and run `/kabo-start`.
+
+You need:
+
+- **Claude Code 2.1.195 or newer**, or a **Codex** build with the `codex plugin` command (plus Node.js 20+)
+- **A Kabo account** — if you don't have one, continuing with Google during sign-in creates it
+
+Prefer to read the script first? Run it with `--dry-run`, or follow the manual steps under [Installation details](#installation-details).
+
+## Privacy
+
+Creator research data is fetched by Kabo's servers. Usage telemetry is limited to event-level metadata — which skill ran and whether it succeeded; no prompt, tool, or skill-output content is collected. On Claude Code, the sign-in credential is stored only in `~/.kabo/credentials.json` (mode `0600`) and can be removed with `/kabo-logout`. Details are in [Signing in](#signing-in).
+
+## More from Kabo
+
+- **[Free creator tools](https://kabo.sh/tools?utm_source=github&utm_medium=referral&utm_campaign=202610_plugins_readme&utm_content=readme_tools)** — calculators, checkers, and generators for YouTube, Instagram, and TikTok. No account needed.
+- **[Kabo in the browser](https://kabo.sh/?utm_source=github&utm_medium=referral&utm_campaign=202610_plugins_readme&utm_content=readme_web)** — the same research and drafting without a coding agent.
+- **Kabo for iPhone and Android** — pre-publish video feedback.
+
+---
+
+## Installation details
 
 One command, either host:
 
@@ -72,6 +139,7 @@ claude plugin marketplace add /absolute/path/to/kabo-plugins
 codex plugin marketplace add /absolute/path/to/kabo-plugins
 ```
 
+
 ## Signing in
 
 However you installed it, authorization is a separate step, and the two hosts do it differently.
@@ -103,3 +171,7 @@ For the authorization model in full, the data path, and the privacy boundary, se
 | `install.sh` | One-command installer for both hosts |
 
 > The `-alpha` suffix is meant literally: this is an early release, and interfaces may still change between versions.
+
+## License
+
+The code in this repository is licensed under the [Apache License 2.0](LICENSE). The license covers this client only: the research skills Kabo signs and delivers at run time, and the Kabo service and data behind them, are not part of this repository. As section 6 of the license states, it grants no rights to the Kabo name or logo.
