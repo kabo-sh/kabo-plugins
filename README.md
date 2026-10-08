@@ -171,3 +171,7 @@ For the authorization model in full, the data path, and the privacy boundary, se
 | `install.sh` | One-command installer for both hosts |
 
 > The `-alpha` suffix is meant literally: this is an early release, and interfaces may still change between versions.
+
+## License
+
+The code in this repository is licensed under the [Apache License 2.0](LICENSE). The license covers this client only: the research skills Kabo signs and delivers at run time, and the Kabo service and data behind them, are not part of this repository. As section 6 of the license states, it grants no rights to the Kabo name or logo.
