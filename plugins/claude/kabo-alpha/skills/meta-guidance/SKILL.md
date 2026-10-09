@@ -11,6 +11,12 @@ user-invocable: false
 kabo_guidance_snapshot: 25
 ---
 
+## Plugin cache-hit dispatch conventions
+
+This is a local CLI-plugin mechanic supplement to Step 3 below, including when signed dynamic guidance is active; it does not replace verification or change Step 5 routing.
+
+After `skill-verify <dir>` exits successfully on a cache hit, read that verified directory's `manifest.json` once before dispatch. Verification output alone is not a manifest digest. Read its literal `execution`, `pipeline`, `pipeline_operations`, `required.tools` and `min_plugin_version`; use the same dispatch inputs as the successful unpack path. Do not infer execution from the task or SKILL.md. Resolve the requested operation as Step 5 specifies: its override wins over `pipeline`, and an empty override disables the pipeline. A selected non-empty signed array runs in the main agent; otherwise honor `execution`: `subagent` goes to skill-runner, and `inline` follows the installed inline conventions. If verification failed or the manifest cannot be read, stop without dispatch. Do not redownload, unpack again, or perform a second verification. A cold download keeps its existing unpack-and-verify digest flow.
+
 # Kabo skill routing (meta-guidance)
 
 Routing only; details live in downloaded SKILL.md. Resolve `$KABO_DATA_ROOT` once (fallback `~/.kabo`); apply the installed host's path/tool mappings.
