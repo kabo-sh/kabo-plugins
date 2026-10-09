@@ -216,6 +216,51 @@ function collectArtifacts(parsed) {
   return out;
 }
 
+// 生成文件的正文只在宿主字段里传递。可见清单仍须逐项匹配，不能单凭 _meta
+// 让任意文件变成产物。每次只存有界分块；拼接和整文件校验由 Skill 脚本完成。
+function collectHostArtifacts(toolResponse, visible) {
+  let transport = toolResponse;
+  if (typeof transport === 'string') {
+    try { transport = JSON.parse(transport); } catch { return []; }
+  }
+  const payload = transport?._meta?.['kabo/artifact-bodies.v1'];
+  if (!payload || visible?.schema_version !== 'remake.artifact-chunks.v1') return [];
+  const projected = visible.artifacts;
+  const bodies = payload.artifacts;
+  const jobId = visible.job_id;
+  if (
+    payload.schema_version !== 'remake.artifact-chunks.v1' ||
+    payload.job_id !== jobId ||
+    typeof jobId !== 'string' ||
+    !/^[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}$/.test(jobId) ||
+    !Array.isArray(projected) || !Array.isArray(bodies) ||
+    projected.length === 0 || projected.length > 4 || projected.length !== bodies.length
+  ) return [];
+  const out = [];
+  const refs = new Set();
+  let total = 0;
+  for (const [index, artifact] of projected.entries()) {
+    const chunk = bodies[index];
+    if (
+      artifact?.kind !== 'remakechunk' || artifact.content_type !== 'application/octet-stream' ||
+      typeof artifact.object_ref !== 'string' || !/^[A-Za-z0-9/_-]{1,240}$/.test(artifact.object_ref) ||
+      refs.has(artifact.object_ref) || chunk?.object_ref !== artifact.object_ref ||
+      typeof artifact.sha256 !== 'string' || !/^[a-f0-9]{64}$/.test(artifact.sha256) ||
+      chunk.sha256 !== artifact.sha256 ||
+      !Number.isSafeInteger(artifact.bytes) || artifact.bytes <= 0 || artifact.bytes > 4 * 1024 * 1024 ||
+      typeof chunk.body_base64 !== 'string' || chunk.body_base64.length > 6 * 1024 * 1024
+    ) return [];
+    const body = decodeBase64(chunk.body_base64);
+    if (!body || body.byteLength !== artifact.bytes || sha256hex(body) !== artifact.sha256) return [];
+    total += body.byteLength;
+    if (total > 8 * 1024 * 1024) return [];
+    refs.add(artifact.object_ref);
+    out.push({ body, jobId, kind: artifact.kind, objectRef: artifact.object_ref,
+      sha256: artifact.sha256, contentType: artifact.content_type });
+  }
+  return out;
+}
+
 /**
  * One tool result may carry more than one envelope, and the three data-plane tools each wrap
  * theirs differently. Unwrap by shape, never by tool name: `required.tools` and host registration
@@ -292,7 +337,16 @@ async function main() {
   const toolResponse = event.tool_response ?? event.error;
   if (toolResponse === undefined || toolResponse === null) return;
 
-  const text = responseText(toolResponse);
+  // 有的宿主把整个 MCP 返回值序列化为字符串。仅对新的宿主正文协议拆出
+  // 可见清单；其他工具继续按原有字节路径保存，避免改掉历史信封。
+  let visibleResponse = toolResponse;
+  if (typeof toolResponse === 'string') {
+    try {
+      const transport = JSON.parse(toolResponse);
+      if (transport?._meta?.['kabo/artifact-bodies.v1']) visibleResponse = transport;
+    } catch { /* 普通文本由下面的原有解析处理。 */ }
+  }
+  const text = responseText(visibleResponse);
   if (typeof text !== 'string' || text.length === 0) return;
 
   let parsed;
@@ -305,7 +359,10 @@ async function main() {
   }
 
   const envelopes = collectEnvelopes(parsed);
-  const artifacts = collectArtifacts(parsed);
+  const artifacts = [
+    ...collectArtifacts(parsed),
+    ...collectHostArtifacts(toolResponse, parsed),
+  ];
   if (envelopes.length === 0 && artifacts.length === 0) return;
 
   // The session id partitions staging so two runs on one machine cannot drain each other's
