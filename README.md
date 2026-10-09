@@ -1,6 +1,8 @@
 # Kabo — creator research skills for Claude Code and Codex
 
-**See which videos take off on YouTube, Instagram, and TikTok. Learn why. Make yours — with the public evidence attached.**
+<p align="center">
+  <img src="docs/readme/hero.png" alt="Kabo — creator research skills for Claude Code and Codex. See which videos take off. Learn why. Make yours. 17 research skills, 3 platforms (YouTube, Instagram, TikTok), 2 coding agents (Claude Code, Codex), daily trend boards." width="100%" />
+</p>
 
 <p>
   <a href="https://kabo.sh/?utm_source=github&utm_medium=referral&utm_campaign=202610_plugins_readme&utm_content=readme_links_website">Website</a> ·
@@ -19,6 +21,27 @@
 Kabo is an AI partner for creators. This repository installs the [Kabo](https://kabo.sh/?utm_source=github&utm_medium=referral&utm_campaign=202610_plugins_readme&utm_content=readme_hero) plugin into Claude Code or Codex: ask a question in plain language and get a report built from public channel, account, and video data, with sources, dates, and limits stated.
 
 **Free to use.** Every Kabo account gets a free daily allowance.
+
+## See it in action
+
+<table>
+<tr>
+<td width="50%" valign="top">
+<img src="docs/readme/tiktok-sound-board.png" alt="Kabo's daily TikTok sound board for October 9, 2026: the five fastest-climbing sounds with video counts and new videos today" /><br/>
+<sub><b>The daily TikTok sound board</b> — the board Kabo's TikTok trend research reads: how many videos use each sound and how many were added today. <i>Captured from kabo.sh on 2026-10-09.</i></sub>
+</td>
+<td width="50%" valign="top">
+<img src="docs/readme/creator-breakouts.png" alt="Kabo creator page for a public YouTube channel: recorded views trend and breakout videos measured against the channel's own typical video" /><br/>
+<sub><b>Breakouts against the channel's own baseline</b> — a recorded views trend, and videos ranked by how far they beat the channel's typical video of the same format. <i>Captured from kabo.sh/creators on 2026-10-09.</i></sub>
+</td>
+</tr>
+<tr>
+<td colspan="2" valign="top">
+<img src="docs/readme/web-outliers.png" alt="Kabo web workspace, Trends page, Outlier tab: YouTube videos from the last 7 days ranked by views as a multiple of each creator's recent median, for example 180.1 times the creator median" /><br/>
+<sub><b>Outliers in the Kabo workspace</b> — each video's views as a multiple of its creator's recent median, filterable by platform, format, and time window. Kabo runs in the browser too; this plugin brings its research into Claude Code and Codex. <i>Captured from the Kabo web workspace on 2026-10-09.</i></sub>
+</td>
+</tr>
+</table>
 
 ## What you can do
 
