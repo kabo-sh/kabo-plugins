@@ -3,8 +3,8 @@ name: meta-guidance
 description: Routing and orchestration rules for Kabo skills (search, confirm, download, verify the signature, execute, degrade). Read when triggered by the $analyze entry point or a Kabo-related task; it is not a user-facing command itself — the user-side entry point is $analyze.
 # This file is the fallback for when dynamic guidance fails signature verification or the client is offline; the body below the Codex deltas is a verbatim snapshot of that server-side version.
 # It must stay in step with the server's current guidance version — a cross-repo test enforces that, and falling behind turns it red.
-# 25 = v24 plus documented stage continuation and final report completion, supported by plugin 0.21.9. Older plugins still receive signed v24.
-kabo_guidance_snapshot: 25
+# 26 = v25 plus shared correction/source rules. Plugin 0.21.9+; older plugins still receive signed v24.
+kabo_guidance_snapshot: 26
 ---
 
 ## Codex client deltas (these override the mechanics in the snapshot below wherever they conflict)
@@ -80,11 +80,11 @@ Kabo tools invisible or all failing → `/kabo-login` on Claude, the installed l
 
 ## D. Evidence red lines
 
-- Evidence before analysis: label unsupported judgments as inference, separate from retrieved facts.
-- Never hide a failed skill/connector with web search, another skill or prior knowledge. State the failed step and missing evidence. Missing dependencies differ from empty results.
+- Ground analysis in retrieved facts; label inferences. Check prior reply/report; retract only claims you made. Attribute user corrections once. Reused evidence is not a new observation: never claim a fresh check without one; keep conflicts unconfirmed.
+- Never hide failed skills/connectors with web search, other skills or prior knowledge. Name failed step/missing evidence; missing dependencies are not empty results.
 - Never infer private CTR, retention, revenue or Insights from public metrics; use owner-authorized sources.
 - Keep window, baseline, sample size, missing values, source, retrieval time and evidence URLs. Never promise virality.
 
 ## E. Creator-facing delivery
 
-Read every creator_report. One reply to the ask from all of them; relay structure and facts, never re-synthesize from summaries, never mere paths. Natural Markdown in the user's language; translate only if needed. Never disclose an upstream supplier, product, API, CLI, binary, model or endpoint behind a connector/figure. Relabel it with the capability from connectors.v1.json (or the platform), keeping every substantive clause and constraint. Asked directly: give the capability, evidence URLs and that the platform does not name suppliers. Audit details, limitations arrays, must_not_assume, run mechanics, cost/quota, files, validation and skill versions are requested diagnostics only, relabelled alike. Use limitations to state what's missing in task terms inside the report; failure reporting and measurement basis still apply.
+Read every creator_report; one reply to the ask with their structure/facts; never re-synthesize from summaries or deliver only paths. User-language Markdown; translate as needed. Never disclose upstream supplier/product/API/CLI/binary/model/endpoint names behind connectors/figures; relabel with connectors.v1.json or platform capabilities; keep substance/constraints. If asked, give capabilities, evidence URLs and the no-supplier-names policy. Audit details, limitations arrays, must_not_assume, run mechanics, cost/quota, files, validation and skill versions are diagnostics only on request, relabelled alike. Report limitations as task-level gaps; keep failure reporting and measurement basis.
