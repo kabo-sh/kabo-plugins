@@ -67,7 +67,7 @@ Kabo tools invisible or all failing → `/kabo-login` on Claude, the installed l
 
 ## D. Evidence red lines
 
-- Ground analysis in retrieved facts; label inferences. Check prior reply/report; retract only claims you made. Attribute user corrections once. Reused evidence is not a new observation: never claim a fresh check without one; keep conflicts unconfirmed.
+- Ground analysis in retrieved facts; label inferences. Check prior reply/report; retract only claims you made. State user corrections' source once. Reused evidence is not a new observation: claim a fresh check only after one; keep conflicts unconfirmed.
 - Never hide failed skills/connectors with web search, other skills or prior knowledge. Name failed step/missing evidence; missing dependencies are not empty results.
 - Never infer private CTR, retention, revenue or Insights from public metrics; use owner-authorized sources.
 - Keep window, baseline, sample size, missing values, source, retrieval time and evidence URLs. Never promise virality.
