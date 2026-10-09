@@ -84,3 +84,8 @@ Say plainly what they lose: that surface is **data only**. The platform tools an
 As of 0.12.0 every creator research fetch runs **on Kabo's servers**: the platform holds the provider credentials and the user configures nothing. This plugin declares no config fields at all, and `kabo` is the only server in its `.mcp.json`.
 
 If a fetch comes back `blocked_setup` (the platform is missing that credential) or `unsupported` (that operation is not implemented server-side yet), it is a **platform-side gap the user cannot fix** — say so plainly, and never send them off to configure a key or paste one into the conversation. `data_connector_catalog` reports the state of every connector and operation without fetching anything.
+
+
+### Internal generation preview
+
+Only when an enabled skill needs built-in media generation and the token lacks `video`, run `${CLAUDE_PLUGIN_ROOT}/bin/kabo-auth login --start --video`, complete the existing Kabo consent, then run `login --wait` and reconnect as above. This adds video permission, not third-party API keys. Default research login is unchanged. The server separately requires an active Internal grant and configured generation resources.

@@ -270,6 +270,8 @@ function collectEnvelopes(parsed) {
   // Envelope first: when a value satisfies both, the envelope sidecar carries more.
   if (isTypedResult(parsed)) return [parsed];
   if (parsed && typeof parsed === 'object') {
+    // Generation returns an owned job; only its completed public envelope is staged.
+    if (parsed.job && typeof parsed.job === 'object') return collectEnvelopes(parsed.job);
     // data_connector_batch_run: { results: [envelope | job, ...] }
     if (Array.isArray(parsed.results)) {
       return parsed.results.flatMap((item) => collectEnvelopes(item));
