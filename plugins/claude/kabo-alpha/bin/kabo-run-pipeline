@@ -1,13 +1,11 @@
 #!/usr/bin/env node
-// kabo-run-pipeline - run a Skill's fixed deterministic tail as one command inside one run directory.
+// kabo-run-pipeline - run documented deterministic commands inside one reserved run directory.
 //
-// Every data-plane Skill ends the same way: drain the staged envelopes into snapshot/, assemble a
-// snapshot, analyze it, validate, render the Creator-facing report, validate the render. None of
-// those steps needs a model decision, yet the skill-runner used to issue them as 4-8 separate Bash
-// calls with a model turn between each (measured 2026-09-07 on diagnose-reach-drop@0.2.0: 22
-// subagent turns and 8 Bash calls around 7.6 s of real work, inside a 280 s run). This command takes
-// the whole sequence as --step arguments and runs it in one process, so the runner spends exactly
-// one turn on it and the main agent can run a Skill with a signed pipeline with no subagent at all.
+// Adjacent deterministic commands can share a process, avoiding model turns between assemble,
+// analyze, validate and render. A signed non-empty pipeline keeps that one-shot path. If SKILL.md
+// instead requires another fetch or judgment between commands, --continue retains this reservation
+// after the same hygiene and verification gates. Only the final documented report call closes it;
+// an intermediate exit 0 is not a completed skill run.
 //
 // Placeholders, expanded in every step before it runs (each value becomes one single-quoted word for
 // /bin/sh, so a placeholder is written bare, never inside quotes):
@@ -55,7 +53,8 @@ import { fileURLToPath } from 'node:url';
 import { PLUGIN_VERSION, isSafeName, readJsonSilent, sha256hex, workRoot } from '../scripts/lib/common.js';
 
 const USAGE = `Usage: kabo-run-pipeline --run-id <id> --skill <skill-dir> [--staging <dir>] [--language <tag>]
-                         [--param k=v]... [--report <file-name>] (--step '<shell command>')...
+                         [--param k=v]... [--continue] [--report <file-name> | --report-file <run-file>]
+                         (--step '<shell command>')...
 
   --run-id    a run id printed by kabo-run-dir (the run directory must already exist)
   --skill     the skill cache directory the steps belong to (skill-verify must have passed on it)
@@ -68,6 +67,11 @@ const USAGE = `Usage: kabo-run-pipeline --run-id <id> --skill <skill-dir> [--sta
   --language  the value of the {language} placeholder
   --param     the value of a {param.<k>} placeholder (repeatable)
   --report    the one file under {run}/report to announce as creator_report (default: every file)
+  --report-file a report file in {run} itself, for a driver that owns its artifact layout
+  --continue execute the next documented stage, check hygiene and verify, but keep the run
+              running; make the required model judgment/fetch next. The final call omits this
+              flag and must name the report with --report or --report-file. Never finalize a
+              paused fetch stage or use this flag with a selected signed pipeline.
   --step      one shell command, run via /bin/sh -c with cwd {run}; repeatable, run in order,
               stopping at the first non-zero exit. Placeholders stand bare (write {param.handle},
               not "{param.handle}"): each value is quoted for the shell as it is substituted. Omit
@@ -177,7 +181,7 @@ if (args.length === 0 || args.includes('--help') || args.includes('-h')) {
   process.exit(args.length === 0 ? 1 : 0);
 }
 
-const opts = { runId: null, skill: null, staging: null, operation: null, language: null, report: null, params: new Map(), steps: [] };
+const opts = { runId: null, skill: null, staging: null, operation: null, language: null, report: null, reportFile: null, continue: false, params: new Map(), steps: [] };
 function valueOf(flag, index) {
   const value = args[index + 1];
   if (value === undefined) fail(`${flag} requires a value`);
@@ -192,6 +196,8 @@ for (let i = 0; i < args.length; i += 1) {
     case '--operation': opts.operation = valueOf(arg, i); i += 1; break;
     case '--language': opts.language = valueOf(arg, i); i += 1; break;
     case '--report': opts.report = valueOf(arg, i); i += 1; break;
+    case '--report-file': opts.reportFile = valueOf(arg, i); i += 1; break;
+    case '--continue': opts.continue = true; break;
     case '--step': opts.steps.push(valueOf(arg, i)); i += 1; break;
     case '--param': {
       const pair = valueOf(arg, i);
@@ -211,6 +217,10 @@ if (!opts.skill) fail('--skill is required');
 // The run id is joined into a path under the work root; the same traversal rule as skill ids applies.
 if (!isSafeName(opts.runId) || !/^[A-Za-z0-9][A-Za-z0-9._-]*$/.test(opts.runId)) fail(`illegal run id: ${JSON.stringify(opts.runId)}`);
 if (opts.report !== null && (!isSafeName(opts.report) || opts.report.startsWith('.'))) fail(`--report expects a bare file name, got ${JSON.stringify(opts.report)}`);
+if (opts.reportFile !== null && (!isSafeName(opts.reportFile) || opts.reportFile.startsWith('.'))) fail('--report-file expects a bare file name under the run directory');
+if (opts.report !== null && opts.reportFile !== null) fail('choose --report or --report-file, not both');
+if (opts.continue && (opts.report !== null || opts.reportFile !== null)) fail('--continue cannot announce a final report');
+if (opts.continue && opts.steps.length === 0) fail('--continue requires the documented stage as --step');
 
 const runId = opts.runId;
 const runDir = path.join(workRoot(), runId);
@@ -227,6 +237,48 @@ function isRegularFile(p) {
 if (!isDirectory(runDir)) refuse(`run ${runId} has no work directory yet; reserve it with kabo-run-dir first`);
 if (!isDirectory(skillDir)) refuse(`skill directory does not exist: ${skillDir}`);
 
+// Stage state is separate from the public manifest schema. Write it only after the first stage:
+// an empty reserved run must remain empty so a skill driver can adopt it instead of forking a run.
+const stageStateFile = path.join(runDir, '.pipeline-stages.json');
+const staged = opts.continue || opts.reportFile !== null || fs.existsSync(stageStateFile);
+let stageState = null;
+if (staged) {
+  // The lock lives beside the run, also keeping the first driver's fresh-directory check intact.
+  const lockFile = path.join(workRoot(), `.${runId}.pipeline-lock`);
+  let acquired = false;
+  for (let attempt = 0; attempt < 2 && !acquired; attempt += 1) {
+    try {
+      const fd = fs.openSync(lockFile, 'wx', 0o600);
+      fs.writeFileSync(fd, String(process.pid));
+      fs.closeSync(fd);
+      acquired = true;
+    } catch (error) {
+      if (error.code !== 'EEXIST') throw error;
+      let alive = true;
+      try {
+        const pid = Number(fs.readFileSync(lockFile, 'utf8'));
+        if (Number.isInteger(pid) && pid > 0) process.kill(pid, 0);
+      } catch (probe) {
+        if (probe.code === 'ESRCH') alive = false;
+      }
+      if (alive) refuse('another pipeline stage is running; wait for that command');
+      fs.unlinkSync(lockFile);
+    }
+  }
+  if (!acquired) refuse('could not acquire the pipeline stage lock');
+  process.on('exit', () => { try { fs.unlinkSync(lockFile); } catch {} });
+  const binding = { skill: fs.realpathSync(skillDir), checksum: readJsonSilent(path.join(skillDir, '.meta.json'))?.checksum, manifest: sha256hex(fs.readFileSync(path.join(skillDir, 'manifest.json'))) };
+  if (typeof binding.checksum !== 'string') refuse('staged execution requires signed package metadata');
+  stageState = readJsonSilent(stageStateFile);
+  if (fs.existsSync(stageStateFile) && (!stageState || stageState.status !== 'running')) refuse('this staged run is closed or its stage record is unreadable; reserve a new run');
+  if (stageState && (stageState.skill !== binding.skill || stageState.manifest !== binding.manifest || stageState.checksum !== binding.checksum)) refuse('a staged run cannot switch skill packages');
+  const record = readJsonSilent(path.join(runDir, 'run-manifest.json'));
+  const skillManifest = readJsonSilent(path.join(skillDir, 'manifest.json'));
+  if (!record || record.status !== 'running' || record.skill_id !== skillManifest?.name) refuse('staged execution requires a running reservation for this skill');
+  stageState ??= { ...binding, status: 'running', phases: 0 };
+  if (!opts.continue && opts.report === null && opts.reportFile === null) refuse('the final stage must name its report with --report or --report-file');
+}
+
 const subdirs = {
   snapshot: path.join(runDir, 'snapshot'),
   analysis: path.join(runDir, 'analysis'),
@@ -237,14 +289,15 @@ for (const dir of Object.values(subdirs)) fs.mkdirSync(dir, { recursive: true, m
 
 // ---------- steps and placeholders ----------
 
+const manifest = readJsonSilent(path.join(skillDir, 'manifest.json'));
+// An explicit empty operation override disables the default pipeline for that operation.
+const operations = manifest?.pipeline_operations;
+const selected = opts.operation !== null && operations && Object.hasOwn(operations, opts.operation)
+  ? operations[opts.operation] : manifest?.pipeline;
+const shipped = Array.isArray(selected) ? selected : [];
+if (staged && shipped.length > 0) refuse('a selected signed pipeline must run once without --continue or --report-file');
 let steps = opts.steps;
 if (steps.length === 0) {
-  const manifest = readJsonSilent(path.join(skillDir, 'manifest.json'));
-  // An explicit empty operation override disables the default pipeline for that operation.
-  const operations = manifest?.pipeline_operations;
-  const selected = opts.operation !== null && operations && Object.hasOwn(operations, opts.operation)
-    ? operations[opts.operation] : manifest?.pipeline;
-  const shipped = Array.isArray(selected) ? selected : [];
   if (shipped.length === 0) refuse('no --step was given and the selected operation has no non-empty pipeline array');
   steps = shipped.map((entry, index) => {
     if (!entry || typeof entry.cmd !== 'string' || entry.cmd.trim() === '') {
@@ -342,7 +395,14 @@ process.umask(0o077);
 let failure = null;
 let drained = null;
 
-if (stagingDir !== null) {
+// A continued run may have paused for a model judgment. Recheck its signed cache before allowing
+// another stage, as well as after it; no network or credential access is introduced.
+if (staged) {
+  const result = spawnSync(process.execPath, [VERIFY_BIN, '--local-only', skillDir], { stdio: 'inherit' });
+  if (result.status !== 0) failure = 'skill-verify --local-only went red before this stage; no step was run';
+}
+
+if (failure === null && stagingDir !== null) {
   drained = 0;
   if (isDirectory(stagingDir)) {
     const before = listEnvelopes().length;
@@ -419,7 +479,7 @@ if (failure === null) {
 // The manifest vouches for artifacts by content hash; a symlink's content is whatever its target
 // holds later, so it is not an artifact and the run cannot be reported as ok with one in place.
 if (failure === null) {
-  const links = ['analysis', 'report'].flatMap((kind) => entriesUnder(subdirs[kind])
+  const links = (staged ? ['run'] : ['analysis', 'report']).flatMap((kind) => entriesUnder(kind === 'run' ? runDir : subdirs[kind])
     .filter(({ dirent }) => dirent.isSymbolicLink())
     .map(({ rel }) => `${kind}/${rel}`));
   if (links.length > 0) {
@@ -451,7 +511,11 @@ if (failure === null) {
 // ---------- deliverables and the run manifest ----------
 
 let reportNames = [];
-if (failure === null) {
+if (failure === null && !opts.continue) {
+  if (opts.reportFile !== null) {
+    if (isRegularFile(path.join(runDir, opts.reportFile))) reportNames = [opts.reportFile];
+    else failure = `every step passed but ${opts.reportFile} does not exist`;
+  } else
   if (opts.report !== null) {
     if (isRegularFile(path.join(subdirs.report, opts.report))) reportNames = [opts.report];
     else failure = `every step passed but report/${opts.report} does not exist`;
@@ -471,7 +535,25 @@ function artifactsUnder(kind) {
 }
 
 function providerRequests() {
-  return listEnvelopes().map((file) => {
+  const files = listEnvelopes();
+  if (staged) {
+    for (const { dirent, full } of entriesUnder(runDir)) {
+      if (!dirent.isFile() || !full.endsWith('.json')) continue;
+      const value = readJsonSilent(full);
+      if (value?.connector_id && value?.operation && typeof value?.status === 'string') files.push(full);
+    }
+  }
+  const seenPaths = new Set();
+  const snapshotDigests = new Set(listEnvelopes().map(file => sha256hex(fs.readFileSync(file))));
+  return files.filter((file) => {
+    if (!staged) return true;
+    // A placed root file can copy a drained snapshot. Keep distinct snapshot requests even if
+    // their responses have identical bytes; only exclude another view of the same stored evidence.
+    if (seenPaths.has(file)) return false;
+    seenPaths.add(file);
+    if (path.dirname(file) !== subdirs.snapshot && snapshotDigests.has(sha256hex(fs.readFileSync(file)))) return false;
+    return true;
+  }).map((file) => {
     const envelope = readJsonSilent(file);
     if (!envelope || typeof envelope !== 'object') {
       return { connector_id: null, operation: null, status: 'unreadable', retrieved_at: null };
@@ -527,24 +609,39 @@ function finalizeRunManifest(status) {
   }
   const finished = Date.now();
   const startedMs = Date.parse(record.started_at);
-  record.finished_at = new Date(finished).toISOString();
-  record.duration_seconds = Math.max(0, finished - (Number.isFinite(startedMs) ? startedMs : pipelineStart)) / 1000;
+  record.finished_at = status === 'running' ? null : new Date(finished).toISOString();
+  record.duration_seconds = status === 'running' ? null : Math.max(0, finished - (Number.isFinite(startedMs) ? startedMs : pipelineStart)) / 1000;
   record.status = status;
   const requests = providerRequests();
   if (drained !== null || requests.length > 0) record.provider_requests = requests;
   record.artifacts = [...artifactsUnder('analysis'), ...artifactsUnder('report')];
+  if (staged) {
+    for (const entry of fs.readdirSync(runDir, { withFileTypes: true })) {
+      if (!entry.isFile() || entry.name.startsWith('.') || entry.name === 'run-manifest.json') continue;
+      const full = path.join(runDir, entry.name);
+      const value = entry.name.endsWith('.json') ? readJsonSilent(full) : null;
+      record.artifacts.push({ kind: entry.name === opts.reportFile ? 'report' : value?.connector_id ? 'snapshot' : 'analysis', path_or_uri: entry.name, sha256: sha256hex(fs.readFileSync(full)) });
+    }
+  }
   fs.writeFileSync(file, `${JSON.stringify(record, null, 2)}\n`, { mode: 0o600 });
   fs.chmodSync(file, 0o600);
 }
 
 try {
-  finalizeRunManifest(failure === null ? 'ok' : 'failed');
+  const status = failure !== null ? 'failed' : opts.continue ? 'running' : 'ok';
+  finalizeRunManifest(status);
+  if (staged) {
+    stageState.status = status;
+    stageState.phases += 1;
+    fs.writeFileSync(stageStateFile, `${JSON.stringify(stageState)}\n`, { mode: 0o600 });
+  }
 } catch (error) {
   if (failure === null) failure = `could not finalize run-manifest.json: ${error.message}`;
 }
 
 if (drained !== null) out(`drained=${drained}\n`);
-for (const name of reportNames) out(`creator_report: ${runId} → report/${name}\n`);
+for (const name of failure === null ? reportNames : []) out(`creator_report: ${runId} → ${opts.reportFile !== null ? name : `report/${name}`}\n`);
+if (failure === null && opts.continue) out('run-status: running; follow the next skill judgment or fetch before the final stage\n');
 out(`run-manifest: ${runId} → run-manifest.json\n`);
 
 if (failure !== null) {
