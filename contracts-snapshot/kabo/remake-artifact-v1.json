@@ -10,7 +10,12 @@
         "format": "uuid",
         "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$"
       },
-      "index": { "type": "integer", "minimum": 0, "maximum": 12 },
+      "source": {
+        "default": "materials",
+        "type": "string",
+        "enum": ["materials", "generation"]
+      },
+      "index": { "type": "integer", "minimum": 0, "maximum": 255 },
       "offset": {
         "default": 0,
         "type": "integer",
@@ -37,11 +42,20 @@
       "file": {
         "type": "object",
         "properties": {
-          "index": { "type": "integer", "minimum": 0, "maximum": 12 },
-          "kind": { "type": "string", "enum": ["voice_sample", "first_frame"] },
+          "index": { "type": "integer", "minimum": 0, "maximum": 255 },
+          "kind": {
+            "type": "string",
+            "enum": [
+              "voice_sample",
+              "first_frame",
+              "speech_audio",
+              "word_timings",
+              "generated_video"
+            ]
+          },
           "content_type": {
             "type": "string",
-            "enum": ["audio/wav", "image/png"]
+            "enum": ["audio/wav", "image/png", "application/json", "video/mp4"]
           },
           "bytes": {
             "type": "integer",
@@ -154,7 +168,8 @@
     "input": {
       "job_id": "00000000-0000-4000-8000-000000000001",
       "index": 0,
-      "offset": 0
+      "offset": 0,
+      "source": "materials"
     },
     "result": {
       "content": [

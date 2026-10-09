@@ -248,8 +248,8 @@ function collectArtifacts(parsed) {
   return out;
 }
 
-// 生成文件的正文只在宿主字段里传递。可见清单仍须逐项匹配，不能单凭 _meta
-// 让任意文件变成产物。每次只存有界分块；拼接和整文件校验由 Skill 脚本完成。
+// Host-only bytes must match the visible manifest; metadata alone is not evidence.
+// Stage bounded chunks here; the Skill assembles and verifies the whole file.
 function collectHostArtifacts(toolResponse, visible) {
   let transport = toolResponse;
   if (typeof transport === 'string') {
@@ -395,7 +395,7 @@ async function main() {
   const envelopes = collectEnvelopes(parsed);
   const artifacts = [
     ...collectArtifacts(parsed),
-    ...collectHostArtifacts(toolResponse, parsed),
+    ...envelopes.flatMap((visible) => collectHostArtifacts(toolResponse, visible)),
   ];
   if (envelopes.length === 0 && artifacts.length === 0) return;
 

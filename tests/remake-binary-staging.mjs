@@ -61,7 +61,12 @@ for (const host of ['codex','claude']) {
       p=>{p._meta['kabo/artifact-bodies.v1'].artifacts.push(p._meta['kabo/artifact-bodies.v1'].artifacts[0]);},
       p=>{const visible=JSON.parse(p.content[0].text);visible.artifacts[0].object_ref='../outside';p.content[0].text=JSON.stringify(visible);p._meta['kabo/artifact-bodies.v1'].artifacts[0].object_ref='../outside';},
     ];
-    for(const mutate of mutations){const payload=fixture();mutate(payload);const r=await hook(payload);assert.equal(r.code,0);}
+    for(const mutate of mutations){
+      const payload=fixture();mutate(payload);
+      // Both visible representations must carry the deliberately invalid test manifest.
+      if(payload.structuredContent) payload.structuredContent=JSON.parse(payload.content[0].text);
+      const r=await hook(payload);assert.equal(r.code,0);
+    }
     assert.equal((await fs.readdir(staging)).some(f=>f.endsWith('.art')),false);
   });
   test(`${host}: corrupted pin refuses binary while existing envelope persistence still works`,async t=>{
@@ -85,8 +90,15 @@ for (const host of ['codex','claude']) {
     const values=await Promise.all(jsons.map(f=>fs.readFile(path.join(staging,f),'utf8')));
     assert.ok(values.includes(JSON.stringify(old)));
   });
+  test(`${host}: complete structured manifest survives a truncated display`,async t=>{
+    const {staging,hook}=await setup(t);const payload=fixture();
+    payload.content=[{type:'text',text:'Display omitted; use the complete structured result.'}];
+    const result=await hook(payload);assert.equal(result.code,0);
+    const files=await fs.readdir(staging);const part=files.find(f=>f.endsWith('.art'));
+    assert.ok(part);assert.deepEqual(await fs.readFile(path.join(staging,part)),body);
+  });
   test(`${host}: metadata alone cannot create evidence`,async t=>{
-    const {staging,hook}=await setup(t);const payload=fixture();payload.content=[{type:'text',text:'No artifact manifest.'}];
+    const {staging,hook}=await setup(t);const payload=fixture();payload.content=[{type:'text',text:'No artifact manifest.'}];delete payload.structuredContent;
     const r=await hook(payload);assert.equal(r.code,0);await assert.rejects(fs.stat(staging),{code:'ENOENT'});
   });
 }

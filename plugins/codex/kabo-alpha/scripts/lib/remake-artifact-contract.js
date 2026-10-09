@@ -3,15 +3,15 @@ import path from 'node:path';
 import crypto from 'node:crypto';
 import { fileURLToPath } from 'node:url';
 
-// 执行提供方钉住的 JSON Schema，不在插件里维护第二份文件形状。
-// 当前制品只用这些关键字；将来出现未支持的关键字时拒绝，不默默忽略。
+// Execute the pinned provider schema instead of maintaining another file shape.
+// Unsupported future schema keywords fail closed instead of being ignored.
 const keywords = new Set(['$schema','type','properties','required','additionalProperties',
   'const','enum','minimum','maximum','exclusiveMinimum','exclusiveMaximum',
   'minLength','maxLength','pattern','format','default','minItems','maxItems','items']);
 function compile(schema) {
   if (!schema || typeof schema !== 'object' || Array.isArray(schema) ||
       Object.keys(schema).some(key => !keywords.has(key))) throw new Error('Unsupported artifact schema.');
-  // uuid 已由提供方 pattern 定义；不另抄一份格式规则。
+  // The provider pattern defines UUID validation; do not duplicate it.
   if (schema.format && (schema.format !== 'uuid' || !schema.pattern))
     throw new Error('Unsupported artifact format.');
   const properties = Object.fromEntries(Object.entries(schema.properties ?? {}).map(([key, child]) => [key,compile(child)]));
@@ -30,7 +30,7 @@ function compile(schema) {
           (schema.maxItems === undefined || value.length <= schema.maxItems) && (!item || value.every(item));
       case 'string': {
         if (typeof value !== 'string') return false;
-        // 不建立大字符串的第二份字符数组。
+        // Avoid another character array for large strings.
         let length = 0; for (const char of value) { length++; if (schema.maxLength !== undefined && length > schema.maxLength) return false; }
         return (schema.minLength === undefined || length >= schema.minLength) && (!pattern || pattern.test(value));
       }
