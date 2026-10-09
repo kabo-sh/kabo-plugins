@@ -2,6 +2,20 @@
 
 **See which videos take off on YouTube, Instagram, and TikTok. Learn why. Make yours — with the public evidence attached.**
 
+<p>
+  <a href="https://kabo.sh/?utm_source=github&utm_medium=referral&utm_campaign=202610_plugins_readme&utm_content=readme_links_website">Website</a> ·
+  <a href="#quick-start">Install</a> ·
+  <a href="https://kabo.sh/tools?utm_source=github&utm_medium=referral&utm_campaign=202610_plugins_readme&utm_content=readme_links_tools">Free creator tools</a> ·
+  <a href="https://github.com/kabo-sh/kabo-plugins/issues">Report an issue</a>
+</p>
+
+<p>
+  <a href="https://github.com/kabo-sh/kabo-plugins/releases"><img alt="release" src="https://img.shields.io/github/v/release/kabo-sh/kabo-plugins?style=flat&color=blueviolet&label=release" /></a>
+  <a href="LICENSE"><img alt="license" src="https://img.shields.io/badge/license-Apache%202.0-blue.svg?style=flat" /></a>
+  <a href="#supported-hosts"><img alt="works with" src="https://img.shields.io/badge/works%20with-Claude%20Code%20%C2%B7%20Codex-black?style=flat" /></a>
+  <a href="#quick-start"><img alt="install" src="https://img.shields.io/badge/install-1%20command-green?style=flat" /></a>
+</p>
+
 Kabo is an AI partner for creators. This repository installs the [Kabo](https://kabo.sh/?utm_source=github&utm_medium=referral&utm_campaign=202610_plugins_readme&utm_content=readme_hero) plugin into Claude Code or Codex: ask a question in plain language and get a report built from public channel, account, and video data, with sources, dates, and limits stated.
 
 **Free to use.** Every Kabo account gets a free daily allowance.
@@ -56,10 +70,16 @@ curl -fsSL https://raw.githubusercontent.com/kabo-sh/kabo-plugins/main/install.s
 
 The installer finds Claude Code and/or Codex on your machine, installs the plugin, and offers to sign you in to Kabo right away. Then start a new session and run `/kabo-start`.
 
-You need:
+### Supported hosts
 
-- **Claude Code 2.1.195 or newer**, or a **Codex** build with the `codex plugin` command (plus Node.js 20+)
-- **A Kabo account** — if you don't have one, continuing with Google during sign-in creates it
+| Host | Status | Requirement | Install by hand | Sign in |
+|---|:---:|---|---|---|
+| [Claude Code](https://code.claude.com/docs/en/overview) | ✅ Supported | 2.1.195 or newer | `claude plugin marketplace add kabo-sh/kabo-plugins` | `/kabo-login` |
+| [Codex](https://github.com/openai/codex) | ✅ Supported | A build with the `codex plugin` command, plus Node.js 20+ | `codex plugin marketplace add kabo-sh/kabo-plugins` | `codex mcp login kabo` |
+
+The one-line installer above covers both hosts. The full manual steps, including the Claude Code `enable` step and the Codex hook trust step, are under [Installation details](#installation-details).
+
+You also need **a Kabo account**. If you don't have one, continuing with Google during sign-in creates it.
 
 Prefer to read the script first? Run it with `--dry-run`, or follow the manual steps under [Installation details](#installation-details).
 
