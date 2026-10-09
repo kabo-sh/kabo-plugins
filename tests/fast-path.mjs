@@ -105,6 +105,12 @@ for (const host of ['claude', 'codex']) {
     assert.match(artifacts.stdout,/keyframes/);
     assert.match(artifacts.stdout,/transcript/);
     pipelineArgs.push('--staging',path.join(data,'envelope-staging',session));
+    // A recovered result need not use the drain's numeric naming convention.
+    const recovered = { connector_id: 'integration-fixture', operation: 'recovered-frames', status: 'completed_partial', request_id: 'req-recovered', limitations: ['One frame missing'], retrieved_at: '2026-10-09T00:00:00Z', data: { frames: [1] } };
+    await fs.writeFile(path.join(snapshot, 'media-recovered.json'), JSON.stringify(recovered));
+    await fs.writeFile(path.join(snapshot, 'media-recovered-copy.json'), JSON.stringify(recovered, null, 2));
+    await fs.writeFile(path.join(snapshot, 'media-original-copy.json'), JSON.stringify(envelopes[0]));
+    await fs.writeFile(path.join(snapshot, 'media-terminal-job.json'), JSON.stringify({ job_id: 'job-recovered', envelope: recovered }));
     const pipeline = await bin('kabo-run-pipeline',pipelineArgs);
     assert.equal(pipeline.code,0,pipeline.stderr);
     assert.match(pipeline.stdout,/creator_report:/);
@@ -132,7 +138,11 @@ for (const host of ['claude', 'codex']) {
     await assert.rejects(fs.stat(path.join(data,'work',defaultRun,'report/SHOULD-NOT-EXIST.md')), {code:'ENOENT'});
     assert.equal(syncRequests,1);
     const record = JSON.parse(await fs.readFile(path.join(data,'work',runId,'run-manifest.json'),'utf8'));
-    assert.equal(record.provider_requests.length,2);
+    assert.equal(record.provider_requests.length,3);
+    assert.deepEqual(record.provider_requests.find(row => row.operation === 'recovered-frames'), {
+      connector_id: recovered.connector_id, operation: recovered.operation,
+      status: recovered.status, retrieved_at: recovered.retrieved_at,
+    });
     assert.equal(record.status,'ok');
     assert.equal(record.runtime.agent,host === 'claude' ? 'claude-code' : 'codex');
     assert.equal((await fs.stat(path.join(data,'work',runId,'report/REPORT.md'))).mode & 0o777,0o600);
