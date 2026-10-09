@@ -170,10 +170,10 @@ export async function discoverOAuthEndpoints(endpoint = apiEndpoint(), timeoutMs
  *
  * @returns {Promise<{ok: true, device: object} | {ok: false, reason: 'network'|string}>}
  */
-export async function requestDeviceCode(deviceEndpoint, timeoutMs = DEVICE_CODE_TIMEOUT_MS) {
+export async function requestDeviceCode(deviceEndpoint, timeoutMs = DEVICE_CODE_TIMEOUT_MS, { video = false } = {}) {
   const res = await postJson(
     deviceEndpoint,
-    { client_id: OAUTH_CLIENT_ID, scope: OAUTH_SCOPE },
+    { client_id: OAUTH_CLIENT_ID, scope: video ? `${OAUTH_SCOPE} video` : OAUTH_SCOPE },
     timeoutMs,
   );
   if (res.transport === 'network') return { ok: false, reason: 'network' };
@@ -261,7 +261,7 @@ export async function refreshTokens(tokenEndpoint, refreshToken, timeoutMs = TOK
  * `previous` carries the fields a renewal response does not repeat (the endpoints, and the refresh
  * token itself when the server chose not to rotate it).
  */
-export function credentialsFromTokens({ endpoint, issuer, tokenEndpoint, tokens, previous = null, now = Date.now() }) {
+export function credentialsFromTokens({ endpoint, issuer, tokenEndpoint, tokens, previous = null, requestedScope = OAUTH_SCOPE, now = Date.now() }) {
   const accessTtlMs = Number.isFinite(tokens.expires_in) ? tokens.expires_in * 1000 : 120 * 60 * 1000;
   const refreshTtlMs = Number.isFinite(tokens.refresh_expires_in)
     ? tokens.refresh_expires_in * 1000
@@ -275,7 +275,7 @@ export function credentialsFromTokens({ endpoint, issuer, tokenEndpoint, tokens,
     issuer,
     token_endpoint: tokenEndpoint,
     client_id: OAUTH_CLIENT_ID,
-    scope: typeof tokens.scope === 'string' && tokens.scope !== '' ? tokens.scope : OAUTH_SCOPE,
+    scope: typeof tokens.scope === 'string' && tokens.scope !== '' ? tokens.scope : (previous?.scope || requestedScope),
     refresh_token: refreshToken,
     refresh_expires_at: new Date(now + refreshTtlMs).toISOString(),
     access_token: tokens.access_token,

@@ -61,3 +61,14 @@ Confirm instead of claiming success: call the registered `mcp__kabo__registry_sk
 As of 0.12.0 every creator research fetch runs **on Kabo's servers**: the platform holds the provider credentials, so there are no environment variables, provider keys, or extra MCP servers for the user to set up. `kabo` is the only server declared in this plugin's `.mcp.json`.
 
 If a fetch comes back `blocked_setup` (the platform is missing that credential) or `unsupported` (that operation is not implemented server-side yet), it is a **platform-side gap the user cannot fix** — report it plainly, never ask them to configure a key, and never substitute another data source. `data_connector_catalog` shows the state of every connector and operation without fetching anything.
+
+
+### Internal generation preview
+
+Only when an enabled skill needs built-in media generation and the current token lacks `video`, renew the existing Kabo consent with:
+
+```bash
+codex mcp login kabo --scopes openid,offline_access,account:read,registry,telemetry,data,video
+```
+
+Keep the default research login above unchanged for older servers. No third-party API key or separate account is required. The server also checks Internal access and configured resources; granting `video` alone does not enable generation.

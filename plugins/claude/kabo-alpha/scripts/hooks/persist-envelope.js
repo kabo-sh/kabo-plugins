@@ -45,6 +45,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
 import { fileURLToPath } from 'node:url';
+import { remakeArtifactContract } from '../lib/remake-artifact-contract.js';
 
 import { dataRoot, ensurePrivateDir, isSafeName, sha256hex } from '../lib/common.js';
 
@@ -247,6 +248,44 @@ function collectArtifacts(parsed) {
   return out;
 }
 
+// Host-only bytes must match the visible manifest; metadata alone is not evidence.
+// Stage bounded chunks here; the Skill assembles and verifies the whole file.
+function collectHostArtifacts(toolResponse, visible) {
+  let transport = toolResponse;
+  if (typeof transport === 'string') {
+    try { transport = JSON.parse(transport); } catch { return []; }
+  }
+  if (!transport?._meta) return [];
+  let contract;
+  try { contract = remakeArtifactContract(); } catch { return []; }
+  const payload = transport?._meta?.[contract.policy.host_meta_key];
+  if (!contract.visible(visible) || !contract.body(payload) || payload.job_id !== visible.job_id) return [];
+  const projected = visible.artifacts;
+  const bodies = payload.artifacts;
+  const jobId = visible.job_id;
+  if (projected.length !== bodies.length) return [];
+  const out = [];
+  const refs = new Set();
+  let total = 0;
+  for (const [index, artifact] of projected.entries()) {
+    const chunk = bodies[index];
+    if (
+      refs.has(artifact.object_ref) || chunk.object_ref !== artifact.object_ref ||
+      chunk.sha256 !== artifact.sha256 || artifact.bytes !== visible.file.chunk_bytes ||
+      artifact.object_ref !== `remake/${visible.file.index}/${visible.file.chunk_offset}` ||
+      visible.file.chunk_offset + artifact.bytes > visible.file.bytes
+    ) return [];
+    const body = decodeBase64(chunk.body_base64);
+    if (!body || body.byteLength !== artifact.bytes || sha256hex(body) !== artifact.sha256) return [];
+    total += body.byteLength;
+    if (total > contract.policy.chunk_bytes * contract.policy.chunks_per_result) return [];
+    refs.add(artifact.object_ref);
+    out.push({ body, jobId, kind: artifact.kind, objectRef: artifact.object_ref,
+      sha256: artifact.sha256, contentType: artifact.content_type });
+  }
+  return out;
+}
+
 /**
  * One tool result may carry more than one envelope, and the three data-plane tools each wrap
  * theirs differently. Unwrap by shape, never by tool name: `required.tools` and host registration
@@ -266,6 +305,8 @@ function collectEnvelopes(parsed) {
       const complete = collectEnvelopes(parsed.structuredContent);
       if (complete.length > 0) return complete;
     }
+    // Generation returns an owned job; only its public envelope is staged.
+    if (parsed.job && typeof parsed.job === 'object') return collectEnvelopes(parsed.job);
     // data_connector_batch_run: { results: [envelope | job, ...] }
     if (Array.isArray(parsed.results)) {
       return parsed.results.flatMap((item) => collectEnvelopes(item));
@@ -327,7 +368,15 @@ async function main() {
   const toolResponse = event.tool_response ?? event.error;
   if (toolResponse === undefined || toolResponse === null) return;
 
-  let text = responseText(toolResponse);
+  // Unwrap the new host-only binary transport without changing old envelope bytes.
+  let visibleResponse = toolResponse;
+  if (typeof toolResponse === 'string') {
+    try {
+      const transport = JSON.parse(toolResponse);
+      if (transport?._meta?.['kabo/artifact-bodies.v1']) visibleResponse = transport;
+    } catch { /* Ordinary text keeps the existing parsing path. */ }
+  }
+  let text = responseText(visibleResponse);
   if (typeof text !== 'string' || text.length === 0) return;
 
   let parsed;
@@ -344,7 +393,10 @@ async function main() {
   }
 
   const envelopes = collectEnvelopes(parsed);
-  const artifacts = collectArtifacts(parsed);
+  const artifacts = [
+    ...collectArtifacts(parsed),
+    ...envelopes.flatMap((visible) => collectHostArtifacts(toolResponse, visible)),
+  ];
   if (envelopes.length === 0 && artifacts.length === 0) return;
 
   // The session id partitions staging so two runs on one machine cannot drain each other's

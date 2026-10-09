@@ -51,7 +51,7 @@ import {
 
 const USAGE = `Usage:
   kabo-auth login [--no-open] [--quiet-next-steps]
-  kabo-auth login --start [--no-open]
+  kabo-auth login --start [--no-open] [--video]
   kabo-auth login --wait [--quiet-next-steps]
   kabo-auth status
   kabo-auth logout
@@ -65,6 +65,7 @@ Description:
           included); a Claude Code CLI session that is already open can instead run
           /mcp reconnect plugin:kabo-alpha:kabo (CLI 2.1.205+; older CLI: /reload-plugins) to
           reconnect without a restart.
+          --video adds permission for Internal built-in video generation. It does not request API keys.
           --quiet-next-steps (or KABO_AUTH_QUIET_NEXT_STEPS=1) leaves those next-steps lines
           out - for a caller such as the installer that prints its own.
           --start does everything up to the waiting: it prints the URL and the code, records the
@@ -238,7 +239,7 @@ function deleteDeviceLoginState(onlyForDeviceCode = null) {
  * Shared verbatim by the blocking login and --start - at this stage the two modes have not diverged
  * yet, so every failure exits here with the same message either way.
  */
-async function beginDeviceSignIn() {
+async function beginDeviceSignIn(video = false) {
   const endpoint = apiEndpoint();
 
   // 1. Discovery. Endpoints are discovered, never hardcoded - and this is where that rule pays for
@@ -255,7 +256,7 @@ async function beginDeviceSignIn() {
   // 2. Ask for a device code. The request carries client_id and scope and nothing else - never a
   // user_id, which would pre-bind the code to a named user and make the confirmation page a targeted
   // phishing device.
-  const requested = await requestDeviceCode(discovered.device_authorization_endpoint);
+  const requested = await requestDeviceCode(discovered.device_authorization_endpoint, undefined, { video });
   if (!requested.ok) {
     if (requested.reason === 'network') {
       die(2, `Could not reach ${endpoint} to start the sign-in. Check the network and try again.`);
@@ -385,8 +386,8 @@ const PERSIST_LOCK_MAX_WAIT_MS = 8000;
  * --wait deletes its pending state there, so a crash between the two steps leaves at worst a stale
  * pending file (harmless - its device code is already consumed), never a stored-then-lost credential.
  */
-async function persistAndAnnounce({ endpoint, issuer, tokenEndpoint, tokens, beforeAnnounce = null, quietNextSteps = false }) {
-  const credentials = credentialsFromTokens({ endpoint, issuer, tokenEndpoint, tokens });
+async function persistAndAnnounce({ endpoint, issuer, tokenEndpoint, tokens, requestedScope = OAUTH_SCOPE, beforeAnnounce = null, quietNextSteps = false }) {
+  const credentials = credentialsFromTokens({ endpoint, issuer, tokenEndpoint, tokens, requestedScope });
   if (!credentials.refresh_token) {
     // The one silent failure this flow can produce: no refresh token means the scope did not carry
     // offline_access, and the user would be signed out every 2 hours with no explanation. Fail
@@ -441,8 +442,8 @@ async function persistAndAnnounce({ endpoint, issuer, tokenEndpoint, tokens, bef
 }
 
 /** The blocking sign-in: --start and --wait in one process, for a human sitting at the terminal */
-async function cmdLogin(noOpen, quietNextSteps) {
-  const { endpoint, discovered, device, verifyUrl, userCode } = await beginDeviceSignIn();
+async function cmdLogin(noOpen, quietNextSteps, video = false) {
+  const { endpoint, discovered, device, verifyUrl, userCode } = await beginDeviceSignIn(video);
 
   announceVerification({ verifyUrl, userCode, noOpen });
   const minutes = Math.max(1, Math.round((Number(device.expires_in) || 900) / 60));
@@ -471,13 +472,14 @@ async function cmdLogin(noOpen, quietNextSteps) {
     issuer: discovered.issuer,
     tokenEndpoint: discovered.token_endpoint,
     tokens: result.tokens,
+    requestedScope: video ? `${OAUTH_SCOPE} video` : OAUTH_SCOPE,
     quietNextSteps,
   });
 }
 
 // ---------------------------------------------------------------- login --start
 
-async function cmdLoginStart(noOpen) {
+async function cmdLoginStart(noOpen, video = false) {
   const endpoint = apiEndpoint();
 
   // Idempotent reuse: while a pending sign-in for this deployment is inside its deadline, re-running
@@ -492,6 +494,8 @@ async function cmdLoginStart(noOpen) {
   // floor: see that constant for why a code with seconds left is worth less than a fresh one.
   const pending = readDeviceLoginState();
   if (pending && pending.endpoint === endpoint && pending.deadline - Date.now() >= START_REUSE_MIN_REMAINING_MS) {
+    if (video && !pending.scope.split(' ').includes('video'))
+      die(1, 'Finish the existing sign-in with login --wait, then start a new login --start --video to grant video generation permission. The pending sign-in was kept.');
     announceVerification({
       verifyUrl: safeBrowserUrl(pending.verification_url), // non-null: readDeviceLoginState checked it
       userCode: pending.user_code,
@@ -503,7 +507,7 @@ async function cmdLoginStart(noOpen) {
     process.exit(0);
   }
 
-  const { discovered, device, verifyUrl, userCode } = await beginDeviceSignIn();
+  const { discovered, device, verifyUrl, userCode } = await beginDeviceSignIn(video);
   const advertised = Number(device.interval);
   const state = {
     version: DEVICE_LOGIN_STATE_VERSION,
@@ -511,7 +515,7 @@ async function cmdLoginStart(noOpen) {
     issuer: discovered.issuer,
     token_endpoint: discovered.token_endpoint,
     client_id: OAUTH_CLIENT_ID,
-    scope: OAUTH_SCOPE,
+    scope: video ? `${OAUTH_SCOPE} video` : OAUTH_SCOPE,
     device_code: device.device_code,
     user_code: userCode,
     verification_url: verifyUrl,
@@ -607,6 +611,7 @@ async function cmdLoginWait(quietNextSteps) {
     issuer: pending.issuer,
     tokenEndpoint: pending.token_endpoint,
     tokens: result.tokens,
+    requestedScope: pending.scope,
     beforeAnnounce: () => deleteDeviceLoginState(pending.device_code),
     quietNextSteps,
   });
@@ -703,7 +708,7 @@ if (!cmd || cmd === '--help' || cmd === '-h' || cmd === 'help') {
   // --wiat') falls through into the blocking login: it runs discovery, leases a fresh device code -
   // silently voiding a pending --start another session may be mid-approving - and then holds the
   // terminal for up to 15 minutes. A typo must cost a usage line, never a network side effect.
-  const unknown = rest.filter((arg) => !['--start', '--wait', '--no-open', '--quiet-next-steps'].includes(arg));
+  const unknown = rest.filter((arg) => !['--start', '--wait', '--no-open', '--quiet-next-steps', '--video'].includes(arg));
   if (unknown.length > 0) {
     die(1, `Unknown option for login: ${unknown.join(' ')}\n\n${USAGE}`);
   }
@@ -716,9 +721,9 @@ if (!cmd || cmd === '--help' || cmd === '-h' || cmd === 'help') {
   } else if (wait) {
     await cmdLoginWait(quietNextSteps);
   } else if (start) {
-    await cmdLoginStart(rest.includes('--no-open'));
+    await cmdLoginStart(rest.includes('--no-open'), rest.includes('--video'));
   } else {
-    await cmdLogin(rest.includes('--no-open'), quietNextSteps);
+    await cmdLogin(rest.includes('--no-open'), quietNextSteps, rest.includes('--video'));
   }
 } else if (cmd === 'status') {
   cmdStatus();

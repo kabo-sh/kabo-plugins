@@ -1,0 +1,14 @@
+{
+  "repository": "kabo-sh/kabo",
+  "commit": "18b4a346ace4af6f03d9100833905b975d972ede",
+  "files": {
+    "remake-artifact-v1.json": {
+      "path": "docs/contracts/remake-artifact-v1.json",
+      "sha256": "922e2811e51bfa2a26c9157b9e7768a1fd072bda1cb3d876d286af96eca56976"
+    },
+    "remake-artifact-v1.sha256": {
+      "path": "docs/contracts/remake-artifact-v1.sha256",
+      "sha256": "6939a842adf57432483376199e520fa19ce08405a7448722a7ad0869012cb689"
+    }
+  }
+}

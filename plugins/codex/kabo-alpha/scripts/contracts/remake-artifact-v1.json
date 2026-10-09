@@ -1,0 +1,218 @@
+{
+  "schema_version": "kabo.remake-artifact-contract.v1",
+  "tool": "creator_remake_artifact",
+  "input_schema": {
+    "$schema": "https://json-schema.org/draft/2020-12/schema",
+    "type": "object",
+    "properties": {
+      "job_id": {
+        "type": "string",
+        "format": "uuid",
+        "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$"
+      },
+      "source": {
+        "default": "materials",
+        "type": "string",
+        "enum": ["materials", "generation"]
+      },
+      "index": { "type": "integer", "minimum": 0, "maximum": 255 },
+      "offset": {
+        "default": 0,
+        "type": "integer",
+        "minimum": 0,
+        "maximum": 20971520
+      }
+    },
+    "required": ["job_id", "index"],
+    "additionalProperties": false
+  },
+  "output_schema": {
+    "$schema": "https://json-schema.org/draft/2020-12/schema",
+    "type": "object",
+    "properties": {
+      "schema_version": {
+        "type": "string",
+        "const": "remake.artifact-chunks.v1"
+      },
+      "job_id": {
+        "type": "string",
+        "format": "uuid",
+        "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$"
+      },
+      "file": {
+        "type": "object",
+        "properties": {
+          "index": { "type": "integer", "minimum": 0, "maximum": 255 },
+          "kind": {
+            "type": "string",
+            "enum": [
+              "voice_sample",
+              "first_frame",
+              "speech_audio",
+              "word_timings",
+              "generated_video"
+            ]
+          },
+          "content_type": {
+            "type": "string",
+            "enum": ["audio/wav", "image/png", "application/json", "video/mp4"]
+          },
+          "bytes": {
+            "type": "integer",
+            "exclusiveMinimum": 0,
+            "maximum": 20971520
+          },
+          "sha256": { "type": "string", "pattern": "^[a-f0-9]{64}$" },
+          "chunk_offset": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 9007199254740991
+          },
+          "chunk_bytes": {
+            "type": "integer",
+            "exclusiveMinimum": 0,
+            "maximum": 4194304
+          }
+        },
+        "required": [
+          "index",
+          "kind",
+          "content_type",
+          "bytes",
+          "sha256",
+          "chunk_offset",
+          "chunk_bytes"
+        ],
+        "additionalProperties": false
+      },
+      "artifacts": {
+        "minItems": 1,
+        "maxItems": 1,
+        "type": "array",
+        "items": {
+          "type": "object",
+          "properties": {
+            "kind": { "type": "string", "const": "remakechunk" },
+            "object_ref": {
+              "type": "string",
+              "pattern": "^remake\\/[0-9]+\\/[0-9]+$"
+            },
+            "content_type": {
+              "type": "string",
+              "const": "application/octet-stream"
+            },
+            "bytes": {
+              "type": "integer",
+              "exclusiveMinimum": 0,
+              "maximum": 4194304
+            },
+            "sha256": { "type": "string", "pattern": "^[a-f0-9]{64}$" }
+          },
+          "required": ["kind", "object_ref", "content_type", "bytes", "sha256"],
+          "additionalProperties": false
+        }
+      }
+    },
+    "required": ["schema_version", "job_id", "file", "artifacts"],
+    "additionalProperties": false
+  },
+  "host_body_schema": {
+    "$schema": "https://json-schema.org/draft/2020-12/schema",
+    "type": "object",
+    "properties": {
+      "schema_version": {
+        "type": "string",
+        "const": "remake.artifact-chunks.v1"
+      },
+      "job_id": {
+        "type": "string",
+        "format": "uuid",
+        "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$"
+      },
+      "artifacts": {
+        "minItems": 1,
+        "maxItems": 1,
+        "type": "array",
+        "items": {
+          "type": "object",
+          "properties": {
+            "object_ref": {
+              "type": "string",
+              "pattern": "^remake\\/[0-9]+\\/[0-9]+$"
+            },
+            "sha256": { "type": "string", "pattern": "^[a-f0-9]{64}$" },
+            "body_base64": {
+              "type": "string",
+              "minLength": 4,
+              "maxLength": 5592408,
+              "pattern": "^[A-Za-z0-9+/]+={0,2}$"
+            }
+          },
+          "required": ["object_ref", "sha256", "body_base64"],
+          "additionalProperties": false
+        }
+      }
+    },
+    "required": ["schema_version", "job_id", "artifacts"],
+    "additionalProperties": false
+  },
+  "x-kabo-policy": {
+    "host_meta_key": "kabo/artifact-bodies.v1",
+    "chunk_bytes": 4194304,
+    "file_bytes": 20971520,
+    "chunks_per_result": 1,
+    "binary_kind": "remakechunk",
+    "binary_content_type": "application/octet-stream"
+  },
+  "public_vector": {
+    "input": {
+      "job_id": "00000000-0000-4000-8000-000000000001",
+      "index": 0,
+      "offset": 0,
+      "source": "materials"
+    },
+    "result": {
+      "content": [
+        {
+          "type": "text",
+          "text": "{\"schema_version\":\"remake.artifact-chunks.v1\",\"job_id\":\"00000000-0000-4000-8000-000000000001\",\"file\":{\"index\":0,\"kind\":\"voice_sample\",\"content_type\":\"audio/wav\",\"bytes\":48,\"sha256\":\"e88e2c1084d62792150c9e01a4823d6a802a70c17b0c3ee955f3fa07497f0c71\",\"chunk_offset\":0,\"chunk_bytes\":48},\"artifacts\":[{\"kind\":\"remakechunk\",\"object_ref\":\"remake/0/0\",\"content_type\":\"application/octet-stream\",\"bytes\":48,\"sha256\":\"e88e2c1084d62792150c9e01a4823d6a802a70c17b0c3ee955f3fa07497f0c71\"}]}"
+        }
+      ],
+      "structuredContent": {
+        "schema_version": "remake.artifact-chunks.v1",
+        "job_id": "00000000-0000-4000-8000-000000000001",
+        "file": {
+          "index": 0,
+          "kind": "voice_sample",
+          "content_type": "audio/wav",
+          "bytes": 48,
+          "sha256": "e88e2c1084d62792150c9e01a4823d6a802a70c17b0c3ee955f3fa07497f0c71",
+          "chunk_offset": 0,
+          "chunk_bytes": 48
+        },
+        "artifacts": [
+          {
+            "kind": "remakechunk",
+            "object_ref": "remake/0/0",
+            "content_type": "application/octet-stream",
+            "bytes": 48,
+            "sha256": "e88e2c1084d62792150c9e01a4823d6a802a70c17b0c3ee955f3fa07497f0c71"
+          }
+        ]
+      },
+      "_meta": {
+        "kabo/artifact-bodies.v1": {
+          "schema_version": "remake.artifact-chunks.v1",
+          "job_id": "00000000-0000-4000-8000-000000000001",
+          "artifacts": [
+            {
+              "object_ref": "remake/0/0",
+              "sha256": "e88e2c1084d62792150c9e01a4823d6a802a70c17b0c3ee955f3fa07497f0c71",
+              "body_base64": "UklGRigAAABXQVZFZm10IBAAAAABAAEAgLsAAAB3AQACABAAZGF0YQQAAAAAAAAA"
+            }
+          ]
+        }
+      }
+    }
+  }
+}
