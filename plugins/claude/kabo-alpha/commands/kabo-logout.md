@@ -1,25 +1,8 @@
 ---
-description: Revoke Kabo's platform authorization on every device, then delete this machine's credential and caches
+description: Log out of Kabo on this machine — delete this machine's credential and local caches; other devices keep their access
 ---
 
-Log the user out of Kabo properly. That is **two** actions, and only doing both is a logout:
-
-1. **Revoke on the platform** — over the MCP connection that is currently authorized.
-2. **Delete this machine's credential** — plus the local skill cache and trust material.
-
-**The order cannot be swapped.** Step 1 needs a working connection, and the connection needs the credential that step 2 deletes. Delete first and the revocation becomes impossible from here.
-
-## 1. Revoke the authorization (do this first)
-
-Call `mcp__plugin_kabo-alpha_kabo__auth_revoke_all` with no arguments.
-
-It destroys **every** OAuth grant the account has issued to Kabo — refresh tokens and stored consents, on every device and in every MCP client, not just this session. It rides the already-authorized connection, so it needs nothing from you.
-
-**If the Kabo tools are invisible or the call returns 401**: this machine is not authorized, so there is nothing to revoke. Say exactly that — it is not a failure — and go straight to step 2, which still cleans up anything left on disk.
-
-**Do not** try any other revocation route if the call errors: no HTTP request assembled in Bash, no hunt for a local token. Report the error and run step 2 anyway — on this machine that is already a complete cutoff.
-
-## 2. Delete the local credential and caches
+Log the user out of Kabo **on this machine**. One action, entirely local:
 
 Run the bundled script with Bash (`bin/` is already on PATH; the absolute path `${CLAUDE_PLUGIN_ROOT}/bin/kabo-auth` also works):
 
@@ -27,7 +10,13 @@ Run the bundled script with Bash (`bin/` is already on PATH; the absolute path `
 kabo-auth logout
 ```
 
-Report what it deleted:
+**This machine only, and that is the whole design.** It deletes what this machine holds and touches nothing else: the account's authorization on other machines, in other MCP clients, and in the desktop app is left exactly as it was. Nothing here goes over the network, so a logout can never fail on a bad connection, never hangs, and is complete the second the command returns.
+
+**Do not** call `mcp__plugin_kabo-alpha_kabo__auth_revoke_all` here. That tool revokes the account's grants on *every* device, which is a different request with a different command — `/kabo-revoke`. Route the user there if what they actually want is "sign me out everywhere" or "I lost a machine"; never widen a logout into a revocation on your own.
+
+## What it deleted
+
+Report the paths:
 - `~/.kabo/credentials.json`: **the sign-in credential itself** — after this, this machine cannot call Kabo at all
 - `~/.kabo/credentials.lock`: the renewal lock, if one was left behind
 - `~/.kabo/skill-cache/`: downloaded and unpacked skills plus revocation markers
@@ -37,17 +26,17 @@ Report what it deleted:
 - the signature-verified meta-guidance cache
 - the buffered skill-verification failure records still awaiting relay
 
-## 3. Tell the user what is now true
+If the script reports it could not remove `credentials.json`, say so plainly and do not call the logout done: the file still being there means this machine is still signed in.
 
-Report the counts `auth_revoke_all` returned, then be exact about *when* each surface actually stops working. Do not compress this into one sentence — the middle two rows are what users get wrong:
+## Tell the user what is now true
 
-| Surface | Cut off | Why |
-|---|---|---|
-| This machine's next call | **the same second** | the credential file is gone, so the plugin emits no header and the request 401s |
-| A call already in flight here | when it finishes | nothing interrupts a request already on the wire |
-| An access token cached **on another machine** | **up to 2 hours (120 minutes)** | it is a self-contained JWT and the platform runs no denylist |
-| Renewal, anywhere | **the same second** | the refresh token is revoked, so every renewal fails immediately |
+Two facts, and the second is the one users get wrong — do not drop it:
 
-So: revocation plus step 2 means *this* machine is cut off instantly, and any other machine keeps working for at most 2 hours before it can no longer renew.
+| Surface | State after this command |
+|---|---|
+| This machine's next call | **cut off the same second** — the credential file is gone, so the plugin emits no header and the request 401s |
+| Every other device, MCP client, and the desktop app | **unchanged** — they keep working and keep renewing, exactly as before |
 
-Signing back in later takes one command — `/kabo-login` walks them through it.
+A call already in flight from this machine finishes; nothing interrupts a request already on the wire.
+
+If the user wanted "everywhere", that is `/kabo-revoke`. Signing back in here later takes one command — `/kabo-login` walks them through it.

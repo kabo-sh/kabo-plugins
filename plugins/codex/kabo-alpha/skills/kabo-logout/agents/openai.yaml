@@ -1,6 +1,6 @@
 interface:
   display_name: "Kabo Logout"
-  short_description: "Revoke Kabo's access everywhere, then clear the local cache"
+  short_description: "Log out of Kabo on this machine and clear the local cache"
   default_prompt: "Use $kabo-logout to log me out of Kabo."
 policy:
   allow_implicit_invocation: false

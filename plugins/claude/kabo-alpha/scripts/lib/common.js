@@ -21,8 +21,10 @@
 //   reported directly by the mcp_tool hooks in hooks.json, metadata only - no subagent output and
 //   no other content-level field ever rides that channel. The client's only local buffer
 //   is pending-reports.jsonl: it stores only the **telemetry allowlist fields** of skill-verify
-//   failure events, and it is not a reporting channel - reporting still happens only when the main
-//   agent rides the authorized MCP connection (see the pending-reports section at the end of this file).
+//   failure events, relayed by bin/kabo-headers --relay at session start and pruned once the
+//   platform confirms them (see the pending-reports section at the end of this file). Nothing about
+//   that buffer is injected into a model's context any more, and the model is not asked to relay it.
+//   The allowlist is unchanged by that move: it now guards the relay payload instead of a prompt.
 //   The following must never be read, serialized, or reported:
 //     - prompt (the user's prompt)
 //     - tool_input (tool arguments)
@@ -40,7 +42,7 @@ import os from 'node:os';
 import crypto from 'node:crypto';
 import { fileURLToPath } from 'node:url';
 
-export const PLUGIN_VERSION = '0.19.1';
+export const PLUGIN_VERSION = '0.21.10';
 export const SUPPORTED_API_VERSION = '1.0.0';
 export const DEFAULT_ENDPOINT = 'https://kabo.sh';
 export const CACHE_TTL_MS = 14 * 24 * 60 * 60 * 1000; // skill cache TTL: 14 days
@@ -232,16 +234,43 @@ export function pendingReportsPath() {
 }
 
 /** last-known-good cache of signature-verified meta-guidance */
+// Keep v19 out of the legacy cache: old clients must retain their own rollback floor.
 export function guidanceCachePath(endpoint = apiEndpoint()) {
   const bucket = sha256hex(String(endpoint)).slice(0, 16);
-  return path.join(dataRoot(), `meta-guidance.${bucket}.json`);
+  return path.join(dataRoot(), `meta-guidance.fast-path.${bucket}.json`);
+}
+
+/**
+ * The guidance body of the current session as plain Markdown: <data root>/meta-guidance.current.md.
+ *
+ * SessionStart writes the exact text it injected between the sentinels (or, when no verified
+ * dynamic guidance was available, the body of the static skills/meta-guidance/SKILL.md), so that a
+ * process which cannot see the model context - the skill-runner subagent, a bin/ script - can read
+ * the same rules from disk instead of having them re-typed into a dispatch. Unbucketed on purpose:
+ * it is "what this session runs on", not a per-endpoint cache; the signed envelope cache above is
+ * what carries provenance.
+ */
+export function guidanceBodyPath() {
+  return path.join(dataRoot(), 'meta-guidance.current.md');
+}
+
+/**
+ * The "## C." section of that body on its own: <data root>/execution-conventions.md.
+ *
+ * Section C is the ~3 KB block every skill-runner dispatch used to carry verbatim - measured at
+ * 25 s of the main agent typing it out per run. The dispatcher now passes this path instead, and
+ * the runner reads it first. Derived from the same body as guidanceBodyPath(), never authored
+ * separately, so the two files cannot disagree.
+ */
+export function executionConventionsPath() {
+  return path.join(dataRoot(), 'execution-conventions.md');
 }
 
 /** Guidance caches for all endpoints (used by logout cleanup) */
 export function guidanceCachePaths() {
   try {
     return fs.readdirSync(dataRoot())
-      .filter((f) => /^meta-guidance\.[0-9a-f]{16}\.json$/.test(f) || f === 'meta-guidance.json')
+      .filter((f) => /^meta-guidance\.(?:fast-path\.)?[0-9a-f]{16}\.json$/.test(f) || f === 'meta-guidance.json')
       .map((f) => path.join(dataRoot(), f));
   } catch {
     return [];
@@ -252,6 +281,30 @@ export function guidanceCachePaths() {
 export function disabledMarkerPath(skillId) {
   return path.join(cacheRoot(), `${skillId}.disabled`);
 }
+
+/**
+ * Snapshot of the last revocation list this machine received: <data root>/revocation-sync.json =
+ * {synced_at, revocations, server_api_version}. Written by SessionStart and by every live query
+ * bin/skill-verify makes; read by skill-verify in place of its own GET /api/sync while the snapshot
+ * is younger than REVOCATION_SYNC_TTL_MS.
+ *
+ * Why it exists: one measured skill run (2026-09-07) verified the same cached skill three times, and
+ * each verification paid a live revocation GET of 1-3 s for a list SessionStart had fetched minutes
+ * earlier. The kill-switch semantics do not change - a stale or missing snapshot still means a live
+ * query, the local .disabled marker is still checked first in every mode, and a revocation can
+ * therefore be at most TTL late on a machine that is online (the pre-existing offline path already
+ * tolerated unbounded staleness by design).
+ *
+ * The file is in the 0700 data root next to the .disabled markers, so it carries the same local
+ * trust: whoever can plant an empty fresh snapshot can also delete a marker. Nothing in it is
+ * secret (the list is served by a public endpoint).
+ */
+export function revocationSyncPath() {
+  return path.join(dataRoot(), 'revocation-sync.json');
+}
+
+/** How long a revocation snapshot may stand in for a live query. Ten minutes: long enough to cover every verification of one skill run, short enough that a kill-switch still lands within the session */
+export const REVOCATION_SYNC_TTL_MS = 10 * 60 * 1000;
 
 /**
  * Safety check: is a "single-segment directory name" such as a skill id / version legal?
@@ -523,11 +576,21 @@ export function readJsonSilent(file, fallback = null) {
   }
 }
 
-/** Write a JSON file silently (creating directories, kept 0700 - see ensurePrivateDir); never throws on failure */
+/**
+ * Write a JSON file silently (creating directories, kept 0700 - see ensurePrivateDir); never throws
+ * on failure. The file itself is 0600: everything under the data root is private state, and the
+ * chmod heals files an older plugin wrote 0644 (`mode` only applies on creation).
+ */
 export function writeJsonSilent(file, obj) {
+  return writeTextSilent(file, JSON.stringify(obj));
+}
+
+/** Same contract as writeJsonSilent for a plain text file (the Markdown files SessionStart derives from the guidance) */
+export function writeTextSilent(file, text) {
   try {
     ensurePrivateDir(path.dirname(file));
-    fs.writeFileSync(file, JSON.stringify(obj));
+    fs.writeFileSync(file, text, { mode: 0o600 });
+    try { fs.chmodSync(file, 0o600); } catch { /* a pre-existing file may be owned differently */ }
     return true;
   } catch {
     return false;
@@ -983,15 +1046,23 @@ const refreshedEndpoints = new Set();
  * 3. key_id matches a pinned key but verification fails = the content was tampered with, not a key
  *    rotation - never refresh (a refresh would only add a pointless network round trip and let a
  *    tamperer drive the client into fetching keys repeatedly by manufacturing failures).
+ * 4. opts.offline: step 2 is skipped as well - pinned keys are the only keys, and when none of them
+ *    verifies the answer is `public_key_unavailable` (the key that would be needed is not on hand
+ *    and this mode may not fetch it). `skill-verify --local-only` runs this way as the post-run
+ *    hygiene check inside kabo-run-pipeline: the same skill passed a full online verification
+ *    moments earlier in the same run, so a rotation cannot be what a failure here means, and a
+ *    keyset refresh per run was a network round trip that bought nothing. Step 3 is unchanged in
+ *    this mode - a pinned key that fails is still `signature_invalid`, never softened.
  *
  * @param {(pem: string) => boolean} attempt verify once with one public key, returning true on success (a thrown exception counts as failure)
- * @param {{endpoint?: string, keyId?: string|null, timeoutMs?: number}} [opts]
+ * @param {{endpoint?: string, keyId?: string|null, timeoutMs?: number, offline?: boolean}} [opts]
  * @returns {Promise<{ok: boolean, reason: null|'signature_invalid'|'public_key_unavailable'}>}
  */
 export async function ensureVerified(attempt, opts = {}) {
   const endpoint = opts.endpoint || apiEndpoint();
   const keyId = typeof opts.keyId === 'string' && opts.keyId !== '' ? opts.keyId : null;
   const timeoutMs = Number.isFinite(opts.timeoutMs) ? opts.timeoutMs : 3000;
+  const offline = opts.offline === true;
 
   const tryKeyset = (keyset) => {
     if (!keyset) return false;
@@ -1017,6 +1088,7 @@ export async function ensureVerified(attempt, opts = {}) {
   if (pinned && keyId && pinned.keys.some((k) => k.kid === keyId)) {
     return { ok: false, reason: 'signature_invalid' };
   }
+  if (offline) return { ok: false, reason: 'public_key_unavailable' };
   if (refreshedEndpoints.has(endpoint)) return failure();
   refreshedEndpoints.add(endpoint);
 
@@ -1028,10 +1100,26 @@ export async function ensureVerified(attempt, opts = {}) {
 
 // ---------- pending-reports relay buffer ----------
 //
-// The client has no reporting channel (no credentials), and skill-verify is a Bash subprocess that
-// cannot even see MCP. A verification failure is exactly the signal the platform most needs to see,
-// so on failure a line is left locally, SessionStart injects a prompt, and the main agent relays it
-// once over the authorized MCP connection.
+// skill-verify is a Bash subprocess that cannot see MCP and must not touch the credential, so on
+// failure it leaves a line here and something else relays it later.
+//
+// 2026-09-03: that "something else" is no longer the model. Until now SessionStart injected the
+// buffered events into the session's opening context and asked the main agent to call
+// telemetry_report_usage. Two things were wrong with it, both observed in the field:
+//   - **A model is right to refuse.** "Text injected at session start tells you to call a tool" is
+//     the shape of a prompt-injection attack, so a model following its safety rules reports the
+//     request to the user instead of doing it. The queue then never drains - it only drains on the
+//     rare session where the user explicitly authorizes it.
+//   - **Nothing could ever confirm the relay**, so relayed entries were never removed (see the
+//     rationale that used to live on pendingEventId) and the same events were re-injected into
+//     every new session until the 7-day TTL expired - burning opening context each time for events
+//     the server already had (a relay of them answers `duplicates: N`).
+// The relay now runs in `bin/kabo-headers --relay`, spawned by SessionStart exactly like `--probe`:
+// the one file allowed to hold the token does the authenticated POST, gets a real tool result back,
+// and prunes exactly the entries the server confirmed. No prompt is injected and the model is not
+// involved. The desktop app reached the same conclusion first (apps/desktop main-process direct
+// reporting), and this is the CLI half of it.
+//
 // Only telemetry allowlist fields are written: skill_id / skill_version / error_type / status / ts -
 // no paths, no file contents, no user input of any kind.
 
@@ -1039,16 +1127,16 @@ export async function ensureVerified(attempt, opts = {}) {
 export const PENDING_REPORT_TTL_MS = 7 * 24 * 60 * 60 * 1000;
 /** Maximum entries kept in the file (so a broken loop cannot blow the file up) */
 export const PENDING_REPORT_MAX = 100;
-/** Maximum entries injected per session (injection costs model context) */
-export const PENDING_REPORT_INJECT_MAX = 10;
 
 /**
  * Deterministic event_id: the same (skill, version, error_type) on the same day yields one id.
  * The server's (user_id, event_id) uniqueness constraint therefore makes relaying naturally
  * idempotent - a repeated relay is swallowed as a duplicate.
- * Because of that the client **never automatically deletes** relayed entries: it cannot confirm the
- * relay succeeded, and a repeated relay is harmless while a lost signal is not. Entries only leave
- * by TTL or by the entry-count cap.
+ *
+ * That idempotence is why a *lost* prune is harmless (the entry is simply relayed again), not a
+ * reason to keep relayed entries forever: until 2026-09-03 this comment argued the client could
+ * never confirm a relay, so entries only left by TTL or cap. `--relay` gets an actual tool result,
+ * so a confirmed batch is pruned (dropPendingReports) and only unconfirmed entries wait.
  */
 export function pendingEventId({ skill_id, skill_version, error_type, ts } = {}) {
   const day = new Date(Date.parse(ts) || Date.now()).toISOString().slice(0, 10);
@@ -1069,11 +1157,9 @@ function normalizePendingEntry(entry) {
   // Per-field character-set allowlist - this is a security boundary, not data cleaning.
   // skill_id/skill_version come from the **top-level** fields of the SkillPackage, which are outside
   // the coverage of the checksum/signature (the checksum only covers files), so a malicious response
-  // can set them to arbitrary text; and these entries get injected verbatim into the model context in
-  // the next session. Tightening them to the character set a directory name / version number should
-  // have keeps free text out of the buffer, which removes the injection vector entirely.
-  // error_type is generated by our own code but is tightened just the same - in case the buffer file
-  // is tampered with locally and used as an injection route.
+  // can set them to arbitrary text. Restricting these fields keeps package content out of the
+  // telemetry payload. error_type is generated locally but uses the same restriction in case
+  // someone tampers with the buffer before the credential helper reads it.
   const out = { event: 'skill_verify_fail', event_id: entry.event_id };
   if (typeof entry.skill_id === 'string' && /^[A-Za-z0-9._-]{1,64}$/.test(entry.skill_id)) {
     out.skill_id = entry.skill_id;
@@ -1143,31 +1229,148 @@ export function readAndPrunePendingReports(now = Date.now()) {
     kept.push(entry);
   }
   const pruned = kept.slice(-PENDING_REPORT_MAX);
-
-  try {
-    const rewritten = pruned.map((e) => JSON.stringify(e) + '\n').join('');
-    if (rewritten !== text) {
-      // Concurrency safety: when two sessions share one data root, another process may have appended
-      // new lines after we read the file, and rewriting the whole file would erase them - while the
-      // buffer's invariant is "entries only leave by TTL/cap".
-      // Before rewriting, append the tail added since the first read verbatim, then land it atomically
-      // via a temp file and rename.
-      // There is still a microsecond window between "re-read" and "rename", which is accepted:
-      // event_id is derived deterministically, so the same failure recurring on the same day produces
-      // the same entry - losing a line delays a report at most, it does not lose uniqueness.
-      let tail = '';
-      try {
-        const latest = fs.readFileSync(file, 'utf8');
-        if (latest.length > text.length && latest.startsWith(text)) {
-          tail = latest.slice(text.length);
-        }
-      } catch { /* if it cannot be read, treat it as having no additions */ }
-      const tmp = `${file}.${process.pid}.tmp`;
-      fs.writeFileSync(tmp, rewritten + tail);
-      fs.renameSync(tmp, file);
-    }
-  } catch { /* a failed rewrite does not affect the result of this read */ }
+  rewritePendingBuffer(file, text, pruned);
   return pruned;
+}
+
+/**
+ * Rewrite the buffer to exactly `keep`, atomically, without losing lines another process appended
+ * since `originalText` was read. Best effort throughout: a failed rewrite never propagates.
+ *
+ * Concurrency safety: when two sessions share one data root, another process may have appended new
+ * lines after the read, and rewriting the whole file would erase them. The tail added since the
+ * first read is appended verbatim, then the result lands atomically via temp file + rename.
+ * There is still a microsecond window between "re-read" and "rename", which is accepted:
+ * event_id is derived deterministically, so the same failure recurring on the same day produces the
+ * same entry - losing a line delays a report at most, it does not lose uniqueness. For a prune after
+ * a confirmed relay the same window is equally harmless in the other direction: a lost prune costs
+ * one duplicate relay, which the server swallows.
+ */
+function rewritePendingBuffer(file, originalText, keep) {
+  try {
+    const rewritten = keep.map((e) => JSON.stringify(e) + '\n').join('');
+    if (rewritten === originalText) return;
+    let tail = '';
+    try {
+      const latest = fs.readFileSync(file, 'utf8');
+      if (latest.length > originalText.length && latest.startsWith(originalText)) {
+        tail = latest.slice(originalText.length);
+      }
+    } catch { /* if it cannot be read, treat it as having no additions */ }
+    const tmp = `${file}.${process.pid}.tmp`;
+    fs.writeFileSync(tmp, rewritten + tail);
+    fs.renameSync(tmp, file);
+  } catch { /* a failed rewrite does not affect the caller */ }
+}
+
+/**
+ * Drop the given event_ids from the buffer - what a **confirmed** relay leaves behind.
+ * Only ids the server acknowledged are passed in, so an unconfirmed entry always survives to be
+ * retried; everything else about the file (TTL pruning, the cap, bad lines) is left to the reader.
+ * @param {string[]} eventIds
+ * @returns {number} how many entries were removed
+ */
+export function dropPendingReports(eventIds) {
+  const drop = new Set(Array.isArray(eventIds) ? eventIds : []);
+  if (drop.size === 0) return 0;
+  const file = pendingReportsPath();
+  let text;
+  try {
+    text = fs.readFileSync(file, 'utf8');
+  } catch {
+    return 0;
+  }
+  const keep = [];
+  let removed = 0;
+  for (const line of text.split('\n')) {
+    if (!line.trim()) continue;
+    let entry = null;
+    try {
+      entry = normalizePendingEntry(JSON.parse(line));
+    } catch { /* bad lines vanish on rewrite, same as on the reading path */ }
+    if (!entry) continue;
+    if (drop.has(entry.event_id)) {
+      removed += 1;
+      continue;
+    }
+    keep.push(entry);
+  }
+  if (removed > 0) rewritePendingBuffer(file, text, keep);
+  return removed;
+}
+
+// ---------- minimal MCP client wire (no credential, no request header) ----------
+//
+// These two helpers exist so that `bin/kabo-headers --relay` stays a thin file: it holds the token
+// and does the fetch, and everything that is merely protocol lives here, where no token ever is.
+// Same shape as the desktop app's mcp-wire: the platform MCP face is stateless Streamable HTTP
+// (a fresh server+transport per request, enableJsonResponse), so two plain JSON-RPC POSTs -
+// initialize, then tools/call - are the whole client. Pulling in the MCP SDK for that is pure weight.
+
+/** Matches the server's own initialize test case; the server stays backward compatible with older values. */
+export const MCP_PROTOCOL_VERSION = '2025-03-26';
+
+/** The JSON-RPC bodies of a one-shot `tools/call`, in order. `id` is positional, not meaningful. */
+export function buildToolCallRpcBodies(toolName, args) {
+  return [
+    {
+      id: 1,
+      jsonrpc: '2.0',
+      method: 'initialize',
+      params: {
+        protocolVersion: MCP_PROTOCOL_VERSION,
+        capabilities: {},
+        clientInfo: { name: 'kabo-plugin', version: '1' },
+      },
+    },
+    {
+      id: 2,
+      jsonrpc: '2.0',
+      method: 'tools/call',
+      params: { name: toolName, arguments: args },
+    },
+  ];
+}
+
+/**
+ * Tolerant parse of one JSON-RPC response. Under enableJsonResponse the server answers plain JSON,
+ * but Streamable HTTP also permits text/event-stream frames - accept both: try the whole body, then
+ * scan for `data:` lines and take the one whose id matches. Returns null when nothing parses, and
+ * the caller must treat null as "not a success" (a tolerant parse is not a tolerant verdict).
+ */
+export function parseRpcMessage(text, expectedId) {
+  const asRecord = (value) =>
+    value !== null && typeof value === 'object' && !Array.isArray(value) ? value : null;
+  const tryParse = (raw) => {
+    try {
+      return asRecord(JSON.parse(raw));
+    } catch {
+      return null;
+    }
+  };
+  const whole = tryParse(text);
+  if (whole) return whole.id === expectedId ? whole : null;
+  for (const line of text.split(/\r?\n/)) {
+    if (!line.startsWith('data:')) continue;
+    const message = tryParse(line.slice(5).trim());
+    if (message && message.id === expectedId) return message;
+  }
+  return null;
+}
+
+/**
+ * Did a `tools/call` response actually ingest the batch?
+ *
+ * A tool-level failure arrives as `result.isError`, not as a JSON-RPC error - treating that as
+ * success is exactly how a buffer gets pruned while the server took nothing. Anything unparseable
+ * is a "no" as well.
+ */
+export function toolCallSucceeded(message) {
+  if (!message || typeof message !== 'object') return false;
+  if (message.error !== undefined) return false;
+  const result = message.result;
+  if (!result || typeof result !== 'object' || Array.isArray(result)) return false;
+  return result.isError !== true;
 }
 
 // ---------- meta-guidance signature envelope ----------
@@ -1313,4 +1516,52 @@ export function verifyGuidanceEnvelope(envelope, pem, opts = {}) {
   }
 
   return { ok: true, reason: null };
+}
+
+// ---------- Guidance body: section extraction (pure, no I/O) ----------
+//
+// The dynamic guidance content and the static skills/meta-guidance/SKILL.md carry the same body -
+// the static file is a verbatim snapshot with a YAML front matter block in front of it. SessionStart
+// derives two on-disk files from whichever body the session runs on (see guidanceBodyPath /
+// executionConventionsPath), so both shapes have to go through one extractor.
+
+/**
+ * Drop a leading YAML front matter block (`---` on the first line up to the next `---` line).
+ * Text that does not start with a delimiter line, or whose block is never closed, is returned as
+ * is: an unterminated `---` is content, not front matter.
+ */
+export function stripFrontMatter(text) {
+  if (typeof text !== 'string') return '';
+  const lines = text.split('\n');
+  if (lines[0].trim() !== '---') return text;
+  for (let i = 1; i < lines.length; i += 1) {
+    if (lines[i].trim() === '---') return lines.slice(i + 1).join('\n');
+  }
+  return text;
+}
+
+/**
+ * The lettered section `## <letter>.` of a guidance body, heading line included, trimmed.
+ *
+ * A section runs up to the next **lettered** heading (`## D.`), not the next `##` of any kind: the
+ * body has unlettered headings too (`## Red lines`, `## Single-skill flow`) and those sit before C,
+ * never inside it - so "the C section" is exactly the text between `## C.` and `## D.`, which is the
+ * block the routing tells the dispatcher to pass to skill-runner.
+ * @returns {string|null} null when the letter is not a single capital or the section is absent
+ */
+export function extractGuidanceSection(text, letter) {
+  if (typeof letter !== 'string' || !/^[A-Z]$/.test(letter)) return null;
+  const lines = stripFrontMatter(text).split('\n');
+  const isLettered = (line) => /^## [A-Z]\./.test(line);
+  const start = lines.findIndex((line) => line.startsWith(`## ${letter}.`));
+  if (start < 0) return null;
+  let end = lines.length;
+  for (let i = start + 1; i < lines.length; i += 1) {
+    if (isLettered(lines[i])) {
+      end = i;
+      break;
+    }
+  }
+  const section = lines.slice(start, end).join('\n').trim();
+  return section || null;
 }

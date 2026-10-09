@@ -89,7 +89,7 @@ Four things can go wrong with what comes back. Each has one defined response; no
 
 Intro: *Before anything runs: this is your account and your quota, so it is your call.*
 
-Before showing it, resolve the account-review skill via `registry_skill_search` (capability keywords, per meta-guidance) and put the matched skill's name / version / permissions into the question's description text — this popup **doubles as the pre-run confirmation meta-guidance requires**. The description text must also carry, in full:
+Before showing it, resolve the account-review skill via `registry_skill_search` (empty query, then pick from the listing, per meta-guidance) and put the matched skill's name / version / permissions into the question's description text — this popup **doubles as the pre-run confirmation meta-guidance requires**. The description text must also carry, in full:
 
 > Takes about {analysis_minutes} minutes and spends roughly {token_estimate} of your own quota.
 
@@ -231,7 +231,7 @@ The plan names what goes in slot one; it does not yet contain the thing itself. 
 
 Intro: *Your plan is set; the first slot is still empty. Pick how we fill it — or stop here, the plan is already saved.*
 
-Before showing it, resolve the skill for the route the creator is most likely to take via `registry_skill_search` (capability keywords, per meta-guidance) and put the matched skill's name / version / permissions into the description text, together with the second run's cost line: this popup **doubles as the pre-run confirmation for the second run**, exactly as step 5 does for the first. State that this is a further run against their own quota and that its size has not been measured yet — see the Estimates block, and never quote a number you do not have.
+Before showing it, resolve the skill for the route the creator is most likely to take via `registry_skill_search` (empty query, then pick from the listing, per meta-guidance) and put the matched skill's name / version / permissions into the description text, together with the second run's cost line: this popup **doubles as the pre-run confirmation for the second run**, exactly as step 5 does for the first. State that this is a further run against their own quota and that its size has not been measured yet — see the Estimates block, and never quote a number you do not have.
 
 header "First move" · "How should we find your first piece of content?" — Recommend three topics for me / I'll name a creator I want to learn from / I'll send a video I want to make my version of / Not now
 
@@ -242,7 +242,7 @@ header "First move" · "How should we find your first piece of content?" — Rec
 | **I'll send a video I want to make my version of** | Ask in chat for the URL. Search for the breakout- or video-breakdown capability and run it on that video: hook, structure, and call to action, broken out as things that can be rebuilt. |
 | **Not now** | No run. Go straight to step 13. Accept it the first time, no reason asked. |
 
-**One primary skill for this step.** Meta-guidance rule D holds: these capabilities overlap and extra runs burn paid quota. Run the one that matches the chosen route; add a second only for independent evidence value, and at most one.
+**Keep this step to one skill.** Meta-guidance caps a run at three, but onboarding is not the place to spend them: these capabilities overlap and extra runs burn paid quota. Run the one that matches the chosen route; add a second only for independent evidence value.
 
 **Then, from whatever came back, produce all three of these in one reply:**
 
@@ -352,7 +352,7 @@ The profile is written after every group, so an interrupted run is a normal case
 
 - Question copy and options are fixed — replicate, don't improvise. The set is deliberately short; do not add questions back.
 - **Never invent numbers**: no fake scores, no invented social proof, no follower projections, and no cost estimate for a run that has never been measured. Every figure comes from a run, from the Estimates block, or is absent.
-- Both runs follow meta-guidance unchanged (verification, one primary skill per run, Section E delivery, failure semantics). Onboarding changes the framing around a run, never the evidence rules.
+- Both runs follow meta-guidance unchanged (verification, the per-run skill cap, Section E delivery, failure semantics). Onboarding changes the framing around a run, never the evidence rules.
 - **Every popup that precedes a run carries that run's cost line.** Step 5 does it for the account analysis; step 12 does it for the content run. A run the creator did not knowingly pay for is a bug.
 - A script you drafted yourself is labeled as yours, never as a skill's output, and never blended into the statements about retrieved data.
 - Never promise virality; the pact's measurable target derives from the creator's own history only.

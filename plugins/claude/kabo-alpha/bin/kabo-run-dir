@@ -4,25 +4,89 @@
 // stdout is deliberately only the opaque run id. The runner already knows the data-root
 // convention, and keeping the absolute path out of stdout prevents a machine account name from
 // leaking into a relayed summary.
+//
+// With --skill the reservation also opens the run's audit record, <run>/run-manifest.json
+// (creator-research/schemas/run-manifest.schema.json), in status "running"; kabo-run-pipeline
+// finalizes it. The record is opened here and not by the pipeline because started_at has to be the
+// moment the run began: the connector calls the runner issues between this command and the pipeline
+// are part of the run, and a pipeline that invented the start time would under-report every run by
+// exactly its fetch phase. Without --skill nothing changes, so every existing caller keeps working.
 import crypto from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
-import { workRoot } from '../scripts/lib/common.js';
+import { fileURLToPath } from 'node:url';
+import { PLUGIN_VERSION, readJsonSilent, workRoot } from '../scripts/lib/common.js';
 
-const USAGE = `Usage: kabo-run-dir
-  Atomically creates one private work/<run-id>/{owner,snapshot,analysis,report} tree and prints the run id`;
+const USAGE = `Usage: kabo-run-dir [--skill <skill-dir>] [--request-id <id>]
+  Atomically creates one private work/<run-id>/{owner,snapshot,analysis,report} tree and prints the run id
+  --skill       also open <run>/run-manifest.json (status "running") for the skill cached at <skill-dir>
+  --request-id  the request id recorded in that manifest (defaults to the run id)`;
+
+function fail(message) {
+  console.error(`${message}\n\n${USAGE}`);
+  process.exit(1);
+}
+
 const args = process.argv.slice(2);
 if (args.includes('--help') || args.includes('-h')) {
   console.log(USAGE);
   process.exit(0);
 }
-if (args.length > 0) {
-  console.error(`Unknown argument: ${args.join(' ')}\n\n${USAGE}`);
-  process.exit(1);
+
+let skillDir = null;
+let requestId = null;
+for (let i = 0; i < args.length; i += 1) {
+  const arg = args[i];
+  if (arg === '--skill') skillDir = args[++i] ?? null;
+  else if (arg === '--request-id') requestId = args[++i] ?? null;
+  else fail(`Unknown argument: ${arg}`);
 }
+if (args.includes('--skill') && !skillDir) fail('--skill requires a directory');
+if (args.includes('--request-id') && !requestId) fail('--request-id requires a value');
 
 function compactUtc(date) {
   return date.toISOString().replace(/[-:]/g, '').replace(/\.\d{3}Z$/, 'Z');
+}
+
+const PLUGIN_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
+
+/**
+ * Which host ran the skill. Read from the plugin layout, not from the environment or a literal: this
+ * file is shipped byte for byte by the Claude Code and Codex variants, neither host exports its own
+ * name to a Bash child, and the one thing that tells the variants apart wherever they are installed
+ * is which host manifest directory sits beside bin/ - the directory each host needs in order to
+ * recognise the plugin at all.
+ */
+function hostAgent() {
+  if (fs.existsSync(path.join(PLUGIN_ROOT, '.claude-plugin'))) return 'claude-code';
+  if (fs.existsSync(path.join(PLUGIN_ROOT, '.codex-plugin'))) return 'codex';
+  return 'kabo-plugin';
+}
+
+/**
+ * The opening half of the run manifest. The skill id comes from the signed manifest.json, the
+ * same source skill-verify trusts for identity; a cache directory whose manifest cannot be read is
+ * recorded as "unknown" rather than refused - this command reserves directories, it does not verify.
+ */
+function openRunManifest(runDir, runId) {
+  const manifest = readJsonSilent(path.join(path.resolve(skillDir), 'manifest.json'));
+  const skillId = manifest && typeof manifest.name === 'string' && manifest.name ? manifest.name : 'unknown';
+  const record = {
+    run_id: runId,
+    request_id: requestId || runId,
+    skill_id: skillId,
+    plugin_version: PLUGIN_VERSION,
+    started_at: new Date().toISOString(),
+    finished_at: null,
+    duration_seconds: null,
+    status: 'running',
+    runtime: { agent: hostAgent(), environment: 'local' },
+    dependencies: {},
+    provider_requests: [],
+    fallbacks: [],
+    artifacts: [],
+  };
+  fs.writeFileSync(path.join(runDir, 'run-manifest.json'), `${JSON.stringify(record, null, 2)}\n`, { mode: 0o600 });
 }
 
 const root = workRoot();
@@ -43,6 +107,7 @@ for (let attempt = 0; attempt < 32; attempt += 1) {
   for (const name of ['owner', 'snapshot', 'analysis', 'report']) {
     fs.mkdirSync(path.join(runDir, name), { mode: 0o700 });
   }
+  if (skillDir) openRunManifest(runDir, runId);
   console.log(runId);
   process.exit(0);
 }

@@ -27,7 +27,7 @@ const server = http.createServer((request, response) => {
   if (mode === 'offline') { response.writeHead(503); response.end('{}'); return; }
   if (request.url === '/api/sync') {
     response.end(JSON.stringify({ server_api_version: '1.0.0', catalog: [], revocations: [] }));
-  } else if (request.url === '/api/meta-guidance') response.end(JSON.stringify(current));
+  } else if (request.url === `/api/meta-guidance?plugin=${manifest.version}`) response.end(JSON.stringify(current));
   else { response.writeHead(404); response.end('{}'); }
 });
 await new Promise((resolve, reject) => { server.once('error', reject); server.listen(0, '127.0.0.1', resolve); });
@@ -107,11 +107,14 @@ try {
     error_type: 'x'.repeat(64), status: 'error', ts: new Date().toISOString() }));
   await fs.writeFile(path.join(crowded, 'pending-reports.jsonl'), entries.map(row => JSON.stringify(row)).join('\n') + '\n');
   const crowdedOutput = await hook(crowded);
-  record('maximum-valid-guidance-with-pending-trimming', crowdedOutput, current.content);
-  assert.doesNotMatch(crowdedOutput.systemMessage, /\(10 injected this time\)/);
-  const longInstall = path.join(scratch, ...Array(6).fill('long-install-'.repeat(15)), 'kabo-alpha');
+  record('maximum-valid-guidance-ignores-legacy-relay-buffer', crowdedOutput, current.content);
+  assert.doesNotMatch(crowdedOutput.systemMessage, /awaiting relay|injected this time/);
+  assert.doesNotMatch(crowdedOutput.hookSpecificOutput.additionalContext, /Kabo events awaiting relay/);
+  // Stay below macOS PATH_MAX while still overflowing the injected host context.
+  let longInstall = path.join(scratch, ...Array(4).fill('long-install-'.repeat(15)), 'kabo-alpha');
   await fs.mkdir(path.dirname(longInstall), { recursive: true });
   await fs.cp(pluginRoot, longInstall, { recursive: true });
+  longInstall = await fs.realpath(longInstall);
   const capped = await hook(await dataDir('long-install'), longInstall);
   record('host-context-cap-drops-whole-guidance-keeps-bootstrap', capped, null, longInstall);
   assert.match(capped.systemMessage, /dynamic guidance too long/);
