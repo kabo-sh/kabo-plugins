@@ -110,9 +110,11 @@ try {
   record('maximum-valid-guidance-ignores-legacy-relay-buffer', crowdedOutput, current.content);
   assert.doesNotMatch(crowdedOutput.systemMessage, /awaiting relay|injected this time/);
   assert.doesNotMatch(crowdedOutput.hookSpecificOutput.additionalContext, /Kabo events awaiting relay/);
-  const longInstall = path.join(scratch, ...Array(6).fill('long-install-'.repeat(15)), 'kabo-alpha');
+  // Stay below macOS PATH_MAX while still overflowing the injected host context.
+  let longInstall = path.join(scratch, ...Array(4).fill('long-install-'.repeat(15)), 'kabo-alpha');
   await fs.mkdir(path.dirname(longInstall), { recursive: true });
   await fs.cp(pluginRoot, longInstall, { recursive: true });
+  longInstall = await fs.realpath(longInstall);
   const capped = await hook(await dataDir('long-install'), longInstall);
   record('host-context-cap-drops-whole-guidance-keeps-bootstrap', capped, null, longInstall);
   assert.match(capped.systemMessage, /dynamic guidance too long/);
