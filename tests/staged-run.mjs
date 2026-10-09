@@ -125,6 +125,116 @@ for (const host of ['claude', 'codex']) {
       await assert.rejects(fs.stat(path.join(data, 'work', runId, 'SHOULD-NOT-RUN')), { code: 'ENOENT' });
     });
 
+    const failArgs = (runId, reason = 'Subject identity unresolved') => ['--run-id', runId, '--skill', skill, '--fail', reason];
+
+    await t.test('an explicit logical stop closes the original paused run with real evidence and no report', async () => {
+      const runId = await reserve();
+      const work = path.join(data, 'work', runId);
+      const start = await bin('kabo-run-pipeline', [...args(runId), '--continue', '--step', step('start')]);
+      assert.equal(start.code, 0, start.stderr);
+      const before = await record(runId);
+      const envelope = JSON.stringify({ connector_id: 'fixture', operation: 'read', request_id: 'subject-search', status: 'completed', limitations: [], retrieved_at: '2026-10-09T00:00:00Z', data: { items: [] } });
+      await fs.writeFile(path.join(work, 'snapshot/envelope-01.json'), envelope, { mode: 0o644 });
+      await fs.writeFile(path.join(work, 'analysis/decision.json'), JSON.stringify({ identity: 'unresolved' }), { mode: 0o644 });
+      const reason = 'Subject identity unresolved; $(touch SHOULD-NOT-EXECUTE)';
+      const stopped = await bin('kabo-run-pipeline', failArgs(runId, reason));
+      assert.equal(stopped.code, 1, stopped.stderr);
+      assert.match(stopped.stdout, /run-manifest:/);
+      assert.doesNotMatch(stopped.stdout, /creator_report:|step \d+\/\d+/);
+      assert.match(stopped.stderr, /Subject identity unresolved/);
+      const final = await record(runId);
+      assert.equal(final.status, 'failed');
+      assert.equal(final.started_at, before.started_at);
+      assert.ok(final.finished_at && final.duration_seconds >= 0);
+      assert.deepEqual(final.provider_requests.map(x => x.status), ['completed']);
+      assert.equal(final.artifacts.find(x => x.path_or_uri === 'analysis/decision.json').sha256,
+        common.sha256hex(await fs.readFile(path.join(work, 'analysis/decision.json'))));
+      assert.equal((await fs.readFile(path.join(work, 'snapshot/envelope-01.json'), 'utf8')), envelope);
+      assert.equal((await fs.stat(path.join(work, 'snapshot/envelope-01.json'))).mode & 0o777, 0o600);
+      assert.equal(JSON.parse(await fs.readFile(path.join(work, '.pipeline-stages.json'), 'utf8')).status, 'failed');
+      await assert.rejects(fs.stat(path.join(work, 'SHOULD-NOT-EXECUTE')), { code: 'ENOENT' });
+      assert.equal((await bin('kabo-run-pipeline', failArgs(runId))).code, 1);
+      const replay = await bin('kabo-run-pipeline', [...args(runId), '--continue', '--step', 'touch {run}/AFTER-FAIL']);
+      assert.equal(replay.code, 1);
+      await assert.rejects(fs.stat(path.join(work, 'AFTER-FAIL')), { code: 'ENOENT' });
+      assert.deepEqual(await record(runId), final, 'closed runs cannot be rewritten by another failure call');
+    });
+
+    await t.test('a reserved run can stop before its first stage without executing a selected signed pipeline', async () => {
+      const runId = await reserve();
+      const stopped = await bin('kabo-run-pipeline', failArgs(runId, 'Required capability missing'));
+      assert.equal(stopped.code, 1, stopped.stderr);
+      assert.equal((await record(runId)).status, 'failed');
+      assert.doesNotMatch(stopped.stdout, /creator_report:/);
+      await assert.rejects(fs.stat(path.join(data, 'work', runId, 'report/FIXED.md')), { code: 'ENOENT' });
+    });
+
+    await t.test('invalid failure arguments and missing reservations refuse without mutation', async () => {
+      const runId = await reserve();
+      const work = path.join(data, 'work', runId);
+      const before = await record(runId);
+      for (const extra of [['--continue'], ['--step', 'touch {run}/INVALID'], ['--staging', data], ['--operation', 'staged'], ['--report', 'REPORT.md'], ['--report-file', 'reply.md']]) {
+        const rejected = await bin('kabo-run-pipeline', [...failArgs(runId), ...extra]);
+        assert.equal(rejected.code, 1);
+        assert.match(rejected.stderr, /--fail cannot combine/);
+      }
+      const empty = await bin('kabo-run-pipeline', failArgs(runId, '  '));
+      assert.equal(empty.code, 1);
+      assert.match(empty.stderr, /nonblank reason/);
+      assert.deepEqual(await record(runId), before);
+      await assert.rejects(fs.stat(path.join(work, '.pipeline-stages.json')), { code: 'ENOENT' });
+      const absent = await bin('kabo-run-pipeline', failArgs('not-reserved'));
+      assert.equal(absent.code, 1);
+      assert.match(absent.stderr, /no work directory/);
+    });
+
+    await t.test('logical failure keeps package binding, concurrent locks, hygiene and local verification gates', async () => {
+      const runId = await reserve();
+      assert.equal((await bin('kabo-run-pipeline', [...args(runId), '--continue', '--step', step('start')])).code, 0);
+      const clone = path.join(data, 'other-signed-location');
+      await fs.cp(skill, clone, { recursive: true });
+      const switched = await bin('kabo-run-pipeline', ['--run-id', runId, '--skill', clone, '--fail', 'Unresolved']);
+      assert.equal(switched.code, 1);
+      assert.match(switched.stderr, /cannot switch skill packages/);
+      assert.equal((await record(runId)).status, 'running');
+      const first = bin('kabo-run-pipeline', [...args(runId), '--continue', '--step', 'sleep 1']);
+      const lock = path.join(data, 'work', `.${runId}.pipeline-lock`);
+      for (let i = 0; i < 100; i++) { try { await fs.stat(lock); break; } catch { await new Promise(resolve => setTimeout(resolve, 10)); } }
+      const competing = await bin('kabo-run-pipeline', failArgs(runId));
+      assert.equal(competing.code, 1);
+      assert.match(competing.stderr, /another pipeline stage/);
+      assert.equal((await first).code, 0);
+      const bytecode = path.join(skill, '__pycache__');
+      await fs.mkdir(bytecode);
+      const dirty = await bin('kabo-run-pipeline', failArgs(runId));
+      assert.equal(dirty.code, 1);
+      assert.match(dirty.stderr, /bytecode|checksum/i);
+      assert.equal((await record(runId)).status, 'failed');
+      await fs.rm(bytecode, { recursive: true });
+      const linked = await reserve();
+      await fs.symlink(path.join(skill, 'SKILL.md'), path.join(data, 'work', linked, 'foreign-link'));
+      const rejectedLink = await bin('kabo-run-pipeline', failArgs(linked));
+      assert.equal(rejectedLink.code, 1);
+      assert.match(rejectedLink.stderr, /symlink/);
+      assert.equal((await record(linked)).status, 'failed');
+      const revoked = await reserve();
+      const marker = path.join(data, 'skill-cache', `${id}.disabled`);
+      await fs.writeFile(marker, '{}');
+      const rejectedRevoked = await bin('kabo-run-pipeline', failArgs(revoked));
+      assert.equal(rejectedRevoked.code, 1);
+      assert.match(rejectedRevoked.stderr, /red before this stage/);
+      assert.equal((await record(revoked)).status, 'failed');
+      await fs.unlink(marker);
+      const changed = await reserve();
+      const original = await fs.readFile(path.join(skill, 'scripts/drive.py'));
+      await fs.appendFile(path.join(skill, 'scripts/drive.py'), '\n# altered\n');
+      const rejectedChanged = await bin('kabo-run-pipeline', failArgs(changed));
+      assert.equal(rejectedChanged.code, 1);
+      assert.match(rejectedChanged.stderr, /red before this stage/);
+      assert.equal((await record(changed)).status, 'failed');
+      await fs.writeFile(path.join(skill, 'scripts/drive.py'), original);
+    });
+
     await t.test('selected signed pipelines keep their one-shot contract', async () => {
       const runId = await reserve();
       const override = await bin('kabo-run-pipeline', ['--run-id', runId, '--skill', skill, '--continue', '--step', 'touch {run}/OVERRIDE']);
