@@ -161,7 +161,7 @@ For an existing Git marketplace that follows this repository's `main`, the manua
 ```bash
 # Claude Code
 claude plugin marketplace update kabo-plugins
-claude plugin update kabo-alpha@kabo-plugins
+claude plugin update kabo-alpha@kabo-plugins --scope user
 
 # Codex
 codex plugin marketplace upgrade kabo-plugins-codex --json
@@ -170,7 +170,7 @@ codex plugin add kabo-alpha@kabo-plugins-codex --json
 
 Run only the pair for the host you use, and stop if the marketplace refresh fails: updating against a stale snapshot can report the old version as the latest. Restart that host, start a new session, then run `claude plugin list --json` or `codex plugin list --json` and confirm that `kabo-alpha` has the intended version and `enabled: true`. A successful command alone is not proof of an upgrade.
 
-The Claude command above updates the default `user` scope. For a `project` or `local` installation, run it from the relevant project with `--scope project` or `--scope local`, matching the installation shown by `claude plugin list --json`. For a `managed` installation, follow your organization's administrator-managed update policy.
+The Claude command above explicitly targets the `user` installation with `--scope user`. Without that flag, versions before 2.1.281 default to `user`; newer versions select the most specific installed scope for the current project ([scope selection](https://code.claude.com/docs/en/plugins/cli-reference#which-scope-the-command-updates)). For a `project` or `local` installation, run it from the relevant project with `--scope project` or `--scope local`, matching the installation shown by `claude plugin list --json`. For a `managed` installation, follow your organization's administrator-managed update policy.
 
 A marketplace pinned to a tag or commit stays pinned when refreshed; inspect that source before deciding to move it to `main`. For a local-path marketplace, its maintainer must first update the local checkout while preserving local changes; a Git marketplace refresh does not update that directory. Do not remove/re-add a marketplace, clear Skill caches, or sign out as a routine upgrade step.
 
