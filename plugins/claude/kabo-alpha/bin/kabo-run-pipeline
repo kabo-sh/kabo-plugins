@@ -555,7 +555,16 @@ function providerRequests() {
   // Skills can restore host-saved results using their own filenames in either execution mode.
   // Count those envelopes too, without counting renamed/pretty-printed/job-wrapped copies twice.
   // Numeric drain entries retain their independent request seats even when their bytes match.
-  for (const { dirent, full } of entriesUnder(runDir)) {
+  const candidates = [
+    ...entriesUnder(subdirs.snapshot),
+    ...(staged ? fs.readdirSync(runDir, { withFileTypes: true })
+      .filter(dirent => dirent.isFile()
+        && dirent.name.endsWith('.json')
+        && dirent.name !== 'run-manifest.json'
+        && dirent.name !== opts.reportFile)
+      .map(dirent => ({ dirent, full: path.join(runDir, dirent.name) })) : []),
+  ];
+  for (const { dirent, full } of candidates) {
     if (!dirent.isFile() || !full.endsWith('.json') || seenPaths.has(full)) continue;
     const envelope = envelopeOf(readJsonSilent(full));
     if (!envelope?.connector_id || !envelope?.operation || typeof envelope?.status !== 'string') continue;

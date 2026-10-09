@@ -111,6 +111,11 @@ for (const host of ['claude', 'codex']) {
     await fs.writeFile(path.join(snapshot, 'media-recovered-copy.json'), JSON.stringify(recovered, null, 2));
     await fs.writeFile(path.join(snapshot, 'media-original-copy.json'), JSON.stringify(envelopes[0]));
     await fs.writeFile(path.join(snapshot, 'media-terminal-job.json'), JSON.stringify({ job_id: 'job-recovered', envelope: recovered }));
+    // Derived output must never become another provider request.
+    for (const directory of ['analysis', 'report', 'owner']) {
+      await fs.writeFile(path.join(data, 'work', runId, directory, 'derived.json'),
+        JSON.stringify({ ...recovered, request_id: `derived-${directory}`, operation: `derived-${directory}` }));
+    }
     const pipeline = await bin('kabo-run-pipeline',pipelineArgs);
     assert.equal(pipeline.code,0,pipeline.stderr);
     assert.match(pipeline.stdout,/creator_report:/);
