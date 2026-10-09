@@ -43,6 +43,7 @@
 import crypto from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
+import os from 'node:os';
 import { fileURLToPath } from 'node:url';
 import { remakeArtifactContract } from '../lib/remake-artifact-contract.js';
 
@@ -104,11 +105,41 @@ function responseText(toolResponse) {
     return parts.length === 1 ? parts[0] : parts.join('');
   }
   if (toolResponse && typeof toolResponse === 'object') {
+    // The display can be a truncation notice while the complete MCP result is still here.
+    // Keep the wrapper: artifact metadata and image/text bodies must remain paired.
+    if (toolResponse.structuredContent && typeof toolResponse.structuredContent === 'object') {
+      return JSON.stringify(toolResponse);
+    }
     // Some hosts hand back the already-decoded structured result.
     if (typeof toolResponse.text === 'string') return toolResponse.text;
     if (Array.isArray(toolResponse.content)) return responseText(toolResponse.content);
   }
   return null;
+}
+
+/** Only the host's saved-output notice can name a file; arbitrary tool text cannot. */
+function savedResponseText(text, event) {
+  const notice = /^(?:<persisted-output>\s*)?Output too large \([^\r\n]*\)\.\s*Full output saved to: ([^\r\n]+)(?:\r?\n|$)/.exec(text);
+  if (!notice || !isSafeName(event.session_id)) return null;
+  const file = notice[1].trim();
+  if (!path.isAbsolute(file) || !/\.(?:txt|json)$/.test(file)) return null;
+  const projects = path.resolve(process.env.CLAUDE_CONFIG_DIR || path.join(os.homedir(), '.claude'), 'projects');
+  const relative = path.relative(projects, file);
+  const parts = relative.split(path.sep);
+  // Claude owns projects/<project>/<session>/tool-results/<file>. Do not read a
+  // transcript, another session, or a response-authored path into the user's files.
+  if (parts.length !== 4 || parts[0] === '..' || parts[1] !== event.session_id || parts[2] !== 'tool-results') return null;
+  const expected = path.join(fs.realpathSync(projects), relative);
+  if (fs.realpathSync(file) !== expected) return null;
+  const fd = fs.openSync(file, fs.constants.O_RDONLY | fs.constants.O_NOFOLLOW);
+  try {
+    const stat = fs.fstatSync(fd);
+    if (!stat.isFile() || stat.size > 64 * 1024 * 1024 ||
+        (process.getuid && stat.uid !== process.getuid())) return null;
+    return fs.readFileSync(fd, 'utf8');
+  } finally {
+    fs.closeSync(fd);
+  }
 }
 
 /** A V1 connector envelope, identified structurally rather than by which tool returned it. */
@@ -270,7 +301,11 @@ function collectEnvelopes(parsed) {
   // Envelope first: when a value satisfies both, the envelope sidecar carries more.
   if (isTypedResult(parsed)) return [parsed];
   if (parsed && typeof parsed === 'object') {
-    // Generation returns an owned job; only its completed public envelope is staged.
+    if (parsed.structuredContent && typeof parsed.structuredContent === 'object') {
+      const complete = collectEnvelopes(parsed.structuredContent);
+      if (complete.length > 0) return complete;
+    }
+    // Generation returns an owned job; only its public envelope is staged.
     if (parsed.job && typeof parsed.job === 'object') return collectEnvelopes(parsed.job);
     // data_connector_batch_run: { results: [envelope | job, ...] }
     if (Array.isArray(parsed.results)) {
@@ -333,25 +368,28 @@ async function main() {
   const toolResponse = event.tool_response ?? event.error;
   if (toolResponse === undefined || toolResponse === null) return;
 
-  // 有的宿主把整个 MCP 返回值序列化为字符串。仅对新的宿主正文协议拆出
-  // 可见清单；其他工具继续按原有字节路径保存，避免改掉历史信封。
+  // Unwrap the new host-only binary transport without changing old envelope bytes.
   let visibleResponse = toolResponse;
   if (typeof toolResponse === 'string') {
     try {
       const transport = JSON.parse(toolResponse);
       if (transport?._meta?.['kabo/artifact-bodies.v1']) visibleResponse = transport;
-    } catch { /* 普通文本由下面的原有解析处理。 */ }
+    } catch { /* Ordinary text keeps the existing parsing path. */ }
   }
-  const text = responseText(visibleResponse);
+  let text = responseText(visibleResponse);
   if (typeof text !== 'string' || text.length === 0) return;
 
   let parsed;
   try {
     parsed = JSON.parse(text);
   } catch {
-    // The host's own oversized-result notice lands here (it is prose, not JSON) - and that is
-    // fine: the notice only appears when the host already wrote the bytes to a file of its own.
-    return;
+    const saved = savedResponseText(text, event);
+    if (saved === null) return;
+    // Saved MCP responses may be a content-block array rather than an envelope.
+    const document = JSON.parse(saved);
+    text = Array.isArray(document) ? responseText(document) : saved;
+    if (!text) return;
+    parsed = JSON.parse(text);
   }
 
   const envelopes = collectEnvelopes(parsed);

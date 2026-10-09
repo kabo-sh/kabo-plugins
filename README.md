@@ -1,10 +1,47 @@
 # Kabo — creator research skills for Claude Code and Codex
 
-**See which videos take off on YouTube, Instagram, and TikTok. Learn why. Make yours — with the public evidence attached.**
+<p align="center">
+  <img src="docs/readme/hero.png" alt="Kabo — creator research skills for Claude Code and Codex. See which videos take off. Learn why. Make yours. 17 research skills, 3 platforms (YouTube, Instagram, TikTok), 2 coding agents (Claude Code, Codex), daily trend boards." width="100%" />
+</p>
+
+<p>
+  <a href="https://kabo.sh/?utm_source=github&utm_medium=referral&utm_campaign=202610_plugins_readme&utm_content=readme_links_website">Website</a> ·
+  <a href="#quick-start">Install</a> ·
+  <a href="https://kabo.sh/tools?utm_source=github&utm_medium=referral&utm_campaign=202610_plugins_readme&utm_content=readme_links_tools">Free creator tools</a> ·
+  <a href="https://github.com/kabo-sh/kabo-plugins/issues">Report an issue</a>
+</p>
+
+<p>
+  <a href="https://github.com/kabo-sh/kabo-plugins/releases"><img alt="release" src="https://img.shields.io/github/v/release/kabo-sh/kabo-plugins?style=flat&color=blueviolet&label=release" /></a>
+  <a href="LICENSE"><img alt="license" src="https://img.shields.io/badge/license-Apache%202.0-blue.svg?style=flat" /></a>
+  <a href="#supported-hosts"><img alt="works with" src="https://img.shields.io/badge/works%20with-Claude%20Code%20%C2%B7%20Codex-black?style=flat" /></a>
+  <a href="#quick-start"><img alt="install" src="https://img.shields.io/badge/install-1%20command-green?style=flat" /></a>
+</p>
 
 Kabo is an AI partner for creators. This repository installs the [Kabo](https://kabo.sh/?utm_source=github&utm_medium=referral&utm_campaign=202610_plugins_readme&utm_content=readme_hero) plugin into Claude Code or Codex: ask a question in plain language and get a report built from public channel, account, and video data, with sources, dates, and limits stated.
 
 **Free to use.** Every Kabo account gets a free daily allowance.
+
+## See it in action
+
+<table>
+<tr>
+<td width="50%" valign="top">
+<img src="docs/readme/tiktok-sound-board.png" alt="Kabo's daily TikTok sound board for October 9, 2026: the five fastest-climbing sounds with video counts and new videos today" /><br/>
+<sub><b>The daily TikTok sound board</b> — the board Kabo's TikTok trend research reads: how many videos use each sound and how many were added today. <i>Captured from kabo.sh on 2026-10-09.</i></sub>
+</td>
+<td width="50%" valign="top">
+<img src="docs/readme/creator-breakouts.png" alt="Kabo creator page for a public YouTube channel: recorded views trend and breakout videos measured against the channel's own typical video" /><br/>
+<sub><b>Breakouts against the channel's own baseline</b> — a recorded views trend, and videos ranked by how far they beat the channel's typical video of the same format. <i>Captured from kabo.sh/creators on 2026-10-09.</i></sub>
+</td>
+</tr>
+<tr>
+<td colspan="2" valign="top">
+<img src="docs/readme/web-outliers.png" alt="Kabo web workspace, Trends page, Outlier tab: YouTube videos from the last 7 days ranked by views as a multiple of each creator's recent median, for example 180.1 times the creator median" /><br/>
+<sub><b>Outliers in the Kabo workspace</b> — each video's views as a multiple of its creator's recent median, filterable by platform, format, and time window. Kabo runs in the browser too; this plugin brings its research into Claude Code and Codex. <i>Captured from the Kabo web workspace on 2026-10-09.</i></sub>
+</td>
+</tr>
+</table>
 
 ## What you can do
 
@@ -48,6 +85,21 @@ What Kabo does not do:
 - **It does not guess private metrics.** Click-through rate, retention, revenue, and Insights are never inferred from public views or likes.
 - **It does not promise virality.** When the evidence is thin, the report says so.
 
+## How Kabo compares
+
+We make Kabo, so read this as our view. Every cell comes from each product's own public pages, checked on 2026-10-09. If something has changed, please [open an issue](https://github.com/kabo-sh/kabo-plugins/issues).
+
+| | Kabo | [vidIQ](https://vidiq.com/mcp/) | [TubeBuddy](https://www.tubebuddy.com/pricing) |
+|---|---|---|---|
+| Where you use it | Inside Claude Code and Codex, or in the browser | Web app, plus an MCP server for Claude, Claude Code, ChatGPT, Cursor, and Codex | Browser extension for YouTube |
+| Platforms | YouTube, Instagram, TikTok | YouTube first, with some Instagram and TikTok tools | YouTube |
+| Your private analytics (CTR, retention) | Not used: public data only | Yes, for your connected YouTube channel | Yes, for your connected YouTube channel |
+| Changes your channel | No: it never publishes or edits | No: its MCP server is read-only | Yes: bulk editing and scheduled publishing (Legend plan and up) |
+| Makes thumbnails or clips | No: it drafts ideas, scripts, hooks, and titles | Yes | Thumbnail generator |
+| Free tier | Free daily allowance | Free plan with 150 AI credits a month | Free plan |
+
+Pick vidIQ or TubeBuddy if you mostly need your own YouTube channel's private analytics, or tools that make media and edit your channel for you. Pick Kabo if you want research across YouTube, Instagram, and TikTok from public data, delivered as reports that show their sources, time window, and sample size, inside the coding agent you already use.
+
 ## Quick start
 
 ```bash
@@ -56,10 +108,16 @@ curl -fsSL https://raw.githubusercontent.com/kabo-sh/kabo-plugins/main/install.s
 
 The installer finds Claude Code and/or Codex on your machine, installs the plugin, and offers to sign you in to Kabo right away. Then start a new session and run `/kabo-start`.
 
-You need:
+### Supported hosts
 
-- **Claude Code 2.1.195 or newer**, or a **Codex** build with the `codex plugin` command (plus Node.js 20+)
-- **A Kabo account** — if you don't have one, continuing with Google during sign-in creates it
+| Host | Status | Requirement | Install by hand | Sign in |
+|---|:---:|---|---|---|
+| [Claude Code](https://code.claude.com/docs/en/overview) | ✅ Supported | 2.1.195 or newer | `claude plugin marketplace add kabo-sh/kabo-plugins` | `/kabo-login` |
+| [Codex](https://github.com/openai/codex) | ✅ Supported | A build with the `codex plugin` command, plus Node.js 20+ | `codex plugin marketplace add kabo-sh/kabo-plugins` | `codex mcp login kabo` |
+
+The one-line installer above covers both hosts. The full manual steps, including the Claude Code `enable` step and the Codex hook trust step, are under [Installation details](#installation-details).
+
+You also need **a Kabo account**. If you don't have one, continuing with Google during sign-in creates it.
 
 Prefer to read the script first? Run it with `--dry-run`, or follow the manual steps under [Installation details](#installation-details).
 

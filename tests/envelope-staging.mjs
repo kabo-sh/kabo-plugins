@@ -56,6 +56,46 @@ for (const host of ['claude', 'codex']) {
     return { data, env, staging, hook, save };
   };
 
+  test(`${host}: complete structured results survive a truncated display`, async t => {
+    const { env, staging } = await setup(t);
+    const payload = envelope('req-large');
+    payload.data.text = 'complete transcript '.repeat(5000);
+    const result = await run(process.execPath, [hookFile], env, JSON.stringify({
+      session_id: 'staging-session', tool_use_id: 'call-large',
+      tool_response: { structuredContent: payload, content: [{ type: 'text', text: 'Output too large; preview omitted' }] },
+    }));
+    assert.match(result.stdout, /kabo:/);
+    assert.deepEqual(JSON.parse(await fs.readFile(path.join(staging, '01.json'), 'utf8')), payload);
+    assert.equal(JSON.parse(await fs.readFile(path.join(staging, '01.meta'), 'utf8')).verbatim, false);
+  });
+
+  test(`${host}: host-owned saved results are recovered only within the current session`, async t => {
+    const { data, env, staging } = await setup(t);
+    const config = path.join(data, 'host-config');
+    const dir = path.join(config, 'projects', '-fixture', 'staging-session', 'tool-results');
+    await fs.mkdir(dir, { recursive: true });
+    const file = path.join(dir, 'call-large.txt');
+    const bytes = JSON.stringify(envelope('req-saved'), null, 2);
+    await fs.writeFile(file, bytes);
+    const call = file => run(process.execPath, [hookFile], { ...env, CLAUDE_CONFIG_DIR: config }, JSON.stringify({
+      session_id: 'staging-session', tool_use_id: 'call-large',
+      tool_response: `Output too large (100.0KB). Full output saved to: ${file}\n\nPreview: omitted`,
+    }));
+    assert.match((await call(file)).stdout, /kabo:/);
+    assert.equal(await fs.readFile(path.join(staging, '01.json'), 'utf8'), bytes);
+    const outside = path.join(data, 'outside.json');
+    await fs.writeFile(outside, bytes);
+    assert.equal((await call(outside)).stdout, '');
+    const other = file.replace('staging-session', 'other-session');
+    await fs.mkdir(path.dirname(other), { recursive: true });
+    await fs.writeFile(other, bytes);
+    assert.equal((await call(other)).stdout, '');
+    const link = path.join(dir, 'link.txt');
+    await fs.symlink(outside, link);
+    assert.equal((await call(link)).stdout, '');
+    assert.equal((await call(path.join(dir, 'missing.txt'))).stdout, '');
+  });
+
   test(`${host}: a stem another hook is still writing is stepped over, not shared`, async t => {
     const { staging, hook } = await setup(t);
     await fs.mkdir(staging, { recursive: true, mode: 0o700 });

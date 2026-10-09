@@ -535,26 +535,48 @@ function artifactsUnder(kind) {
 }
 
 function providerRequests() {
-  const files = listEnvelopes();
-  if (staged) {
-    for (const { dirent, full } of entriesUnder(runDir)) {
-      if (!dirent.isFile() || !full.endsWith('.json')) continue;
-      const value = readJsonSilent(full);
-      if (value?.connector_id && value?.operation && typeof value?.status === 'string') files.push(full);
-    }
+  const numbered = listEnvelopes();
+  const files = [...numbered];
+  const seenPaths = new Set(numbered);
+  const seenDigests = new Set();
+  const seenRequests = new Set();
+  const envelopeOf = value => {
+    const inner = value?.envelope;
+    return inner?.connector_id && inner?.operation && typeof inner?.status === 'string' ? inner : value;
+  };
+  const requestKey = envelope => typeof envelope?.request_id === 'string' && envelope.request_id
+    ? JSON.stringify([envelope.connector_id, envelope.operation, envelope.request_id]) : null;
+  for (const file of numbered) {
+    const envelope = envelopeOf(readJsonSilent(file));
+    seenDigests.add(sha256hex(Buffer.from(JSON.stringify(envelope))));
+    const key = requestKey(envelope);
+    if (key) seenRequests.add(key);
   }
-  const seenPaths = new Set();
-  const snapshotDigests = new Set(listEnvelopes().map(file => sha256hex(fs.readFileSync(file))));
-  return files.filter((file) => {
-    if (!staged) return true;
-    // A placed root file can copy a drained snapshot. Keep distinct snapshot requests even if
-    // their responses have identical bytes; only exclude another view of the same stored evidence.
-    if (seenPaths.has(file)) return false;
-    seenPaths.add(file);
-    if (path.dirname(file) !== subdirs.snapshot && snapshotDigests.has(sha256hex(fs.readFileSync(file)))) return false;
-    return true;
-  }).map((file) => {
-    const envelope = readJsonSilent(file);
+  // Skills can restore host-saved results using their own filenames in either execution mode.
+  // Count those envelopes too, without counting renamed/pretty-printed/job-wrapped copies twice.
+  // Numeric drain entries retain their independent request seats even when their bytes match.
+  const candidates = [
+    ...entriesUnder(subdirs.snapshot),
+    ...(staged ? fs.readdirSync(runDir, { withFileTypes: true })
+      .filter(dirent => dirent.isFile()
+        && dirent.name.endsWith('.json')
+        && dirent.name !== 'run-manifest.json'
+        && dirent.name !== opts.reportFile)
+      .map(dirent => ({ dirent, full: path.join(runDir, dirent.name) })) : []),
+  ];
+  for (const { dirent, full } of candidates) {
+    if (!dirent.isFile() || !full.endsWith('.json') || seenPaths.has(full)) continue;
+    const envelope = envelopeOf(readJsonSilent(full));
+    if (!envelope?.connector_id || !envelope?.operation || typeof envelope?.status !== 'string') continue;
+    const digest = sha256hex(Buffer.from(JSON.stringify(envelope)));
+    const key = requestKey(envelope);
+    if (seenDigests.has(digest) || (key && seenRequests.has(key))) continue;
+    seenDigests.add(digest);
+    if (key) seenRequests.add(key);
+    files.push(full);
+  }
+  return files.map((file) => {
+    const envelope = envelopeOf(readJsonSilent(file));
     if (!envelope || typeof envelope !== 'object') {
       return { connector_id: null, operation: null, status: 'unreadable', retrieved_at: null };
     }
