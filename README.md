@@ -62,6 +62,21 @@ What Kabo does not do:
 - **It does not guess private metrics.** Click-through rate, retention, revenue, and Insights are never inferred from public views or likes.
 - **It does not promise virality.** When the evidence is thin, the report says so.
 
+## How Kabo compares
+
+We make Kabo, so read this as our view. Every cell comes from each product's own public pages, checked on 2026-10-09. If something has changed, please [open an issue](https://github.com/kabo-sh/kabo-plugins/issues).
+
+| | Kabo | [vidIQ](https://vidiq.com/mcp/) | [TubeBuddy](https://www.tubebuddy.com/pricing) |
+|---|---|---|---|
+| Where you use it | Inside Claude Code and Codex, or in the browser | Web app, plus an MCP server for Claude, Claude Code, ChatGPT, Cursor, and Codex | Browser extension for YouTube |
+| Platforms | YouTube, Instagram, TikTok | YouTube first, with some Instagram and TikTok tools | YouTube |
+| Your private analytics (CTR, retention) | Not used: public data only | Yes, for your connected YouTube channel | Yes, for your connected YouTube channel |
+| Changes your channel | No: it never publishes or edits | No: its MCP server is read-only | Yes: bulk editing and scheduled publishing (Legend plan and up) |
+| Makes thumbnails or clips | No: it drafts ideas, scripts, hooks, and titles | Yes | Thumbnail generator |
+| Free tier | Free daily allowance | Free plan with 150 AI credits a month | Free plan |
+
+Pick vidIQ or TubeBuddy if you mostly need your own YouTube channel's private analytics, or tools that make media and edit your channel for you. Pick Kabo if you want research across YouTube, Instagram, and TikTok from public data, delivered as reports that show their sources, time window, and sample size, inside the coding agent you already use.
+
 ## Quick start
 
 ```bash
