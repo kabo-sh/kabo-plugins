@@ -44,6 +44,7 @@ import crypto from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { remakeArtifactContract } from '../lib/remake-artifact-contract.js';
 
 import { dataRoot, ensurePrivateDir, isSafeName, sha256hex } from '../lib/common.js';
 
@@ -223,37 +224,30 @@ function collectHostArtifacts(toolResponse, visible) {
   if (typeof transport === 'string') {
     try { transport = JSON.parse(transport); } catch { return []; }
   }
-  const payload = transport?._meta?.['kabo/artifact-bodies.v1'];
-  if (!payload || visible?.schema_version !== 'remake.artifact-chunks.v1') return [];
+  if (!transport?._meta) return [];
+  let contract;
+  try { contract = remakeArtifactContract(); } catch { return []; }
+  const payload = transport?._meta?.[contract.policy.host_meta_key];
+  if (!contract.visible(visible) || !contract.body(payload) || payload.job_id !== visible.job_id) return [];
   const projected = visible.artifacts;
   const bodies = payload.artifacts;
   const jobId = visible.job_id;
-  if (
-    payload.schema_version !== 'remake.artifact-chunks.v1' ||
-    payload.job_id !== jobId ||
-    typeof jobId !== 'string' ||
-    !/^[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}$/.test(jobId) ||
-    !Array.isArray(projected) || !Array.isArray(bodies) ||
-    projected.length === 0 || projected.length > 4 || projected.length !== bodies.length
-  ) return [];
+  if (projected.length !== bodies.length) return [];
   const out = [];
   const refs = new Set();
   let total = 0;
   for (const [index, artifact] of projected.entries()) {
     const chunk = bodies[index];
     if (
-      artifact?.kind !== 'remakechunk' || artifact.content_type !== 'application/octet-stream' ||
-      typeof artifact.object_ref !== 'string' || !/^[A-Za-z0-9/_-]{1,240}$/.test(artifact.object_ref) ||
-      refs.has(artifact.object_ref) || chunk?.object_ref !== artifact.object_ref ||
-      typeof artifact.sha256 !== 'string' || !/^[a-f0-9]{64}$/.test(artifact.sha256) ||
-      chunk.sha256 !== artifact.sha256 ||
-      !Number.isSafeInteger(artifact.bytes) || artifact.bytes <= 0 || artifact.bytes > 4 * 1024 * 1024 ||
-      typeof chunk.body_base64 !== 'string' || chunk.body_base64.length > 6 * 1024 * 1024
+      refs.has(artifact.object_ref) || chunk.object_ref !== artifact.object_ref ||
+      chunk.sha256 !== artifact.sha256 || artifact.bytes !== visible.file.chunk_bytes ||
+      artifact.object_ref !== `remake/${visible.file.index}/${visible.file.chunk_offset}` ||
+      visible.file.chunk_offset + artifact.bytes > visible.file.bytes
     ) return [];
     const body = decodeBase64(chunk.body_base64);
     if (!body || body.byteLength !== artifact.bytes || sha256hex(body) !== artifact.sha256) return [];
     total += body.byteLength;
-    if (total > 8 * 1024 * 1024) return [];
+    if (total > contract.policy.chunk_bytes * contract.policy.chunks_per_result) return [];
     refs.add(artifact.object_ref);
     out.push({ body, jobId, kind: artifact.kind, objectRef: artifact.object_ref,
       sha256: artifact.sha256, contentType: artifact.content_type });

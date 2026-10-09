@@ -8,16 +8,12 @@ import test from 'node:test';
 import { fileURLToPath } from 'node:url';
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const sha = body => createHash('sha256').update(body).digest('hex');
-const body = Buffer.from([0x52,0x49,0x46,0x46,0x00,0xff,0x80,0x01]);
-const job = '00000000-0000-4000-8000-000000000001';
-function fixture() {
-  const artifact = { object_ref: 'remake/output1/part0', kind: 'remakechunk', bytes: body.length,
-    sha256: sha(body), content_type: 'application/octet-stream' };
-  const visible = { schema_version: 'remake.artifact-chunks.v1', job_id: job, artifacts: [artifact] };
-  return { content: [{ type: 'text', text: JSON.stringify(visible) }], structuredContent: visible,
-    _meta: { 'kabo/artifact-bodies.v1': { schema_version: visible.schema_version, job_id: job,
-      artifacts: [{ object_ref: artifact.object_ref, sha256: artifact.sha256, body_base64: body.toString('base64') }] } } };
-}
+const artifactPath=path.join(root,'contracts-snapshot/kabo/remake-artifact-v1.json');
+const contract=JSON.parse(await fs.readFile(artifactPath,'utf8'));
+const policy=contract['x-kabo-policy'];
+const vector=contract.public_vector.result;
+const body=Buffer.from(vector._meta[policy.host_meta_key].artifacts[0].body_base64,'base64');
+function fixture() { return structuredClone(vector); }
 const run = (file, args, env, input) => new Promise((resolve,reject) => {
   const proc = spawn(process.execPath, [file, ...args], { env, stdio: ['pipe','pipe','pipe'] });
   let stdout='',stderr='';
@@ -61,15 +57,44 @@ for (const host of ['codex','claude']) {
       p=>{p._meta['kabo/artifact-bodies.v1'].artifacts[0].object_ref='wrong';},
       p=>{p._meta['kabo/artifact-bodies.v1'].artifacts[0].body_base64='!!!';},
       p=>{p._meta['kabo/artifact-bodies.v1'].artifacts[0].body_base64=Buffer.from('damaged').toString('base64');},
-      p=>{const visible=JSON.parse(p.content[0].text);visible.artifacts[0].bytes=4*1024*1024+1;p.content[0].text=JSON.stringify(visible);},
+      p=>{const visible=JSON.parse(p.content[0].text);visible.artifacts[0].bytes=policy.chunk_bytes+1;p.content[0].text=JSON.stringify(visible);},
       p=>{p._meta['kabo/artifact-bodies.v1'].artifacts.push(p._meta['kabo/artifact-bodies.v1'].artifacts[0]);},
       p=>{const visible=JSON.parse(p.content[0].text);visible.artifacts[0].object_ref='../outside';p.content[0].text=JSON.stringify(visible);p._meta['kabo/artifact-bodies.v1'].artifacts[0].object_ref='../outside';},
     ];
     for(const mutate of mutations){const payload=fixture();mutate(payload);const r=await hook(payload);assert.equal(r.code,0);}
     assert.equal((await fs.readdir(staging)).some(f=>f.endsWith('.art')),false);
   });
+  test(`${host}: corrupted pin refuses binary while existing envelope persistence still works`,async t=>{
+    const {data,env,staging}=await setup(t);
+    const isolated=path.join(data,'isolated-plugin');
+    for(const relative of ['package.json','scripts/hooks/persist-envelope.js','scripts/lib/common.js',
+      'scripts/lib/remake-artifact-contract.js','scripts/contracts/remake-artifact-v1.json','scripts/contracts/remake-artifact-v1.sha256']) {
+      const target=path.join(isolated,relative);await fs.mkdir(path.dirname(target),{recursive:true});
+      await fs.copyFile(path.join(plugin,relative),target);
+    }
+    await fs.appendFile(path.join(isolated,'scripts/contracts/remake-artifact-v1.json'),' ');
+    const hook=response=>run(path.join(isolated,'scripts/hooks/persist-envelope.js'),[],env,
+      JSON.stringify({session_id:'protocol-test',tool_name:'mcp__kabo__creator_remake_artifact',
+        hook_event_name:'PostToolUse',tool_use_id:'probe1',tool_response:response}));
+    const binary=await hook(fixture());assert.equal(binary.code,0);assert.equal(binary.stderr,'');
+    assert.equal((await fs.readdir(staging)).some(f=>f.endsWith('.art')),false);
+    const old={status:'completed',connector_id:'existing',operation:'read',limitations:[]};
+    const saved=await hook({content:[{type:'text',text:JSON.stringify(old)}]});
+    assert.equal(saved.code,0);assert.equal(saved.stderr,'');
+    const jsons=(await fs.readdir(staging)).filter(f=>f.endsWith('.json'));
+    const values=await Promise.all(jsons.map(f=>fs.readFile(path.join(staging,f),'utf8')));
+    assert.ok(values.includes(JSON.stringify(old)));
+  });
   test(`${host}: metadata alone cannot create evidence`,async t=>{
     const {staging,hook}=await setup(t);const payload=fixture();payload.content=[{type:'text',text:'No artifact manifest.'}];
     const r=await hook(payload);assert.equal(r.code,0);await assert.rejects(fs.stat(staging),{code:'ENOENT'});
   });
 }
+
+test('提供方钉制品和两端随包副本可离线核验，不查询远程发布状态', async()=>{
+  const checked=await run(path.join(root,'scripts/remake-contract-snapshot.mjs'),['--verify'],{PATH:process.env.PATH},'');
+  assert.equal(checked.code,0,checked.stderr);
+  assert.match(checked.stdout,/offline/);
+  const sources=await Promise.all(['codex','claude'].map(host=>fs.readFile(path.join(root,'plugins',host,'kabo-alpha/scripts/lib/remake-artifact-contract.js'),'utf8')));
+  assert.equal(sources[0],sources[1]);
+});
