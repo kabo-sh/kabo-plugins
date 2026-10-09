@@ -53,7 +53,7 @@ import { fileURLToPath } from 'node:url';
 import { PLUGIN_VERSION, isSafeName, readJsonSilent, sha256hex, workRoot } from '../scripts/lib/common.js';
 
 const USAGE = `Usage: kabo-run-pipeline --run-id <id> --skill <skill-dir> [--staging <dir>] [--language <tag>]
-                         [--param k=v]... [--continue] [--report <file-name> | --report-file <run-file>]
+                         [--param k=v]... [--continue | --fail <reason>] [--report <file-name> | --report-file <run-file>]
                          (--step '<shell command>')...
 
   --run-id    a run id printed by kabo-run-dir (the run directory must already exist)
@@ -72,6 +72,10 @@ const USAGE = `Usage: kabo-run-pipeline --run-id <id> --skill <skill-dir> [--sta
               running; make the required model judgment/fetch next. The final call omits this
               flag and must name the report with --report or --report-file. Never finalize a
               paused fetch stage or use this flag with a selected signed pipeline.
+  --fail      close the same running reservation as failed when SKILL.md requires a logical
+              stop; no commands or report are executed. Requires a nonblank diagnostic reason;
+              cannot combine with --step, --continue, --staging, --operation or report flags.
+              Retains locking, signed-package checks, hygiene, hardening and evidence hashes.
   --step      one shell command, run via /bin/sh -c with cwd {run}; repeatable, run in order,
               stopping at the first non-zero exit. Placeholders stand bare (write {param.handle},
               not "{param.handle}"): each value is quoted for the shell as it is substituted. Omit
@@ -79,7 +83,7 @@ const USAGE = `Usage: kabo-run-pipeline --run-id <id> --skill <skill-dir> [--sta
 
 Prints one "step n/N ok|FAILED" line per step, "drained=<n>" when --staging was given, one
 "creator_report: <run-id> → report/<file>" line per report file, and
-"run-manifest: <run-id> → run-manifest.json". Exit 0 when every step, the hygiene check and
+"run-manifest: <run-id> → run-manifest.json". Exit 1 for an explicit --fail stop. Exit 0 when every step, the hygiene check and
 skill-verify --local-only passed; exit 1 with a one-sentence reason on stderr otherwise.`;
 
 const BIN_DIR = path.dirname(fileURLToPath(import.meta.url));
@@ -181,7 +185,7 @@ if (args.length === 0 || args.includes('--help') || args.includes('-h')) {
   process.exit(args.length === 0 ? 1 : 0);
 }
 
-const opts = { runId: null, skill: null, staging: null, operation: null, language: null, report: null, reportFile: null, continue: false, params: new Map(), steps: [] };
+const opts = { runId: null, skill: null, staging: null, operation: null, language: null, report: null, reportFile: null, continue: false, fail: null, params: new Map(), steps: [] };
 function valueOf(flag, index) {
   const value = args[index + 1];
   if (value === undefined) fail(`${flag} requires a value`);
@@ -198,6 +202,7 @@ for (let i = 0; i < args.length; i += 1) {
     case '--report': opts.report = valueOf(arg, i); i += 1; break;
     case '--report-file': opts.reportFile = valueOf(arg, i); i += 1; break;
     case '--continue': opts.continue = true; break;
+    case '--fail': opts.fail = valueOf(arg, i); i += 1; break;
     case '--step': opts.steps.push(valueOf(arg, i)); i += 1; break;
     case '--param': {
       const pair = valueOf(arg, i);
@@ -219,6 +224,12 @@ if (!isSafeName(opts.runId) || !/^[A-Za-z0-9][A-Za-z0-9._-]*$/.test(opts.runId))
 if (opts.report !== null && (!isSafeName(opts.report) || opts.report.startsWith('.'))) fail(`--report expects a bare file name, got ${JSON.stringify(opts.report)}`);
 if (opts.reportFile !== null && (!isSafeName(opts.reportFile) || opts.reportFile.startsWith('.'))) fail('--report-file expects a bare file name under the run directory');
 if (opts.report !== null && opts.reportFile !== null) fail('choose --report or --report-file, not both');
+if (opts.fail !== null) {
+  if (opts.fail.trim() === '') fail('--fail requires a nonblank reason');
+  if (opts.continue || opts.steps.length > 0 || opts.staging !== null || opts.operation !== null || opts.report !== null || opts.reportFile !== null) {
+    fail('--fail cannot combine with --step, --continue, --staging, --operation or report flags');
+  }
+}
 if (opts.continue && (opts.report !== null || opts.reportFile !== null)) fail('--continue cannot announce a final report');
 if (opts.continue && opts.steps.length === 0) fail('--continue requires the documented stage as --step');
 
@@ -240,7 +251,7 @@ if (!isDirectory(skillDir)) refuse(`skill directory does not exist: ${skillDir}`
 // Stage state is separate from the public manifest schema. Write it only after the first stage:
 // an empty reserved run must remain empty so a skill driver can adopt it instead of forking a run.
 const stageStateFile = path.join(runDir, '.pipeline-stages.json');
-const staged = opts.continue || opts.reportFile !== null || fs.existsSync(stageStateFile);
+const staged = opts.fail !== null || opts.continue || opts.reportFile !== null || fs.existsSync(stageStateFile);
 let stageState = null;
 if (staged) {
   // The lock lives beside the run, also keeping the first driver's fresh-directory check intact.
@@ -276,7 +287,7 @@ if (staged) {
   const skillManifest = readJsonSilent(path.join(skillDir, 'manifest.json'));
   if (!record || record.status !== 'running' || record.skill_id !== skillManifest?.name) refuse('staged execution requires a running reservation for this skill');
   stageState ??= { ...binding, status: 'running', phases: 0 };
-  if (!opts.continue && opts.report === null && opts.reportFile === null) refuse('the final stage must name its report with --report or --report-file');
+  if (opts.fail === null && !opts.continue && opts.report === null && opts.reportFile === null) refuse('the final stage must name its report with --report or --report-file');
 }
 
 const subdirs = {
@@ -295,9 +306,9 @@ const operations = manifest?.pipeline_operations;
 const selected = opts.operation !== null && operations && Object.hasOwn(operations, opts.operation)
   ? operations[opts.operation] : manifest?.pipeline;
 const shipped = Array.isArray(selected) ? selected : [];
-if (staged && shipped.length > 0) refuse('a selected signed pipeline must run once without --continue or --report-file');
+if (opts.fail === null && staged && shipped.length > 0) refuse('a selected signed pipeline must run once without --continue or --report-file');
 let steps = opts.steps;
-if (steps.length === 0) {
+if (opts.fail === null && steps.length === 0) {
   if (shipped.length === 0) refuse('no --step was given and the selected operation has no non-empty pipeline array');
   steps = shipped.map((entry, index) => {
     if (!entry || typeof entry.cmd !== 'string' || entry.cmd.trim() === '') {
@@ -412,7 +423,7 @@ if (failure === null && stagingDir !== null) {
   }
 }
 
-if (failure === null) {
+if (failure === null && opts.fail === null) {
   const envelopes = listEnvelopes();
   const total = steps.length;
   for (let index = 0; index < total; index += 1) {
@@ -507,6 +518,10 @@ if (failure === null) {
   const result = spawnSync(process.execPath, [VERIFY_BIN, '--local-only', skillDir], { stdio: 'inherit' });
   if (result.status !== 0) failure = 'skill-verify --local-only went red on the skill cache after the run, so its output cannot be trusted';
 }
+
+// An explicit logical stop still passes every integrity/hygiene gate above. It is not an
+// invented failing shell step, and must not short-circuit those checks by setting failure early.
+if (failure === null && opts.fail !== null) failure = opts.fail;
 
 // ---------- deliverables and the run manifest ----------
 
