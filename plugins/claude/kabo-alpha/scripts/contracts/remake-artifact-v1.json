@@ -20,7 +20,7 @@
         "default": 0,
         "type": "integer",
         "minimum": 0,
-        "maximum": 20971520
+        "maximum": 209715200
       }
     },
     "required": ["job_id", "index"],
@@ -40,50 +40,93 @@
         "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$"
       },
       "file": {
-        "type": "object",
-        "properties": {
-          "index": { "type": "integer", "minimum": 0, "maximum": 255 },
-          "kind": {
-            "type": "string",
-            "enum": [
-              "voice_sample",
-              "first_frame",
-              "speech_audio",
-              "word_timings",
-              "generated_video"
-            ]
+        "oneOf": [
+          {
+            "type": "object",
+            "properties": {
+              "index": { "type": "integer", "minimum": 0, "maximum": 255 },
+              "kind": {
+                "type": "string",
+                "enum": [
+                  "voice_sample",
+                  "first_frame",
+                  "speech_audio",
+                  "word_timings",
+                  "generated_video"
+                ]
+              },
+              "content_type": {
+                "type": "string",
+                "enum": [
+                  "audio/wav",
+                  "image/png",
+                  "application/json",
+                  "video/mp4"
+                ]
+              },
+              "bytes": {
+                "type": "integer",
+                "exclusiveMinimum": 0,
+                "maximum": 20971520
+              },
+              "sha256": { "type": "string", "pattern": "^[a-f0-9]{64}$" },
+              "chunk_offset": {
+                "type": "integer",
+                "minimum": 0,
+                "maximum": 9007199254740991
+              },
+              "chunk_bytes": {
+                "type": "integer",
+                "exclusiveMinimum": 0,
+                "maximum": 4194304
+              }
+            },
+            "required": [
+              "index",
+              "kind",
+              "content_type",
+              "bytes",
+              "sha256",
+              "chunk_offset",
+              "chunk_bytes"
+            ],
+            "additionalProperties": false
           },
-          "content_type": {
-            "type": "string",
-            "enum": ["audio/wav", "image/png", "application/json", "video/mp4"]
-          },
-          "bytes": {
-            "type": "integer",
-            "exclusiveMinimum": 0,
-            "maximum": 20971520
-          },
-          "sha256": { "type": "string", "pattern": "^[a-f0-9]{64}$" },
-          "chunk_offset": {
-            "type": "integer",
-            "minimum": 0,
-            "maximum": 9007199254740991
-          },
-          "chunk_bytes": {
-            "type": "integer",
-            "exclusiveMinimum": 0,
-            "maximum": 4194304
+          {
+            "type": "object",
+            "properties": {
+              "index": { "type": "integer", "minimum": 0, "maximum": 13 },
+              "kind": { "type": "string", "const": "source_video" },
+              "content_type": { "type": "string", "const": "video/mp4" },
+              "bytes": {
+                "type": "integer",
+                "exclusiveMinimum": 0,
+                "maximum": 209715200
+              },
+              "sha256": { "type": "string", "pattern": "^[a-f0-9]{64}$" },
+              "chunk_offset": {
+                "type": "integer",
+                "minimum": 0,
+                "maximum": 9007199254740991
+              },
+              "chunk_bytes": {
+                "type": "integer",
+                "exclusiveMinimum": 0,
+                "maximum": 4194304
+              }
+            },
+            "required": [
+              "index",
+              "kind",
+              "content_type",
+              "bytes",
+              "sha256",
+              "chunk_offset",
+              "chunk_bytes"
+            ],
+            "additionalProperties": false
           }
-        },
-        "required": [
-          "index",
-          "kind",
-          "content_type",
-          "bytes",
-          "sha256",
-          "chunk_offset",
-          "chunk_bytes"
-        ],
-        "additionalProperties": false
+        ]
       },
       "artifacts": {
         "minItems": 1,
@@ -160,6 +203,7 @@
     "host_meta_key": "kabo/artifact-bodies.v1",
     "chunk_bytes": 4194304,
     "file_bytes": 20971520,
+    "source_video_bytes": 209715200,
     "chunks_per_result": 1,
     "binary_kind": "remakechunk",
     "binary_content_type": "application/octet-stream"

@@ -260,6 +260,10 @@ function collectHostArtifacts(toolResponse, visible) {
   try { contract = remakeArtifactContract(); } catch { return []; }
   const payload = transport?._meta?.[contract.policy.host_meta_key];
   if (!contract.visible(visible) || !contract.body(payload) || payload.job_id !== visible.job_id) return [];
+  const fileTypes = {voice_sample:'audio/wav',first_frame:'image/png',speech_audio:'audio/wav',
+    word_timings:'application/json',generated_video:'video/mp4',source_video:'video/mp4'};
+  if (fileTypes[visible.file.kind] !== visible.file.content_type ||
+      (visible.file.kind === 'source_video' && visible.file.index > 13)) return [];
   const projected = visible.artifacts;
   const bodies = payload.artifacts;
   const jobId = visible.job_id;
