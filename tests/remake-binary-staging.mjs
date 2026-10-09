@@ -101,6 +101,70 @@ for (const host of ['codex','claude']) {
     const {staging,hook}=await setup(t);const payload=fixture();payload.content=[{type:'text',text:'No artifact manifest.'}];delete payload.structuredContent;
     const r=await hook(payload);assert.equal(r.code,0);await assert.rejects(fs.stat(staging),{code:'ENOENT'});
   });
+  test(`${host}: raw video has its own bounded type while all legacy file pairs still stage`,async t=>{
+    const {staging,hook}=await setup(t);
+    for (const [kind,mime,index,size] of [['source_video','video/mp4',13,policy.source_video_bytes],
+      ['voice_sample','audio/wav',0,body.length],['first_frame','image/png',0,body.length],
+      ['speech_audio','audio/wav',0,body.length],['word_timings','application/json',0,body.length],
+      ['generated_video','video/mp4',0,body.length]]) {
+      // This is a single-chunk manifest check, not whole-video validation.
+      const payload=fixture();const visible=payload.structuredContent;
+      Object.assign(visible.file,{kind,content_type:mime,index,bytes:size});
+      visible.artifacts[0].object_ref=`remake/${index}/0`;
+      payload._meta[policy.host_meta_key].artifacts[0].object_ref=`remake/${index}/0`;
+      payload.content[0].text=JSON.stringify(visible);
+      const result=await hook(payload);assert.equal(result.code,0,result.stderr);
+    }
+    assert.equal((await fs.readdir(staging)).filter(f=>f.endsWith('.art')).length,6);
+  });
+  test(`${host}: raw-video bounds do not widen legacy types, indexes or task pairing`,async t=>{
+    const {staging,hook}=await setup(t);
+    const invalid=[
+      ['source_video','video/mp4',13,policy.source_video_bytes+1],
+      ['source_video','audio/wav',13,body.length],['source_video','video/mp4',14,body.length],
+      ['generated_video','video/mp4',0,policy.file_bytes+1],
+      ['voice_sample','audio/wav',0,policy.file_bytes+1],['first_frame','image/png',0,policy.file_bytes+1],
+      ['speech_audio','audio/wav',0,policy.file_bytes+1],['word_timings','application/json',0,policy.file_bytes+1],
+      ['voice_sample','video/mp4',0,body.length],['first_frame','audio/wav',0,body.length],
+      ['unknown_video','video/mp4',0,body.length],
+    ];
+    for(const [kind,mime,index,size] of invalid){
+      const payload=fixture();const visible=payload.structuredContent;
+      Object.assign(visible.file,{kind,content_type:mime,index,bytes:size});
+      visible.artifacts[0].object_ref=`remake/${index}/0`;
+      payload._meta[policy.host_meta_key].artifacts[0].object_ref=`remake/${index}/0`;
+      payload.content[0].text=JSON.stringify(visible);
+      const r=await hook(payload);assert.equal(r.code,0,r.stderr);
+    }
+    const crossed=fixture();crossed.structuredContent.file.kind='source_video';
+    crossed.structuredContent.file.content_type='video/mp4';
+    crossed.content[0].text=JSON.stringify(crossed.structuredContent);
+    crossed._meta[policy.host_meta_key].job_id='00000000-0000-4000-8000-000000000002';
+    assert.equal((await hook(crossed)).code,0);
+    assert.equal((await fs.readdir(staging)).some(f=>f.endsWith('.art')),false);
+  });
+  test(`${host}: ambiguous unions and unknown branch keywords remain fail closed`,async t=>{
+    const {data,env,staging}=await setup(t);
+    for(const mutation of ['ambiguous','unknown']) {
+      const isolated=path.join(data,mutation);
+      for(const relative of ['package.json','scripts/hooks/persist-envelope.js','scripts/lib/common.js',
+        'scripts/lib/remake-artifact-contract.js','scripts/contracts/remake-artifact-v1.json','scripts/contracts/remake-artifact-v1.sha256']) {
+        const target=path.join(isolated,relative);await fs.mkdir(path.dirname(target),{recursive:true});
+        await fs.copyFile(path.join(plugin,relative),target);
+      }
+      const changed=structuredClone(contract);
+      if(mutation==='ambiguous') changed.output_schema.properties.file.oneOf.push(structuredClone(changed.output_schema.properties.file.oneOf[0]));
+      else changed.output_schema.properties.file.oneOf[0].not={};
+      const bytes=Buffer.from(JSON.stringify(changed));
+      await fs.writeFile(path.join(isolated,'scripts/contracts/remake-artifact-v1.json'),bytes);
+      await fs.writeFile(path.join(isolated,'scripts/contracts/remake-artifact-v1.sha256'),sha(bytes)+'\n');
+      const result=await run(path.join(isolated,'scripts/hooks/persist-envelope.js'),[],env,
+        JSON.stringify({session_id:'protocol-test',tool_name:'mcp__kabo__creator_remake_artifact',
+          hook_event_name:'PostToolUse',tool_use_id:'probe1',tool_response:fixture()}));
+      assert.equal(result.code,0,result.stderr);
+    }
+    assert.equal((await fs.readdir(staging)).some(f=>f.endsWith('.art')),false);
+  });
 }
 
 test('提供方钉制品和两端随包副本可离线核验，不查询远程发布状态', async()=>{

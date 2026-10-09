@@ -7,19 +7,26 @@ import { fileURLToPath } from 'node:url';
 // Unsupported future schema keywords fail closed instead of being ignored.
 const keywords = new Set(['$schema','type','properties','required','additionalProperties',
   'const','enum','minimum','maximum','exclusiveMinimum','exclusiveMaximum',
-  'minLength','maxLength','pattern','format','default','minItems','maxItems','items']);
+  'minLength','maxLength','pattern','format','default','minItems','maxItems','items','oneOf']);
 function compile(schema) {
   if (!schema || typeof schema !== 'object' || Array.isArray(schema) ||
       Object.keys(schema).some(key => !keywords.has(key))) throw new Error('Unsupported artifact schema.');
   // The provider pattern defines UUID validation; do not duplicate it.
   if (schema.format && (schema.format !== 'uuid' || !schema.pattern))
     throw new Error('Unsupported artifact format.');
+  // The provider uses a disjoint union to retain the legacy file limit while
+  // permitting only explicit source_video at its own bound. Exactly one branch
+  // must match; unknown keywords and ambiguous unions remain fail closed.
+  if ('oneOf' in schema && (!Array.isArray(schema.oneOf) || !schema.oneOf.length || schema.oneOf.length > 16))
+    throw new Error('Unsupported artifact union.');
+  const alternatives = schema.oneOf?.map(compile);
   const properties = Object.fromEntries(Object.entries(schema.properties ?? {}).map(([key, child]) => [key,compile(child)]));
   const item = schema.items ? compile(schema.items) : null;
   const pattern = schema.pattern ? new RegExp(schema.pattern) : null;
   return value => {
     if ('const' in schema && value !== schema.const) return false;
     if (schema.enum && !schema.enum.includes(value)) return false;
+    if (alternatives && alternatives.filter(matches => matches(value)).length !== 1) return false;
     switch (schema.type) {
       case 'object':
         if (!value || typeof value !== 'object' || Array.isArray(value)) return false;
@@ -42,6 +49,9 @@ function compile(schema) {
           (schema.maximum === undefined || value <= schema.maximum) &&
           (schema.exclusiveMinimum === undefined || value > schema.exclusiveMinimum) &&
           (schema.exclusiveMaximum === undefined || value < schema.exclusiveMaximum);
+      case undefined:
+        if (alternatives) return true;
+        throw new Error('Unsupported artifact type.');
       default: throw new Error('Unsupported artifact type.');
     }
   };
