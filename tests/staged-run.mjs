@@ -23,6 +23,18 @@ function run(file, args, env, input = '') {
   });
 }
 
+function runShell(command, env, cwd) {
+  return new Promise((resolve, reject) => {
+    const child = spawn('/bin/sh', ['-c', command], { env, cwd, stdio: ['ignore', 'pipe', 'pipe'] });
+    let stdout = '', stderr = '';
+    const timer = setTimeout(() => child.kill('SIGKILL'), 15_000);
+    child.stdout.on('data', data => { stdout += data; });
+    child.stderr.on('data', data => { stderr += data; });
+    child.once('error', error => { clearTimeout(timer); reject(error); });
+    child.once('close', code => { clearTimeout(timer); resolve({ code, stdout, stderr }); });
+  });
+}
+
 for (const host of ['claude', 'codex']) {
   test(`${host}: staged execution preserves one run, native paths, evidence and terminal guards`, async t => {
     const plugin = path.join(root, 'plugins', host, 'kabo-alpha');
@@ -47,7 +59,7 @@ for (const host of ['claude', 'codex']) {
     await fs.writeFile(path.join(data, `public-keys.${common.sha256hex(endpoint).slice(0, 16)}.json`),
       JSON.stringify({ keys: [{ kid, public_key_pem: pair.publicKey.export({ type: 'spki', format: 'pem' }).toString() }] }), { mode: 0o600 });
     const id = 'staged-fixture';
-    const script = `import argparse, json, os\nfrom pathlib import Path\np=argparse.ArgumentParser()\np.add_argument('stage')\np.add_argument('--run', required=True)\np.add_argument('--placed')\na=p.parse_args()\nr=Path(a.run)\nassert os.environ.get('PYTHONDONTWRITEBYTECODE') == '1'\nif a.stage == 'start':\n    assert sorted(x.name for x in r.iterdir()) == ['analysis','owner','report','run-manifest.json','snapshot']\n    (r/'request.json').write_text(json.dumps({'connector_id':'fixture','operation':'read'}))\n    print('hand-over: fetch fixture/read; repeat with --placed')\nelif a.stage == 'content':\n    e=json.loads(Path(a.placed).read_text())\n    assert e['status'] == 'completed_partial' and e['limitations'] == ['Missing one comment page']\n    (r/'placed.json').write_bytes(Path(a.placed).read_bytes())\n    (r/'analysis.json').write_text(json.dumps({'items':e['data']['items']}))\n    print('content complete; model judgment required')\nelif a.stage == 'report':\n    d=json.loads((r/'decision.json').read_text())\n    e=json.loads((r/'placed.json').read_text())\n    assert d == {'chosen':['account-a']}\n    text='# Fixture report\\n\\n[account-a](https://example.test/post/1)\\n\\nMissing one comment page.\\n'\n    (r/'creator-reply.md').write_text(text)\n    assert (r/'creator-reply.md').read_text() == text\nelse: raise ValueError(a.stage)\n`;
+    const script = `import argparse, json, os, sys\nfrom pathlib import Path\np=argparse.ArgumentParser()\np.add_argument('stage')\np.add_argument('--run', default=os.getcwd())\np.add_argument('--platform')\np.add_argument('--handle')\np.add_argument('--question-file')\np.add_argument('--placed')\na=p.parse_args()\nr=Path(a.run)\nassert os.environ.get('PYTHONDONTWRITEBYTECODE') == '1'\nif a.stage == 'start':\n    assert sorted(x.name for x in r.iterdir()) == ['analysis','owner','report','run-manifest.json','snapshot']\n    (r/'request.json').write_text(json.dumps({'connector_id':'fixture','operation':'read'}))\n    print('hand-over: fetch fixture/read; repeat with --placed')\nelif a.stage == 'content':\n    e=json.loads(Path(a.placed).read_text())\n    assert e['status'] == 'completed_partial' and e['limitations'] == ['Missing one comment page']\n    (r/'placed.json').write_bytes(Path(a.placed).read_bytes())\n    (r/'analysis.json').write_text(json.dumps({'items':e['data']['items']}))\n    print('content complete; model judgment required')\nelif a.stage == 'report':\n    d=json.loads((r/'decision.json').read_text())\n    e=json.loads((r/'placed.json').read_text())\n    assert d == {'chosen':['account-a']}\n    text='# Fixture report\\n\\n[account-a](https://example.test/post/1)\\n\\nMissing one comment page.\\n'\n    (r/'creator-reply.md').write_text(text)\n    assert (r/'creator-reply.md').read_text() == text\nelif a.stage == 'fetch':\n    assert a.question_file == '-'\n    (r/'stdin.json').write_text(json.dumps({'question':sys.stdin.read(),'platform':a.platform,'handle':a.handle,'cwd':str(Path.cwd())}))\nelse: raise ValueError(a.stage)\n`;
     const files = [
       { path: 'manifest.json', content: Buffer.from(JSON.stringify({ name: id, version: '1.0.0', execution: 'subagent', required: { tools: [] }, min_plugin_version: '0.21.9', pipeline: [{ name: 'fixed', cmd: 'printf fixed > {report}/FIXED.md' }], pipeline_operations: { staged: [] } })) },
       { path: 'SKILL.md', content: Buffer.from('Synthetic fixture: start -> fetch -> content -> model decision -> validated report.') },
@@ -68,6 +80,37 @@ for (const host of ['claude', 'codex']) {
     const args = runId => ['--run-id', runId, '--skill', skill, '--operation', 'staged'];
     const record = async runId => JSON.parse(await fs.readFile(path.join(data, 'work', runId, 'run-manifest.json'), 'utf8'));
     const step = stage => `python3 {skill}/scripts/drive.py ${stage} --run {run}`;
+
+    if (host === 'codex') await t.test('documented PRE resolves the reserved cwd and pipeline heredoc preserves literal stdin', async () => {
+      const document = await fs.readFile(path.join(plugin, 'skills/skill-runner/SKILL.md'), 'utf8');
+      const pre = document.slice(document.indexOf('**PRE**')).match(/```bash\n([\s\S]*?)```/)[1];
+      const preCommand = pre.replaceAll('<plugin-root>', plugin)
+        .replaceAll("'<skill dir>'", '<quoted-skill-dir>').replaceAll('<skill dir>', '<quoted-skill-dir>')
+        .replaceAll('<quoted-skill-dir>', "'" + skill.replaceAll("'", "'\\''") + "'");
+      const starting = path.join(data, 'different starting directory');
+      await fs.mkdir(starting);
+      const shellEnv = env;
+      const reserved = await runShell(preCommand + '\npwd > cwd-observed.txt\n', shellEnv, starting);
+      assert.equal(reserved.code, 0, reserved.stderr);
+      const runId = reserved.stdout.split('\n')[0];
+      const work = path.join(data, 'work', runId);
+      assert.match(runId, /^\d{8}T\d{6}Z-[a-f0-9]{8}$/);
+      assert.ok(reserved.stdout.includes(`run directory: ${work}\n`));
+      assert.equal(await fs.realpath((await fs.readFile(path.join(work, 'cwd-observed.txt'), 'utf8')).trim()), await fs.realpath(work));
+      assert.equal((await record(runId)).status, 'running');
+      const example = document.slice(document.indexOf('For an account driver')).match(/```bash\n([\s\S]*?)```/)[1];
+      const question = 'First line with spaces and “quotes”.\nSecond line: $HOME $(echo expanded) `literal`.\n';
+      const command = example.replaceAll('<plugin-root>', plugin).replaceAll('<skill dir>', skill)
+        .replaceAll('<run-id>', runId).replaceAll('<platform>', 'tiktok').replaceAll('<handle>', '@fixture.account')
+        .replace('--continue', '--continue --operation staged')
+        .replace('<the user\'s original request, verbatim>\n', question);
+      const fetched = await runShell(command, shellEnv, starting);
+      assert.equal(fetched.code, 0, fetched.stderr);
+      assert.doesNotMatch(fetched.stdout, /creator_report:/);
+      const observed = JSON.parse(await fs.readFile(path.join(work, 'stdin.json'), 'utf8'));
+      assert.deepEqual(observed, { question, platform: 'tiktok', handle: '@fixture.account', cwd: await fs.realpath(work) });
+      assert.equal((await record(runId)).status, 'running');
+    });
 
     await t.test('fetch and judgment pauses keep the reservation running; only validated final output closes it', async () => {
       const runId = await reserve();
