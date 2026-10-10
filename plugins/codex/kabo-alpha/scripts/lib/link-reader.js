@@ -96,18 +96,19 @@ export async function readPublicLink(args, deps = {}) {
   if (media && identity.resource_id && media.post_id !== null && media.post_id !== identity.resource_id) return fail('The returned post identity differs from the original link.');
   if (!media) return { content: [text({ identity, source: envelope, note: 'Metadata/text only; no images or video frames were delivered.' })] };
   const slides = media.slides.map(slide => ({ index: slide.index, status: slide.media_url ? 'not_requested' : 'missing' }));
-  const content = [], selected = media.slides.slice(offset, offset + count);
+  const content = [], images = [], selected = media.slides.slice(offset, offset + count);
   for (const slide of selected) {
     const status = slides[slide.index - 1];
     if (!slide.media_url) continue;
     try {
       const image = await fetchImage(slide.media_url, deps.fetchFn, deps.prepareImage);
       status.status = 'delivered';
+      images.push({ index: slide.index, mime_type: image.mimeType, data: image.data });
       content.push(text(`Slide ${slide.index} of ${media.returned_count} returned positions (total completeness unknown).`), image);
     } catch (error) { status.status = error instanceof Error ? error.message : 'image_fetch_failed'; }
   }
   const { slides: unused, video: unusedVideo, ...summary } = media;
   const delivered = slides.filter(s => s.status === 'delivered').map(s => s.index);
-  return { content: [text({ identity, ...summary, source: { status: envelope.status, retrieved_at: envelope.retrieved_at, limitations: envelope.limitations, evidence_ref: envelope.evidence_ref }, slides, delivered_indices: delivered, next_offset: offset + count < media.slides.length ? offset + count : null,
+  return { evidence: { schema_version: 'linked-media-evidence.v1', identity, ...summary, source: { connector_id: envelope.connector_id, operation: envelope.operation, request_id: envelope.request_id, retrieved_at: envelope.retrieved_at, raw_sha256: envelope.raw_sha256 }, images }, content: [text({ identity, ...summary, source: { status: envelope.status, retrieved_at: envelope.retrieved_at, limitations: envelope.limitations, evidence_ref: envelope.evidence_ref }, slides, delivered_indices: delivered, next_offset: offset + count < media.slides.length ? offset + count : null,
     missing: media.media_type === 'unknown' ? 'No verified media details. Source failure reason unconfirmed.' : media.media_type === 'video' ? 'Video verified; use its transcript/frame capability if required.' : delivered.length < selected.length ? 'Some requested images were not delivered; leave their contents unassessed.' : null }), ...content] };
 }

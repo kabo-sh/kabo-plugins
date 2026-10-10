@@ -5,6 +5,7 @@ import os from 'node:os';
 import path from 'node:path';
 import crypto from 'node:crypto';
 import { readPublicLink, allowedImageUrl } from '../plugins/codex/kabo-alpha/scripts/lib/link-reader.js';
+import { stageLinkEvidence } from '../plugins/codex/kabo-alpha/scripts/lib/stage-link-evidence.js';
 import { identifyPublicLink } from '../plugins/codex/kabo-alpha/scripts/lib/link-routing.js';
 import { handleRpc, readStagedEnvelope } from '../plugins/codex/kabo-alpha/scripts/link-server.js';
 const url = 'https://www.tiktok.com/@example/photo/12345';
@@ -65,6 +66,14 @@ test('原生stdio协议与暂存路径边界，不读取其他线程和摘要被
     const result=await handleRpc({jsonrpc:'2.0',id:1,method:'tools/call',params:{name:'read_link',arguments:{source_url:url,envelope_file:file,count:1},_meta:{threadId:'thread-a'}}},{root,fetchFn});
     assert.equal(result.result.content[1].text.startsWith('<untrusted_data'),true);
     assert.equal(result.result.content[2].type,'image');
+    assert.equal(result.result.evidence,undefined);
+    const saved=JSON.parse(await fs.readFile(path.join(dir,'02.json'),'utf8'));
+    assert.equal(saved.schema_version,'linked-media-evidence.v1');
+    assert.equal(saved.images[0].data,png.toString('base64'));
+    assert.equal(saved.images[0].index,1);
+    const savedMeta=JSON.parse(await fs.readFile(path.join(dir,'02.meta'),'utf8'));
+    assert.equal(savedMeta.sha256,crypto.createHash('sha256').update(await fs.readFile(path.join(dir,'02.json'))).digest('hex'));
+    assert.equal(result.result.content.filter(p=>p.type==='text').some(p=>p.text.includes(png.toString('base64'))),false);
     await fs.writeFile(file,'{}');await assert.rejects(readStagedEnvelope(file,root,'thread-a'));
     assert.equal((await handleRpc({id:2,method:'tools/list'})).result.tools[0].name,'read_link');
   } finally {await fs.rm(root,{recursive:true,force:true});}
@@ -83,4 +92,16 @@ test('原生MCP失败无hook文件时显式交接错误，不读取其他线程�
   assert.equal(data.images_delivered,0);assert.match(data.recovery,/ordered original images/);
   assert.equal((await rpc({source_url:url,envelope_file:'/other/thread/01.json',connector_failure:{error_code:'not_found'}})).result.isError,true);
   assert.equal((await rpc({source_url:'https://evil.example',connector_failure:{error_code:'not_found'}})).result.isError,true);
+});
+
+test('linked evidence staging refuses cross-thread paths and symlink destinations',async()=>{
+  const root=await fs.mkdtemp(path.join(os.tmpdir(),'kabo-link-stage-'));
+  try {
+    assert.throws(()=>stageLinkEvidence(root,'../outside',{}),/thread_identity/);
+    await fs.mkdir(path.join(root,'envelope-staging'));
+    await fs.mkdir(path.join(root,'outside'));
+    await fs.symlink(path.join(root,'outside'),path.join(root,'envelope-staging','thread'));
+    assert.throws(()=>stageLinkEvidence(root,'thread',{}),/unsafe_staging/);
+    assert.deepEqual(await fs.readdir(path.join(root,'outside')),[]);
+  } finally {await fs.rm(root,{recursive:true,force:true});}
 });

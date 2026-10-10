@@ -8,6 +8,7 @@ import crypto from 'node:crypto';
 import { createInterface } from 'node:readline';
 import { dataRoot } from './lib/common.js';
 import { readLinkDefinition, readPublicLink } from './lib/link-reader.js';
+import { stageLinkEvidence } from './lib/stage-link-evidence.js';
 
 export async function readStagedEnvelope(file, root, threadId) {
   if (typeof threadId !== 'string' || !/^[A-Za-z0-9_-]{1,128}$/.test(threadId)) throw new Error('missing_thread_identity');
@@ -69,6 +70,13 @@ export async function handleRpc(request, deps = {}) {
   else if (method === 'tools/list') result = { tools: [toolDefinition] };
   else if (method === 'tools/call' && params.name === 'read_link') {
     result = params.arguments?.connector_failure !== undefined ? await reportedFailure(params.arguments) : await readPublicLink(params.arguments, { ...deps, readEnvelope: file => readStagedEnvelope(file, deps.root ?? dataRoot(), params._meta?.threadId) });
+    if (result.evidence) {
+      const staged = stageLinkEvidence(deps.root ?? dataRoot(), params._meta?.threadId, result.evidence);
+      result.content.push({ type: 'text', text: JSON.stringify({ evidence_file: staged.file,
+        staging_directory: staged.directory,
+        handoff: 'Host-produced linked-media-evidence.v1, including actual image bytes. Drain this and each current runner staging directory into the same run before building evidence once. Read the bound image files; do not treat another model’s descriptions as your own visual observations.' }) });
+      delete result.evidence;
+    }
     result.content = result.content.map(part => part.type === 'text' ? { ...part, text: '<untrusted_data source="read_link">\n' + part.text.replace(/<\/?\s*untrusted_data/gi, value => value.replace('<', '‹')) + '\n</untrusted_data>' } : part);
   } else return { jsonrpc: '2.0', id, error: { code: -32601, message: 'Method not found' } };
   return { jsonrpc: '2.0', id, result };
