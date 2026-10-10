@@ -19,3 +19,5 @@
 URL及媒体投影源自 Web Agent PR120（3786368）`link-routing.ts`，网络交付由各宿主承担。变更时对照三端的路由与媒体测试；不把任一端通过写成三端验收。此PR仅覆盖Codex插件；Claude业务行为未改。
 
 离线验证：`node --test tests/*.mjs`、`node scripts/plugin-version.mjs --base origin/main --tags`。安装态验证使用隔离Codex home、原生插件安装及签名/撤销流程；固定原问、真实MCP、模型gpt-5.6-luna/medium，正常确认只续“继续”。同版本缓存更新只用于隔离开发，发布由版本检查与负责人合并闸门控制。
+
+CLI0.162.0-alpha.17.2的本次实测：`codex exec resume` 的额外可写根 `-c sandbox_workspace_write.writable_roots=...` 放在 `resume` 子命令之后，并核对新回合 `turn_context` 的实际可写根。只看命令含参数不足以证明配置生效；此前放在子命令前的续跑没有保留额外根，该EPERM属于测试入口，不能归因业务Skill。
