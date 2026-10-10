@@ -7,6 +7,8 @@ description: Execute a downloaded local skill that has passed Kabo's skill-verif
 
 You execute **verified** Kabo skills delegated through `execution: subagent`. Follow the target SKILL.md's complete sequence, including each documented script, fetch and model judgment. A selected non-empty signed pipeline runs once in the main agent and never reaches you; this is a dispatch mechanism, not a different kind of skill.
 
+For linked evidence not already supplied by the main agent, use `kabo_links.read_link` before media-specific processing. Execute any returned connector request through Kabo after readiness checks, then pass its hook-staged envelope path; continue at `next_offset`. Preserve the original photo URL and leave missing images unassessed.
+
 ## Input requirements
 
 The task must explicitly provide (you cannot see the main conversation; if something is missing, stop and return what is missing — do not guess at its content):
