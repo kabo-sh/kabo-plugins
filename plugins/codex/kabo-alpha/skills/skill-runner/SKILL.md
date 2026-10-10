@@ -41,10 +41,13 @@ Every artifact this run produces goes in one place, atomically reserved before t
 
 ## Follow the documented sequence: PRE, FETCH, POST
 
-**PRE** — one Bash call before any fetch; the first output line is the run id. No `python3` → stop and say so (shipped scripts are stdlib-only Python 3 — no pip, no third-party import, no network; never reimplement one or substitute an interpreter):
+**PRE** — one Bash call before any fetch; the helper prints only the run id. Resolve its directory from the actual data root, print it for subsequent local commands, and use that exact directory for judgment files; the pipeline already runs its steps there. No `python3` → stop and say so (shipped scripts are stdlib-only Python 3 — no pip, no third-party import, no network; never reimplement one or substitute an interpreter):
 
 ```bash
-'<plugin-root>/bin/kabo-run-dir' --skill <skill dir> && PYTHONDONTWRITEBYTECODE=1 python3 --version
+kabo_run_id=$('<plugin-root>/bin/kabo-run-dir' --skill '<skill dir>') &&
+kabo_run_dir="${KABO_CODEX_DATA:-$HOME/.kabo/codex}/work/$kabo_run_id" &&
+printf '%s\nrun directory: %s\n' "$kabo_run_id" "$kabo_run_dir" &&
+cd "$kabo_run_dir" && PYTHONDONTWRITEBYTECODE=1 python3 --version
 ```
 
 **FETCH** — at each point SKILL.md requires it, every connector call the SKILL.md's evidence plan names, in one assistant turn where dependencies allow: independent read-only calls go together (`data_connector_batch_run` for two to four when actually callable, else individual `data_connector_run` calls in the same turn; batching changes only transport scheduling — preserve every connector id, operation, complete `params` object, response envelope and request order — and never covers pagination, deferred-job polling, retries, refreshes, repeated sampling or writes); a call that feeds another goes first. Within one run, reuse a completed response only when `connector_id`, `operation` and the complete `params` object are identical — never for pagination, polling, a non-completed response, an explicit retry or refresh, repeated sampling the SKILL.md requires, or any operation that may write external state. A `kabo:` line may follow a call: it names the staging directory that already holds that response. Do not retype or re-serialize the envelope. If no `kabo:` line appeared, the response you hold is the artifact and you write it in POST.
@@ -63,6 +66,16 @@ Every artifact this run produces goes in one place, atomically reserved before t
   --step 'python3 {skill}/scripts/validate_reach_drop.py {analysis}/reach_drop_assessment.json' \
   --step 'python3 {skill}/scripts/render_reach_drop.py {analysis}/reach_drop_assessment.json --language {language} --output {report}/REACH_DROP_DIAGNOSIS.md' \
   --step 'python3 {skill}/scripts/validate_creator_report.py {report}/REACH_DROP_DIAGNOSIS.md --assessment {analysis}/reach_drop_assessment.json --language {language}'
+```
+
+When a documented command reads the user's request from stdin, keep its arguments in `--step` and attach the real multiline heredoc to the pipeline invocation. Do not encode the line breaks as `\n` inside the step string. For an account driver's documented fetch:
+
+```bash
+'<plugin-root>/bin/kabo-run-pipeline' --run-id '<run-id>' --skill '<skill dir>' \
+  --continue --param platform='<platform>' --param handle='<handle>' \
+  --step 'python3 {skill}/scripts/drive.py fetch --platform {param.platform} --handle {param.handle} --question-file -' <<'TEXT'
+<the user's original request, verbatim>
+TEXT
 ```
 
 Translating a SKILL.md command: `${PLUGIN_ROOT}` (and `${CLAUDE_PLUGIN_ROOT}` in an attached convention) → `{plugin}`; `../../` (only where the body literally writes it) → `{cr}/`, which is `{plugin}/creator-research`, never two levels above the skill cache; the skill's own `scripts/` → `{skill}/scripts/`; outputs → `{snapshot}`, `{analysis}` or `{report}`; `{envelopes}` = one `--envelope <path>` per drained or written `snapshot/envelope-NN.json`, in numeric order; `{run}`, `{owner}`, `{language}`, `{param.<key>}` cover the rest. Placeholders are written bare, never inside quotes: the pipeline single-quotes every value for `/bin/sh` itself, so `--focus-handle "{param.handle}"` hands the analyzer `'@handle'` with the quote characters as part of the handle, and it never matches the account. An unknown placeholder, or a placeholder inside shell quotes, fails before any step runs. A `step n/N FAILED exit=<code>` line or exit 1 is a failed run — name the step and what is missing; do not deliver, do not rerun with different data.
