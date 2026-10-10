@@ -41,6 +41,21 @@ test('照片实际结构覆盖video路径提示；身份不符和404不产生图
   const missing=await readPublicLink({source_url:url,envelope_file:'fixture'},{readEnvelope:async()=>({...envelope,status:'failed',error_code:'not_found'}),fetchFn});
   assert.notEqual(missing.isError,true); assert.equal(parse(missing).error_code,'not_found'); assert.equal(missing.content.some(p=>p.type==='image'),false);
 });
+test('TikTok短链暂存证据必须绑定回显请求URL，缺失或不符时不下载图片',async()=>{
+  const source_url='https://vt.tiktok.com/abc/?key=one';
+  let downloads=0;
+  const deps={fetchFn:async()=>{downloads++;return new Response(png);}};
+  for(const params of [undefined,{}, {url:123}, {url:'https://vt.tiktok.com/other/?key=one'}, {url:'https://vt.tiktok.com/abc/?key=two'}, {url:'https://www.tiktok.com/@example/photo/12345'}]) {
+    const result=await readPublicLink({source_url,envelope_file:'fixture'},{...deps,readEnvelope:async()=>({...envelope,request_id:'unverified-request',params})});
+    assert.equal(result.isError,true);assert.equal(result.evidence,undefined);
+    assert.equal(result.content.some(p=>p.type==='image'),false);
+  }
+  assert.equal(downloads,0);
+  const result=await readPublicLink({source_url,envelope_file:'fixture',count:1},{...deps,readEnvelope:async()=>({...envelope,params:{url:'https://VT.TIKTOK.COM:443/abc?key=one#share'}})});
+  assert.notEqual(result.isError,true);assert.equal(downloads,1);
+  assert.equal(result.evidence.original_url,source_url);
+  assert.equal(result.evidence.post_id,'12345');
+});
 test('下载有界、不跟随跳转、不向任意主机请求，失败保留原位置',async()=>{
   assert.equal(allowedImageUrl('https://127.0.0.1/a.jpg'),false);
   assert.equal(allowedImageUrl('https://p16.tiktokcdn-evil.com/a.jpg'),false);

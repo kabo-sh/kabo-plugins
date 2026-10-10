@@ -16,6 +16,13 @@ export const readLinkDefinition = {
 const record = value => value !== null && typeof value === 'object' && !Array.isArray(value) ? value : {};
 const text = value => ({ type: 'text', text: typeof value === 'string' ? value : JSON.stringify(value) });
 const fail = message => ({ isError: true, content: [text(message)] });
+const canonicalShareUrl = value => {
+  if (typeof value !== 'string' || identifyPublicLink(value).resource_kind !== 'share') return null;
+  const url = new URL(value);
+  url.hash = '';
+  url.pathname = url.pathname.replace(/\/$/, '');
+  return url.href;
+};
 
 export function connectorEnvelope(result) {
   const structured = record(result).structuredContent;
@@ -90,6 +97,8 @@ export async function readPublicLink(args, deps = {}) {
   const envelope = connectorEnvelope(raw);
   if (!envelope || envelope.connector_id !== route.connector_id || envelope.operation !== route.operation) return fail('The result does not match this link reading route.');
   if (!['completed','completed_partial'].includes(envelope.status)) return { content: [text({ identity, status: envelope.status, error_code: envelope.error_code ?? null, limitations: envelope.limitations, missing: 'No usable post content was delivered. This does not establish a format limitation.' })] };
+  if (envelope_file !== undefined && identity.platform === 'tiktok' && identity.resource_kind === 'share' &&
+      canonicalShareUrl(record(envelope.params).url) !== canonicalShareUrl(source_url)) return fail('The staged result cannot be bound to this TikTok share link. Fetch the original link again and use its envelope with matching params.url.');
   const data = record(envelope.data);
   let media = identity.platform === 'tiktok' && ['post','share'].includes(identity.resource_kind) ? tiktokPostMedia(source_url, data.video) :
     identity.platform === 'instagram' && identity.resource_kind === 'post' ? instagramPostMedia(source_url, data.post) : null;

@@ -6,7 +6,7 @@
 
 1. 按 URL 区分支持的平台、帖子、账号和官方页；TikTok 照片、视频及短链都使用现有 `tiktok-search/get_video`，接口名不决定媒体类型。不改写 `/photo/` 为 `/video/`。
 2. 首次返回确定的 Kabo connector 请求。模型通过现有 Kabo OAuth 连接检查目录就绪、执行请求；平台结果由现有 PostToolUse hook 原样落盘。
-3. 再调用读取器，传 hook 暂存目录中的编号 JSON 文件为 `envelope_file`。读取器检查目录、当前线程、大小及摘要，核对 connector/operation 和标准链接的帖子 ID；不接受模型手抄或其他线程文件，不读任何登录材料。
+3. 再调用读取器，传 hook 暂存目录中的编号 JSON 文件为 `envelope_file`。读取器检查目录、当前线程、大小及摘要，核对 connector/operation 和标准链接的帖子 ID；TikTok 短链还必须与信封回显的 `params.url` 匹配，缺失或不符时拒绝媒体证据。不接受模型手抄或其他线程文件，不读任何登录材料。
 4. 从实际帖子结构读取媒体类型及图片顺序。单批最多4张，缺失图片保留原位置，继续使用 `next_offset`；上游没有可靠总数时完整性为未知。
 5. 仅下载指定平台 CDN 的 HTTPS 图片，不跟随跳转，不附带凭据；限制时间及字节，按真实文件格式返回 MCP image 块。functions.exec 调用者须用 `image(block)`转发；把base64/URL放进text不算看图。没有转换器时不支持的格式明确记为缺失。
 
