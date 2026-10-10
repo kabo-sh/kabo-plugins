@@ -101,12 +101,17 @@ for (const host of ['codex','claude']) {
     const {staging,hook}=await setup(t);const payload=fixture();payload.content=[{type:'text',text:'No artifact manifest.'}];delete payload.structuredContent;
     const r=await hook(payload);assert.equal(r.code,0);await assert.rejects(fs.stat(staging),{code:'ENOENT'});
   });
-  test(`${host}: raw video has its own bounded type while all legacy file pairs still stage`,async t=>{
+  test(`${host}: cloud delivery files and raw video retain distinct bounded types`,async t=>{
     const {staging,hook}=await setup(t);
     for (const [kind,mime,index,size] of [['source_video','video/mp4',13,policy.source_video_bytes],
       ['voice_sample','audio/wav',0,body.length],['first_frame','image/png',0,body.length],
       ['speech_audio','audio/wav',0,body.length],['word_timings','application/json',0,body.length],
-      ['generated_video','video/mp4',0,body.length]]) {
+      ['generated_video','video/mp4',0,body.length],
+      ['final_video','video/mp4',255,200*1024*1024],
+      ['editable_pack','application/zip',255,200*1024*1024],
+      ['image','image/png',255,policy.file_bytes],
+      ['image','image/jpeg',255,policy.file_bytes],
+      ['report','text/plain',255,policy.file_bytes]]) {
       // This is a single-chunk manifest check, not whole-video validation.
       const payload=fixture();const visible=payload.structuredContent;
       Object.assign(visible.file,{kind,content_type:mime,index,bytes:size});
@@ -115,12 +120,23 @@ for (const host of ['codex','claude']) {
       payload.content[0].text=JSON.stringify(visible);
       const result=await hook(payload);assert.equal(result.code,0,result.stderr);
     }
-    assert.equal((await fs.readdir(staging)).filter(f=>f.endsWith('.art')).length,6);
+    assert.equal((await fs.readdir(staging)).filter(f=>f.endsWith('.art')).length,11);
   });
   test(`${host}: raw-video bounds do not widen legacy types, indexes or task pairing`,async t=>{
     const {staging,hook}=await setup(t);
     const invalid=[
       ['source_video','video/mp4',13,policy.source_video_bytes+1],
+      ['image','image/png',0,policy.file_bytes+1],
+      ['report','text/plain',0,policy.file_bytes+1],
+      ['image','text/plain',0,body.length],
+      ['report','image/png',0,body.length],
+      ['report','application/json',0,body.length],
+      ['final_video','video/mp4',0,200*1024*1024+1],
+      ['editable_pack','application/zip',0,200*1024*1024+1],
+      ['final_video','application/zip',0,body.length],
+      ['editable_pack','video/mp4',0,body.length],
+      ['final_video','video/mp4',256,body.length],
+      ['editable_pack','application/zip',256,body.length],
       ['source_video','audio/wav',13,body.length],['source_video','video/mp4',14,body.length],
       ['generated_video','video/mp4',0,policy.file_bytes+1],
       ['voice_sample','audio/wav',0,policy.file_bytes+1],['first_frame','image/png',0,policy.file_bytes+1],
@@ -153,8 +169,12 @@ for (const host of ['codex','claude']) {
         await fs.copyFile(path.join(plugin,relative),target);
       }
       const changed=structuredClone(contract);
-      if(mutation==='ambiguous') changed.output_schema.properties.file.oneOf.push(structuredClone(changed.output_schema.properties.file.oneOf[0]));
-      else changed.output_schema.properties.file.oneOf[0].not={};
+      const variants=changed.output_schema.properties.file.oneOf;
+      const sample=variants.find(branch=>branch.properties.kind.const===vector.structuredContent.file.kind ||
+        branch.properties.kind.enum?.includes(vector.structuredContent.file.kind));
+      assert.ok(sample,'The provider sample must have a matching file variant.');
+      if(mutation==='ambiguous') variants.push(structuredClone(sample));
+      else sample.not={};
       const bytes=Buffer.from(JSON.stringify(changed));
       await fs.writeFile(path.join(isolated,'scripts/contracts/remake-artifact-v1.json'),bytes);
       await fs.writeFile(path.join(isolated,'scripts/contracts/remake-artifact-v1.sha256'),sha(bytes)+'\n');
