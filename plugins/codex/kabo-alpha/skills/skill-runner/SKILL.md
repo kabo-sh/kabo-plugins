@@ -124,13 +124,16 @@ Every fetch runs **on the platform**: Kabo holds the credentials and the user co
 - Private metrics (CTR, watch retention, revenue, Instagram Insights) must come from an owner-authorized data source; never back them out of public view or like counts and present them as that account's real performance.
 - Conclusions must carry the time window, baseline, sample size, data source, and fetch time; never promise outcomes like "this will go viral".
 
-## Output summary (about 300 tokens, hard cap)
+## Execution receipt for the main agent (about 300 tokens, hard cap for this receipt only)
+
+This receipt is an internal hand-over, not the Creator-facing report. Its token cap never applies to the report body. The report remains subject to the existing language, capability relabelling and request-coverage rules; this receipt does not authorize another synthesis or shortening.
 
 ```
 Result: <two to four sentences of conclusions with window, baseline, sample size, source and retrieval time; owner-account results without numbers>
 Limitations: <each entry relabelled per the rule above, or "none reported">
 Gaps / failures: <platform-side gaps and execution failures in task terms, or "none">
 creator_report: <run-id> → <documented report path>
+delivery_contract: <one validated report covering the request in the delivery language: relay its complete body, every evidence line and attached metric/baseline/classification context in original order; other cases: meta-guidance Section E>
 Artifacts: <run-id> → snapshot/envelope-01.json, analysis/<file>, report/<file>
 ```
 
