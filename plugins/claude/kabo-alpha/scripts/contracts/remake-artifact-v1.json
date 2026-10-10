@@ -13,7 +13,7 @@
       "source": {
         "default": "materials",
         "type": "string",
-        "enum": ["materials", "generation"]
+        "enum": ["materials", "generation", "media"]
       },
       "index": { "type": "integer", "minimum": 0, "maximum": 255 },
       "offset": {
@@ -41,6 +41,145 @@
       },
       "file": {
         "oneOf": [
+          {
+            "type": "object",
+            "properties": {
+              "index": { "type": "integer", "minimum": 0, "maximum": 255 },
+              "kind": { "type": "string", "const": "final_video" },
+              "content_type": { "type": "string", "const": "video/mp4" },
+              "bytes": {
+                "type": "integer",
+                "exclusiveMinimum": 0,
+                "maximum": 209715200
+              },
+              "sha256": { "type": "string", "pattern": "^[a-f0-9]{64}$" },
+              "chunk_offset": {
+                "type": "integer",
+                "minimum": 0,
+                "maximum": 9007199254740991
+              },
+              "chunk_bytes": {
+                "type": "integer",
+                "exclusiveMinimum": 0,
+                "maximum": 4194304
+              }
+            },
+            "required": [
+              "index",
+              "kind",
+              "content_type",
+              "bytes",
+              "sha256",
+              "chunk_offset",
+              "chunk_bytes"
+            ],
+            "additionalProperties": false
+          },
+          {
+            "type": "object",
+            "properties": {
+              "index": { "type": "integer", "minimum": 0, "maximum": 255 },
+              "kind": { "type": "string", "const": "editable_pack" },
+              "content_type": { "type": "string", "const": "application/zip" },
+              "bytes": {
+                "type": "integer",
+                "exclusiveMinimum": 0,
+                "maximum": 209715200
+              },
+              "sha256": { "type": "string", "pattern": "^[a-f0-9]{64}$" },
+              "chunk_offset": {
+                "type": "integer",
+                "minimum": 0,
+                "maximum": 9007199254740991
+              },
+              "chunk_bytes": {
+                "type": "integer",
+                "exclusiveMinimum": 0,
+                "maximum": 4194304
+              }
+            },
+            "required": [
+              "index",
+              "kind",
+              "content_type",
+              "bytes",
+              "sha256",
+              "chunk_offset",
+              "chunk_bytes"
+            ],
+            "additionalProperties": false
+          },
+          {
+            "type": "object",
+            "properties": {
+              "index": { "type": "integer", "minimum": 0, "maximum": 255 },
+              "kind": { "type": "string", "const": "image" },
+              "content_type": {
+                "type": "string",
+                "enum": ["image/png", "image/jpeg"]
+              },
+              "bytes": {
+                "type": "integer",
+                "exclusiveMinimum": 0,
+                "maximum": 20971520
+              },
+              "sha256": { "type": "string", "pattern": "^[a-f0-9]{64}$" },
+              "chunk_offset": {
+                "type": "integer",
+                "minimum": 0,
+                "maximum": 9007199254740991
+              },
+              "chunk_bytes": {
+                "type": "integer",
+                "exclusiveMinimum": 0,
+                "maximum": 4194304
+              }
+            },
+            "required": [
+              "index",
+              "kind",
+              "content_type",
+              "bytes",
+              "sha256",
+              "chunk_offset",
+              "chunk_bytes"
+            ],
+            "additionalProperties": false
+          },
+          {
+            "type": "object",
+            "properties": {
+              "index": { "type": "integer", "minimum": 0, "maximum": 255 },
+              "kind": { "type": "string", "const": "report" },
+              "content_type": { "type": "string", "const": "text/plain" },
+              "bytes": {
+                "type": "integer",
+                "exclusiveMinimum": 0,
+                "maximum": 20971520
+              },
+              "sha256": { "type": "string", "pattern": "^[a-f0-9]{64}$" },
+              "chunk_offset": {
+                "type": "integer",
+                "minimum": 0,
+                "maximum": 9007199254740991
+              },
+              "chunk_bytes": {
+                "type": "integer",
+                "exclusiveMinimum": 0,
+                "maximum": 4194304
+              }
+            },
+            "required": [
+              "index",
+              "kind",
+              "content_type",
+              "bytes",
+              "sha256",
+              "chunk_offset",
+              "chunk_bytes"
+            ],
+            "additionalProperties": false
+          },
           {
             "type": "object",
             "properties": {
