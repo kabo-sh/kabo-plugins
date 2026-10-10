@@ -3,6 +3,16 @@
     "kabo": {
       "url": "https://kabo.sh/mcp",
       "auth": "oauth"
+    },
+    "kabo_links": {
+      "command": "node",
+      "args": [
+        "scripts/link-server.js"
+      ],
+      "cwd": ".",
+      "env_vars": [
+        "KABO_CODEX_DATA"
+      ]
     }
   }
 }
