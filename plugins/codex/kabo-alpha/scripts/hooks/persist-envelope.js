@@ -485,6 +485,13 @@ async function main() {
         }
         throw error;
       }
+      // A concurrent writer may have completed since nextSequence was read. Its lock is
+      // gone, but its body/sidecar still owns this stem, including the other body type.
+      if (['json', 'art', 'meta'].some(ext => fs.existsSync(`${stem}.${ext}`))) {
+        fs.rmSync(`${stem}.lock`, { force: true });
+        sequence += 1;
+        continue;
+      }
       try {
         fs.writeFileSync(`${stem}.json`, bytes, { mode: 0o600, flag: 'wx' });
       } catch (error) {
@@ -557,6 +564,13 @@ async function main() {
           continue;
         }
         throw error;
+      }
+      // A concurrent writer may have completed since nextSequence was read. Its lock is
+      // gone, but its body/sidecar still owns this stem, including the other body type.
+      if (['json', 'art', 'meta'].some(ext => fs.existsSync(`${stem}.${ext}`))) {
+        fs.rmSync(`${stem}.lock`, { force: true });
+        sequence += 1;
+        continue;
       }
       try {
         fs.writeFileSync(`${stem}.art`, body, { mode: 0o600, flag: 'wx' });

@@ -111,6 +111,53 @@ for (const host of ['claude', 'codex']) {
     await assert.rejects(fs.stat(path.join(staging, '02.lock')), { code: 'ENOENT' });
   });
 
+  for (const writer of ['json', 'art']) {
+    test(`${host}: a stale ${writer} sequence cannot reuse a completed opposite-type stem`, async t => {
+      const { data, env, staging, save } = await setup(t);
+      await fs.mkdir(staging, { recursive: true, mode: 0o700 });
+      const frame = Buffer.from('fixture frame bytes');
+      const priorBody = writer === 'json' ? frame : Buffer.from(JSON.stringify(envelope('req-prior')));
+      const priorMeta = writer === 'json'
+        ? { artifact: true, kind: 'keyframes', object_ref: 'prior-frame', status: 'completed',
+            bytes: priorBody.length, sha256: sha256(priorBody), content_type: 'image/png', verbatim: true }
+        : { connector_id: 'fixture', operation: 'search', status: 'completed',
+            bytes: priorBody.length, sha256: sha256(priorBody), request_id: 'req-prior', verbatim: true };
+      const stem = writer === 'json' ? '01' : '02';
+      const opposite = writer === 'json' ? 'art' : 'json';
+      const preload = path.join(data, 'stale-sequence.mjs');
+      // Another writer completes after nextSequence has read the directory but before this
+      // writer takes the now-released lock. Force that schedule without changing the hook.
+      await fs.writeFile(preload, `import fs from 'node:fs';
+const original = fs.writeFileSync;
+let injected = false;
+fs.writeFileSync = function(file, ...args) {
+  if (!injected && String(file).endsWith(${JSON.stringify(`/${stem}.lock`)})) {
+    injected = true;
+    original(${JSON.stringify(path.join(staging, `${stem}.${opposite}`))}, Buffer.from(${JSON.stringify([...priorBody])}), { mode: 0o600, flag: 'wx' });
+    original(${JSON.stringify(path.join(staging, `${stem}.meta`))}, ${JSON.stringify(JSON.stringify(priorMeta) + '\n')}, { mode: 0o600, flag: 'wx' });
+  }
+  return original.call(this, file, ...args);
+};
+`);
+      const payload = writer === 'json' ? envelope('req-new') : {
+        structuredContent: { ...envelope('req-new'), job_id: 'fixture-job', artifacts: [{
+          kind: 'keyframes', object_ref: 'new-frame', content_type: 'image/png', sha256: sha256(frame),
+        }] },
+        content: [{ type: 'image', data: frame.toString('base64'), mimeType: 'image/png' }],
+      };
+      const result = await run(process.execPath, ['--import', preload, hookFile], env, JSON.stringify({
+        session_id: 'staging-session', tool_use_id: 'stale-call', tool_response: JSON.stringify(payload),
+      }));
+      assert.equal(result.code, 0, result.stderr);
+      assert.deepEqual(await fs.readFile(path.join(staging, `${stem}.${opposite}`)), priorBody);
+      assert.deepEqual(JSON.parse(await fs.readFile(path.join(staging, `${stem}.meta`), 'utf8')), priorMeta);
+      await assert.rejects(fs.stat(path.join(staging, `${stem}.${writer}`)), { code: 'ENOENT' });
+      const drained = await save('--from', staging, '--into', path.join(data, 'snapshot'));
+      assert.equal(drained.code, 0, drained.stderr);
+      assert.equal((await fs.readdir(staging)).length, 0, 'all intact evidence is drained');
+    });
+  }
+
   test(`${host}: a keyframe drained into a snapshot that already has frame-0001 becomes frame-0002`, async t => {
     const { data, staging, save } = await setup(t);
     const snapshot = path.join(data, 'snapshot');
