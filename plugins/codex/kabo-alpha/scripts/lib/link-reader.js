@@ -93,7 +93,19 @@ export async function readPublicLink(args, deps = {}) {
       raw = await deps.call('data_connector_run', route);
     }
     else return { content: [text({ identity, status: 'requires_connector', request: { tool: 'data_connector_run', arguments: route }, continuation: 'Execute the request through Kabo, then supply the exact staged envelope_file. Do not hand-copy the result. Check connector readiness before executing.' })] };
-  } catch { return fail('Link reading failed. The source availability is unconfirmed; do not infer that the media format is unsupported.'); }
+  } catch (error) {
+    if (envelope_file !== undefined) {
+      const recoverable = error?.code === 'ENOENT' || error?.message === 'invalid_staged_path';
+      return fail({
+        code: recoverable ? 'staged_envelope_path_invalid' : 'staged_envelope_unverified',
+        stage: 'local_envelope_read', source_availability: 'unconfirmed',
+        recovery: recoverable
+          ? 'Use a numbered JSON file from this conversation’s PostToolUse staging directory. List its files; do not guess a connector-named file or pass a run snapshot copy. Retry this same URL and batch with that exact envelope_file; do not fetch the post again merely to repair this local path.'
+          : 'The local envelope could not be verified. Stop this evidence path; do not bypass its thread, digest or file checks.',
+      });
+    }
+    return fail('Link reading failed. The source availability is unconfirmed; do not infer that the media format is unsupported.');
+  }
   const envelope = connectorEnvelope(raw);
   if (!envelope || envelope.connector_id !== route.connector_id || envelope.operation !== route.operation) return fail('The result does not match this link reading route.');
   if (!['completed','completed_partial'].includes(envelope.status)) return { content: [text({ identity, status: envelope.status, error_code: envelope.error_code ?? null, limitations: envelope.limitations, missing: 'No usable post content was delivered. This does not establish a format limitation.' })] };

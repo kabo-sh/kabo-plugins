@@ -99,6 +99,28 @@ test('单批超限返回原URL的可执行修复，不误报为链接不支持',
   const error=parse(result); assert.equal(error.code,'invalid_count'); assert.deepEqual(error.retry,{source_url:url,offset:0,count:4});
 });
 
+test('本地路径交接失败可修正原批次，验签失败则停止，不误报上游缺图',async()=>{
+  let fetches=0;
+  for (const error of [new Error('invalid_staged_path'), Object.assign(new Error('private path'), {code:'ENOENT'})]) {
+    const result=await readPublicLink({source_url:url,envelope_file:'snapshot/envelope-01.json'}, {
+      readEnvelope:async()=>{throw error;}, fetchFn:async()=>{fetches++;return new Response(png);},
+    });
+    const data=parse(result);
+    assert.equal(result.isError,true);
+    assert.equal(data.code,'staged_envelope_path_invalid');
+    assert.equal(data.stage,'local_envelope_read');
+    assert.equal(data.source_availability,'unconfirmed');
+    assert.match(data.recovery,/numbered JSON/);
+    assert.doesNotMatch(JSON.stringify(data),/private path/);
+  }
+  for (const message of ['staged_digest_mismatch','missing_thread_identity','invalid_staged_file']) {
+    const data=parse(await readPublicLink({source_url:url,envelope_file:'fixture'}, {readEnvelope:async()=>{throw new Error(message);}}));
+    assert.equal(data.code,'staged_envelope_unverified');
+    assert.match(data.recovery,/Stop this evidence path/);
+  }
+  assert.equal(fetches,0);
+});
+
 test('原生MCP失败无hook文件时显式交接错误，不读取其他线程，不更换媒体类型',async()=>{
   const rpc=args=>handleRpc({id:10,method:'tools/call',params:{name:'read_link',arguments:args}});
   const result=await rpc({source_url:url,connector_failure:{error_code:'not_found',request_id:'req-example'}});
