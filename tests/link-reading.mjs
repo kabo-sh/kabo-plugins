@@ -77,6 +77,15 @@ test('原生stdio协议与暂存路径边界，不读取其他线程和摘要被
     const file=path.join(dir,'01.json'), body=Buffer.from(JSON.stringify(envelope)); await fs.writeFile(file,body);
     await fs.writeFile(file.replace('.json','.meta'),JSON.stringify({bytes:body.length,sha256:crypto.createHash('sha256').update(body).digest('hex')}));
     assert.deepEqual(await readStagedEnvelope(file,root,'thread-a'),envelope);
+    const errorFor = async envelope_file => {
+      const response = await handleRpc({id:99,method:'tools/call',params:{name:'read_link',arguments:{source_url:url,envelope_file},_meta:{threadId:'thread-a'}}},{root,fetchFn});
+      return JSON.parse(response.result.content[0].text.split('\n')[1]);
+    };
+    assert.equal((await errorFor(path.join(dir,'99.json'))).code,'staged_envelope_path_invalid');
+    await fs.rename(file.replace('.json','.meta'),file.replace('.json','.meta.saved'));
+    assert.equal((await errorFor(file)).code,'staged_envelope_unverified');
+    await fs.rename(file.replace('.json','.meta.saved'),file.replace('.json','.meta'));
+
     await assert.rejects(readStagedEnvelope(file,root,'thread-b'));
     const result=await handleRpc({jsonrpc:'2.0',id:1,method:'tools/call',params:{name:'read_link',arguments:{source_url:url,envelope_file:file,count:1},_meta:{threadId:'thread-a'}}},{root,fetchFn});
     assert.equal(result.result.content[1].text.startsWith('<untrusted_data'),true);
@@ -101,7 +110,7 @@ test('单批超限返回原URL的可执行修复，不误报为链接不支持',
 
 test('本地路径交接失败可修正原批次，验签失败则停止，不误报上游缺图',async()=>{
   let fetches=0;
-  for (const error of [new Error('invalid_staged_path'), Object.assign(new Error('private path'), {code:'ENOENT'})]) {
+  for (const error of [new Error('invalid_staged_path'), new Error('staged_envelope_path_missing')]) {
     const result=await readPublicLink({source_url:url,envelope_file:'snapshot/envelope-01.json'}, {
       readEnvelope:async()=>{throw error;}, fetchFn:async()=>{fetches++;return new Response(png);},
     });
@@ -113,7 +122,7 @@ test('本地路径交接失败可修正原批次，验签失败则停止，不�
     assert.match(data.recovery,/numbered JSON/);
     assert.doesNotMatch(JSON.stringify(data),/private path/);
   }
-  for (const message of ['staged_digest_mismatch','missing_thread_identity','invalid_staged_file']) {
+  for (const message of ['staged_digest_mismatch','missing_thread_identity','invalid_staged_file','ENOENT']) {
     const data=parse(await readPublicLink({source_url:url,envelope_file:'fixture'}, {readEnvelope:async()=>{throw new Error(message);}}));
     assert.equal(data.code,'staged_envelope_unverified');
     assert.match(data.recovery,/Stop this evidence path/);

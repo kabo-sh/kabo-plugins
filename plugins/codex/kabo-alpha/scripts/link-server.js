@@ -13,9 +13,15 @@ import { stageLinkEvidence } from './lib/stage-link-evidence.js';
 export async function readStagedEnvelope(file, root, threadId) {
   if (typeof threadId !== 'string' || !/^[A-Za-z0-9_-]{1,128}$/.test(threadId)) throw new Error('missing_thread_identity');
   const base = await fs.realpath(path.join(root, 'envelope-staging'));
-  const resolved = await fs.realpath(file), relative = path.relative(base, resolved);
+  const resolveOrOpen = async action => {
+    try { return await action(); } catch (error) {
+      if (error?.code === 'ENOENT') throw new Error('staged_envelope_path_missing');
+      throw error;
+    }
+  };
+  const resolved = await resolveOrOpen(() => fs.realpath(file)), relative = path.relative(base, resolved);
   if (relative.startsWith('..') || path.isAbsolute(relative) || !relative.split(path.sep).slice(0, -1).includes(threadId) || !/^\d{2,}\.json$/.test(path.basename(resolved))) throw new Error('invalid_staged_path');
-  const handle = await fs.open(resolved, constants.O_RDONLY | constants.O_NOFOLLOW);
+  const handle = await resolveOrOpen(() => fs.open(resolved, constants.O_RDONLY | constants.O_NOFOLLOW));
   let body;
   try {
     const stat = await handle.stat();

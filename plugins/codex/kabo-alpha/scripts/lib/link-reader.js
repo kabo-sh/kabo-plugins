@@ -95,7 +95,7 @@ export async function readPublicLink(args, deps = {}) {
     else return { content: [text({ identity, status: 'requires_connector', request: { tool: 'data_connector_run', arguments: route }, continuation: 'Execute the request through Kabo, then supply the exact staged envelope_file. Do not hand-copy the result. Check connector readiness before executing.' })] };
   } catch (error) {
     if (envelope_file !== undefined) {
-      const recoverable = error?.code === 'ENOENT' || error?.message === 'invalid_staged_path';
+      const recoverable = ['staged_envelope_path_missing', 'invalid_staged_path'].includes(error?.message);
       return fail({
         code: recoverable ? 'staged_envelope_path_invalid' : 'staged_envelope_unverified',
         stage: 'local_envelope_read', source_availability: 'unconfirmed',
