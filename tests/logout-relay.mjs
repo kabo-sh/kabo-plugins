@@ -10,6 +10,7 @@ import test from 'node:test';
 
 const root = fileURLToPath(new URL('../', import.meta.url));
 const plugin = host => path.join(root, 'plugins', host, 'kabo-alpha');
+const { PLUGIN_VERSION } = await import('../plugins/claude/kabo-alpha/scripts/lib/common.js');
 const accessToken = 'synthetic-access-for-loopback-tests';
 
 function run(host, entry, args, env, input = '') {
@@ -60,6 +61,7 @@ async function fixture(t, host = 'claude') {
       }
       assert.equal(req.url, '/mcp-for-claude');
       assert.equal(req.headers.authorization, `Bearer ${accessToken}`);
+      assert.equal(req.headers['x-kabo-plugin-version'], common.PLUGIN_VERSION);
       // The independent credential probe intentionally sends an invalid empty RPC request.
       if (Object.keys(body).length === 0) {
         res.writeHead(400);
@@ -142,7 +144,7 @@ test('Claude relay prunes acknowledged batches, retains concurrent events and pr
   assert.deepEqual(await f.run('bin/kabo-headers', ['--relay']), { code: 0, stdout: '', stderr: '' });
   const ordinary = await f.run('bin/kabo-headers');
   assert.equal(ordinary.code, 0);
-  assert.equal(ordinary.stdout, JSON.stringify({ Authorization: `Bearer ${accessToken}` }) + '\n');
+  assert.equal(ordinary.stdout, JSON.stringify({ Authorization: `Bearer ${accessToken}`, 'X-Kabo-Plugin-Version': PLUGIN_VERSION }) + '\n');
   assert.equal(f.requests.length, count, 'An empty queue and a fresh header need no network');
   f.assertRequests();
 });

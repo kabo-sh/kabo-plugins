@@ -90,6 +90,21 @@ function option(name) {
 
 const version = versionAt(null);
 
+// Codex loads native HTTP headers before executing plugin scripts. Derive this literal from the
+// runtime constant when bumping, then require the committed config to agree on every CI run.
+const mcpFile = 'plugins/codex/kabo-alpha/.mcp.json';
+const mcpConfig = JSON.parse(fs.readFileSync(mcpFile, 'utf8'));
+if (process.argv.includes('--write-mcp-config')) {
+  mcpConfig.mcpServers.kabo.http_headers = {
+    ...mcpConfig.mcpServers.kabo.http_headers,
+    'X-Kabo-Plugin-Version': version,
+  };
+  fs.writeFileSync(mcpFile, `${JSON.stringify(mcpConfig, null, 2)}\n`);
+}
+if (mcpConfig.mcpServers?.kabo?.http_headers?.['X-Kabo-Plugin-Version'] !== version) {
+  fail(`${mcpFile} runtime hint differs; run node scripts/plugin-version.mjs --write-mcp-config`);
+}
+
 const base = option('--base');
 if (base) {
   const baseVersion = versionAt(base);

@@ -2,7 +2,10 @@
   "mcpServers": {
     "kabo": {
       "url": "https://kabo.sh/mcp",
-      "auth": "oauth"
+      "auth": "oauth",
+      "http_headers": {
+        "X-Kabo-Plugin-Version": "0.21.26"
+      }
     },
     "kabo_links": {
       "command": "node",
