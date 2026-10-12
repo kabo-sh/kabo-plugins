@@ -4,8 +4,19 @@
       "url": "https://kabo.sh/mcp",
       "auth": "oauth",
       "http_headers": {
-        "X-Kabo-Plugin-Version": "0.21.27"
+        "X-Kabo-Plugin-Version": "0.21.28"
       }
+    },
+    "kabo_runtime": {
+      "command": "node",
+      "args": [
+        "scripts/runtime-server.js"
+      ],
+      "cwd": ".",
+      "env_vars": [
+        "KABO_CODEX_DATA",
+        "KABO_API_ENDPOINT"
+      ]
     },
     "kabo_links": {
       "command": "node",

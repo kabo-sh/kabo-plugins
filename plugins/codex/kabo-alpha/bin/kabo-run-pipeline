@@ -50,12 +50,16 @@ import path from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 
+import { selectSignedStage, readStageInput } from '../scripts/lib/signed-stages.js';
+
 import { PLUGIN_VERSION, isSafeName, readJsonSilent, sha256hex, workRoot } from '../scripts/lib/common.js';
 
 const USAGE = `Usage: kabo-run-pipeline --run-id <id> --skill <skill-dir> [--staging <dir>] [--language <tag>]
                          [--param k=v]... [--continue | --fail <reason>] [--report <file-name> | --report-file <run-file>]
                          (--step '<shell command>')...
 
+  --stage     select one signed manifest.execution_stages entry; no caller commands/report flags
+  --input-receipt fixed private owner/stage-inputs/<stage>.receipt.json for a JSON stage
   --run-id    a run id printed by kabo-run-dir (the run directory must already exist)
   --skill     the skill cache directory the steps belong to (skill-verify must have passed on it)
   --staging   the directory where the host staged connector envelopes (a PostToolUse
@@ -96,7 +100,7 @@ const STEP_ECHO_CHARS = 60;
 /** Captured stdout budget per step; the scripts print a one-line JSON status, so this is generous. */
 const STEP_STDOUT_MAX_BYTES = 64 * 1024 * 1024;
 
-const PLACEHOLDER = /(?<!\$)\{(run|skill|plugin|cr|snapshot|analysis|report|owner|language|envelopes|param\.[A-Za-z0-9_-]+)\}/g;
+const PLACEHOLDER = /(?<!\$)\{(run|skill|plugin|cr|snapshot|analysis|report|owner|language|stage_input|envelopes|param\.[A-Za-z0-9_-]+)\}/g;
 const PLACEHOLDER_ONE = new RegExp(`^${PLACEHOLDER.source}$`);
 // Case-insensitive on purpose while PLACEHOLDER is not: {Snapshot} must be refused, not shipped to sh.
 const PLACEHOLDER_LIKE = /(?<!\$)\{[A-Za-z][A-Za-z0-9_.-]*\}/g;
@@ -185,7 +189,7 @@ if (args.length === 0 || args.includes('--help') || args.includes('-h')) {
   process.exit(args.length === 0 ? 1 : 0);
 }
 
-const opts = { runId: null, skill: null, staging: null, operation: null, language: null, report: null, reportFile: null, continue: false, fail: null, params: new Map(), steps: [] };
+const opts = { stage: null, inputReceipt: null, runId: null, skill: null, staging: null, operation: null, language: null, report: null, reportFile: null, continue: false, fail: null, params: new Map(), steps: [] };
 function valueOf(flag, index) {
   const value = args[index + 1];
   if (value === undefined) fail(`${flag} requires a value`);
@@ -194,6 +198,8 @@ function valueOf(flag, index) {
 for (let i = 0; i < args.length; i += 1) {
   const arg = args[i];
   switch (arg) {
+    case '--stage': opts.stage = valueOf(arg, i); i += 1; break;
+    case '--input-receipt': opts.inputReceipt = valueOf(arg, i); i += 1; break;
     case '--run-id': opts.runId = valueOf(arg, i); i += 1; break;
     case '--skill': opts.skill = valueOf(arg, i); i += 1; break;
     case '--staging': opts.staging = valueOf(arg, i); i += 1; break;
@@ -226,7 +232,7 @@ if (opts.reportFile !== null && (!isSafeName(opts.reportFile) || opts.reportFile
 if (opts.report !== null && opts.reportFile !== null) fail('choose --report or --report-file, not both');
 if (opts.fail !== null) {
   if (opts.fail.trim() === '') fail('--fail requires a nonblank reason');
-  if (opts.continue || opts.steps.length > 0 || opts.staging !== null || opts.operation !== null || opts.report !== null || opts.reportFile !== null) {
+  if (opts.stage !== null || opts.inputReceipt !== null || opts.continue || opts.steps.length > 0 || opts.staging !== null || opts.operation !== null || opts.report !== null || opts.reportFile !== null) {
     fail('--fail cannot combine with --step, --continue, --staging, --operation or report flags');
   }
 }
@@ -248,10 +254,30 @@ function isRegularFile(p) {
 if (!isDirectory(runDir)) refuse(`run ${runId} has no work directory yet; reserve it with kabo-run-dir first`);
 if (!isDirectory(skillDir)) refuse(`skill directory does not exist: ${skillDir}`);
 
+// A package that declares signed stages cannot fall back to caller-authored shell/report flags.
+const manifest = readJsonSilent(path.join(skillDir, 'manifest.json'));
+const hasSignedStages = manifest !== null && Object.hasOwn(manifest, 'execution_stages');
+if (hasSignedStages) {
+  if (opts.steps.length || opts.continue || opts.report !== null || opts.reportFile !== null || opts.operation !== null || opts.params.size)
+    refuse('this package requires its signed stage contract; caller steps, reports and continuation flags are forbidden');
+  if (opts.fail === null && opts.stage === null) refuse('this package requires --stage');
+} else if (opts.stage !== null || opts.inputReceipt !== null) refuse('this package has no signed execution_stages');
+if (opts.inputReceipt !== null && opts.stage === null) refuse('--input-receipt requires --stage');
+let signedStage = null, stageInput = null;
+
 // Stage state is separate from the public manifest schema. Write it only after the first stage:
 // an empty reserved run must remain empty so a skill driver can adopt it instead of forking a run.
 const stageStateFile = path.join(runDir, '.pipeline-stages.json');
-const staged = opts.fail !== null || opts.continue || opts.reportFile !== null || fs.existsSync(stageStateFile);
+if (hasSignedStages) {
+  for (const file of [stageStateFile, path.join(runDir, 'run-manifest.json')]) {
+    try {
+      const stat = fs.lstatSync(file);
+      if (!stat.isFile() || stat.nlink !== 1 || (stat.mode & 0o077) !== 0 || (process.getuid && stat.uid !== process.getuid()))
+        refuse('signed stage state must be a private regular file, not a symlink or hardlink');
+    } catch (error) { if (error.code !== 'ENOENT') throw error; }
+  }
+}
+const staged = opts.stage !== null || opts.fail !== null || opts.continue || opts.reportFile !== null || fs.existsSync(stageStateFile);
 let stageState = null;
 if (staged) {
   // The lock lives beside the run, also keeping the first driver's fresh-directory check intact.
@@ -287,7 +313,7 @@ if (staged) {
   const skillManifest = readJsonSilent(path.join(skillDir, 'manifest.json'));
   if (!record || record.status !== 'running' || record.skill_id !== skillManifest?.name) refuse('staged execution requires a running reservation for this skill');
   stageState ??= { ...binding, status: 'running', phases: 0 };
-  if (opts.fail === null && !opts.continue && opts.report === null && opts.reportFile === null) refuse('the final stage must name its report with --report or --report-file');
+  if (opts.stage === null && opts.fail === null && !opts.continue && opts.report === null && opts.reportFile === null) refuse('the final stage must name its report with --report or --report-file');
 }
 
 const subdirs = {
@@ -300,14 +326,21 @@ for (const dir of Object.values(subdirs)) fs.mkdirSync(dir, { recursive: true, m
 
 // ---------- steps and placeholders ----------
 
-const manifest = readJsonSilent(path.join(skillDir, 'manifest.json'));
+if (opts.stage !== null) {
+  try {
+    signedStage = selectSignedStage({manifest, name:opts.stage, state:stageState});
+    stageInput = readStageInput({runDir,runId,skillDir,stage:opts.stage,contract:signedStage,receiptPath:opts.inputReceipt});
+  } catch (error) { refuse(error.message); }
+  opts.continue = !signedStage.final;
+  opts.reportFile = signedStage.final ? signedStage.report_file : null;
+}
 // An explicit empty operation override disables the default pipeline for that operation.
 const operations = manifest?.pipeline_operations;
 const selected = opts.operation !== null && operations && Object.hasOwn(operations, opts.operation)
   ? operations[opts.operation] : manifest?.pipeline;
 const shipped = Array.isArray(selected) ? selected : [];
 if (opts.fail === null && staged && shipped.length > 0) refuse('a selected signed pipeline must run once without --continue or --report-file');
-let steps = opts.steps;
+let steps = signedStage ? [signedStage.cmd] : opts.steps;
 if (opts.fail === null && steps.length === 0) {
   if (shipped.length === 0) refuse('no --step was given and the selected operation has no non-empty pipeline array');
   steps = shipped.map((entry, index) => {
@@ -331,6 +364,7 @@ if (opts.fail === null && steps.length === 0) {
       if (context !== null && context !== '$(') {
         problems.push(`{${key}} in step ${index + 1} is inside ${CONTEXT_LABEL[context]}, where the quoting the pipeline adds is text; write it bare`);
       }
+      if (key === 'stage_input' && !stageInput) problems.push('stage_input requires a bound signed-stage JSON input');
       if (key === 'language' && opts.language === null) problems.push(`{language} in step ${index + 1} but --language was not given`);
       if (key.startsWith('param.') && !opts.params.has(key.slice(6))) {
         problems.push(`{${key}} in step ${index + 1} but --param ${key.slice(6)}=... was not given`);
@@ -341,6 +375,7 @@ if (opts.fail === null && steps.length === 0) {
 }
 
 const values = {
+  stage_input: stageInput?.file,
   run: runDir,
   skill: skillDir,
   plugin: PLUGIN_ROOT,
@@ -349,6 +384,7 @@ const values = {
   language: opts.language,
 };
 const echoValues = {
+  stage_input: '{run}/owner/stage-inputs/input.json',
   run: '{run}',
   skill: '{skill}',
   plugin: '{plugin}',
@@ -411,6 +447,12 @@ let drained = null;
 if (staged) {
   const result = spawnSync(process.execPath, [VERIFY_BIN, '--local-only', skillDir], { stdio: 'inherit' });
   if (result.status !== 0) failure = 'skill-verify --local-only went red before this stage; no step was run';
+}
+
+if (failure === null && signedStage) {
+  stageState.execution_stages ??= {};
+  stageState.execution_stages[opts.stage] = {status:'started',started_at:new Date().toISOString(), ...(stageInput ? {input_sha256:stageInput.sha256} : {})};
+  fs.writeFileSync(stageStateFile, `${JSON.stringify(stageState)}\n`, {mode:0o600});
 }
 
 if (failure === null && stagingDir !== null) {
@@ -668,6 +710,11 @@ try {
   const status = failure !== null ? 'failed' : opts.continue ? 'running' : 'ok';
   finalizeRunManifest(status);
   if (staged) {
+    if (signedStage) {
+      const previous = stageState.execution_stages?.[opts.stage] ?? {};
+      stageState.execution_stages ??= {};
+      stageState.execution_stages[opts.stage] = {...previous, status: failure === null ? 'completed' : 'failed', finished_at:new Date().toISOString()};
+    }
     stageState.status = status;
     stageState.phases += 1;
     fs.writeFileSync(stageStateFile, `${JSON.stringify(stageState)}\n`, { mode: 0o600 });
