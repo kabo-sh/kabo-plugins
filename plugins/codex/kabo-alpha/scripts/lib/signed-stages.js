@@ -54,12 +54,12 @@ function privateRead(file) {
 export function readStageInput({runDir,runId,skillDir,stage,contract,receiptPath}) {
   privatePath(runDir,true);
   if (contract.input === 'none') { require(receiptPath === null, 'this stage accepts no input receipt'); return null; }
-  require(typeof receiptPath === 'string', 'signed JSON stage requires --input-receipt');
+  require(receiptPath === null || typeof receiptPath === 'string', 'invalid signed stage receipt path');
   const realRun = fs.realpathSync(runDir), owner = path.join(realRun,'owner'), folder = path.join(owner,'stage-inputs');
   privatePath(runDir,true); // normal OS ancestor aliases may resolve differently; the run itself cannot be a symlink
   [realRun,owner,folder].forEach(p => privatePath(p,true));
   const input = path.join(folder,`${stage}.json`), expectedReceipt = path.join(folder,`${stage}.receipt.json`);
-  require(path.resolve(receiptPath) === expectedReceipt, 'input receipt must use the fixed current-run owner path');
+  require(receiptPath === null || path.resolve(receiptPath) === expectedReceipt, 'input receipt must use the fixed current-run owner path');
   const receipt = JSON.parse(privateRead(expectedReceipt).toString('utf8'));
   require(object(receipt) && receipt.format_version === 1 && receipt.run_id === runId && receipt.skill === fs.realpathSync(skillDir) && receipt.checksum === JSON.parse(fs.readFileSync(path.join(skillDir,'.meta.json'),'utf8')).checksum && receipt.manifest === hash(fs.readFileSync(path.join(skillDir,'manifest.json'))) && receipt.stage === stage && receipt.input_file === input, 'stage input receipt binding mismatch');
   const bytes = privateRead(input);

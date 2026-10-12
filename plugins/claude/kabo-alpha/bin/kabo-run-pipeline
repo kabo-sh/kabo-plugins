@@ -59,7 +59,7 @@ const USAGE = `Usage: kabo-run-pipeline --run-id <id> --skill <skill-dir> [--sta
                          (--step '<shell command>')...
 
   --stage     select one signed manifest.execution_stages entry; no caller commands/report flags
-  --input-receipt fixed private owner/stage-inputs/<stage>.receipt.json for a JSON stage
+  --input-receipt optional explicit fixed receipt; JSON stages derive owner/stage-inputs/<stage>.receipt.json
   --run-id    a run id printed by kabo-run-dir (the run directory must already exist)
   --skill     the skill cache directory the steps belong to (skill-verify must have passed on it)
   --staging   the directory where the host staged connector envelopes (a PostToolUse

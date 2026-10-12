@@ -33,10 +33,10 @@ For Codex, `kabo_runtime.prepare_skill` uses the original network-aware verifier
 Execute through the normal native approval path:
 
 ```text
-<plugin>/bin/kabo-run-pipeline --run-id <id> --skill <dir> --stage prepare --input-receipt <returned receipt> --language zh-CN
+<plugin>/bin/kabo-run-pipeline --run-id <id> --skill <dir> --stage prepare --language zh-CN
 ```
 
-The wrapper checks the receipt, stage history and local package signature before execution, and preserves its existing post-execution verification, artifact hardening and failed-run behavior. Input paths must be private regular files owned by the user, with no symlink/hardlink substitution. JSON remains data; the signed command receives a file path rather than model-authored shell stdin. No-input stages use `input: "none"` and omit both receipt and `{stage_input}`.
+For JSON stages, the wrapper derives the fixed receipt from run and stage; the model need not copy its absolute path. An explicit `--input-receipt` remains available, but must match that same fixed path. Missing receipts are rejected. The wrapper checks the receipt, stage history and local package signature before execution, and preserves its existing post-execution verification, artifact hardening and failed-run behavior. Input paths must be private regular files owned by the user, with no symlink/hardlink substitution. JSON remains data; the signed command receives a file path rather than model-authored shell stdin. No-input stages use `input: "none"` and omit both receipt and `{stage_input}`.
 
 Native wrapper tests cover Codex and Claude layouts. The local data tool is currently a Codex adapter. Desktop/Web adapter support, signed business package adoption, model orchestration, report quality and complete delivery require their own verification; these mechanism tests do not establish three-host acceptance. A driver that requires an entirely empty reservation cannot consume an input already stored under `owner/` without an explicitly compatible adoption path. Do not silently relax that driver's reservation guard.
 

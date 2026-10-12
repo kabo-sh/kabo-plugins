@@ -21,7 +21,7 @@ export const prepareDefinition = {
 };
 export const inputDefinition = {
   name: 'stage_input',
-  description: 'Bind one native JSON judgment/plan to a signed execution stage in an existing running Skill reservation. preparation is the basename of prepare_skill\'s successful receipt. Writes only a fixed private input and binding receipt; does not execute any script, fetch evidence or access OAuth. Use the returned input_receipt with native kabo-run-pipeline --stage; native execution keeps its normal approval boundary. Refuses closed runs, unknown/out-of-order stages and replacement inputs.',
+  description: 'Bind one native JSON judgment/plan to a signed execution stage in an existing running Skill reservation. preparation is the basename of prepare_skill\'s successful receipt. Writes only a fixed private input and binding receipt; does not execute any script, fetch evidence or access OAuth. Use native kabo-run-pipeline --stage; it derives the fixed receipt from run/stage without copying an absolute input path. Native execution keeps its normal approval boundary. Refuses closed runs, unknown/out-of-order stages and replacement inputs.',
   inputSchema: { type: 'object', properties: {
     run_id: { type: 'string', pattern: TOKEN.source }, stage: { type: 'string', pattern: TOKEN.source },
     preparation: { type: 'string', pattern: '^[0-9]+-[a-f0-9-]+\\.json$' },

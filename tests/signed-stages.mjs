@@ -52,7 +52,7 @@ for(const host of ['codex','claude']) test(`${host}: real signed stages bind JSO
   const cacheFile=path.join(skill,'SKILL.md'),original=await fs.readFile(cacheFile);await fs.writeFile(cacheFile,'tampered');const tamperRun=await reserve();const tamperReceipt=await receipt(tamperRun,'prepare');assert.notEqual((await call(tamperRun,['--stage','prepare','--input-receipt',tamperReceipt])).code,0);await assert.rejects(fs.stat(path.join(work(tamperRun),'analysis/received.json')));await fs.writeFile(cacheFile,original);
  });
  await t.test('preserves native JSON, keeps intermediate running, executes each stage once, and finalizes signed report',async()=>{
-  let result=await call(r,['--stage','prepare','--input-receipt',bound]);assert.equal(result.code,0,result.stderr);assert.deepEqual(JSON.parse(await fs.readFile(path.join(work(r),'analysis/received.json'))),{literal:"引号' $() `not code`"});
+  let result=await call(r,['--stage','prepare']);assert.equal(result.code,0,result.stderr);assert.deepEqual(JSON.parse(await fs.readFile(path.join(work(r),'analysis/received.json'))),{literal:"引号' $() `not code`"});
   assert.equal(JSON.parse(await fs.readFile(path.join(work(r),'run-manifest.json'))).status,'running');assert.notEqual((await call(r,['--stage','prepare','--input-receipt',bound])).code,0);
   assert.notEqual((await call(r,['--stage','finish','--input-receipt',bound])).code,0);
   result=await call(r,['--stage','finish']);assert.equal(result.code,0,result.stderr);assert.match(result.stdout,/creator_report: .* → done.md/);assert.equal(JSON.parse(await fs.readFile(path.join(work(r),'run-manifest.json'))).status,'ok');assert.notEqual((await call(r,['--stage','finish'])).code,0);
