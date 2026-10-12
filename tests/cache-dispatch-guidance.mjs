@@ -11,24 +11,31 @@ const read = host => fs.readFile(`${root}/plugins/${host}/kabo-alpha/skills/meta
 
 test('both CLI clients read verified cache dispatch fields without changing signed guidance', async () => {
   const files = await Promise.all(['claude', 'codex'].map(read));
-  const sections = files.map(source => {
+  const sections = files.map((source, index) => {
     const start = source.indexOf(heading);
     const shared = source.indexOf(marker);
     assert.ok(start >= 0 && shared > start, 'local cache mechanics precede the shared signed snapshot');
     const section = source.slice(start, shared).trim();
-    assert.match(section, /After `skill-verify <dir>` exits successfully on a cache hit, read that verified directory's `manifest\.json` once before dispatch/);
-    assert.match(section, /Verification output alone is not a manifest digest/);
+    if (index === 0) {
+      assert.match(section, /After `skill-verify <dir>` exits successfully on a cache hit, read that verified directory's `manifest\.json` once before dispatch/);
+      assert.match(section, /Verification output alone is not a manifest digest/);
+      assert.match(section, /If verification failed or the manifest cannot be read, stop without dispatch/);
+      assert.match(section, /Do not redownload, unpack again, or perform a second verification/);
+      assert.match(section, /cold download keeps its existing unpack-and-verify digest flow/);
+    } else {
+      assert.match(section, /`prepare_skill`'s verified manifest for both cache hits and downloads/);
+      assert.match(source, /Require terminal `exit_code: 0` and `verified: true` before dispatch/);
+      assert.match(source, /verification failure or unavailable local runtime tool stops this evidence path/);
+      assert.match(source, /never redownload, manually unpack, reverify, or execute afterward/);
+      assert.match(section, /perform a second verification/);
+    }
     for (const field of ['execution', 'pipeline', 'pipeline_operations', 'required.tools', 'min_plugin_version']) {
       assert.ok(section.includes(`\`${field}\``), `read the signed ${field} routing input`);
     }
     assert.match(section, /empty override disables the pipeline/);
     assert.match(section, /selected non-empty signed array runs in the main agent/);
     assert.match(section, /`subagent` goes to skill-runner, and `inline` follows the installed inline conventions/);
-    assert.match(section, /If verification failed or the manifest cannot be read, stop without dispatch/);
-    assert.match(section, /Do not redownload, unpack again, or perform a second verification/);
-    assert.match(section, /cold download keeps its existing unpack-and-verify digest flow/);
     return {section, snapshot: source.slice(shared)};
   });
-  assert.equal(sections[0].section, sections[1].section, 'cache dispatch semantics agree across CLI clients');
   assert.equal(sections[0].snapshot, sections[1].snapshot, 'signed shared body remains byte-identical across clients');
 });
