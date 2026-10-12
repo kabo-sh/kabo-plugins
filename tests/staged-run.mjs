@@ -59,7 +59,7 @@ for (const host of ['claude', 'codex']) {
     await fs.writeFile(path.join(data, `public-keys.${common.sha256hex(endpoint).slice(0, 16)}.json`),
       JSON.stringify({ keys: [{ kid, public_key_pem: pair.publicKey.export({ type: 'spki', format: 'pem' }).toString() }] }), { mode: 0o600 });
     const id = 'staged-fixture';
-    const script = `import argparse, json, os, sys\nfrom pathlib import Path\np=argparse.ArgumentParser()\np.add_argument('stage')\np.add_argument('--run', default=os.getcwd())\np.add_argument('--platform')\np.add_argument('--handle')\np.add_argument('--question-file')\np.add_argument('--placed')\na=p.parse_args()\nr=Path(a.run)\nassert os.environ.get('PYTHONDONTWRITEBYTECODE') == '1'\nif a.stage == 'start':\n    assert sorted(x.name for x in r.iterdir()) == ['analysis','owner','report','run-manifest.json','snapshot']\n    (r/'request.json').write_text(json.dumps({'connector_id':'fixture','operation':'read'}))\n    print('hand-over: fetch fixture/read; repeat with --placed')\nelif a.stage == 'content':\n    e=json.loads(Path(a.placed).read_text())\n    assert e['status'] == 'completed_partial' and e['limitations'] == ['Missing one comment page']\n    (r/'placed.json').write_bytes(Path(a.placed).read_bytes())\n    (r/'analysis.json').write_text(json.dumps({'items':e['data']['items']}))\n    print('content complete; model judgment required')\nelif a.stage == 'report':\n    d=json.loads((r/'decision.json').read_text())\n    e=json.loads((r/'placed.json').read_text())\n    assert d == {'chosen':['account-a']}\n    text='# Fixture report\\n\\n[account-a](https://example.test/post/1)\\n\\nMissing one comment page.\\n'\n    (r/'creator-reply.md').write_text(text)\n    assert (r/'creator-reply.md').read_text() == text\nelif a.stage == 'fetch':\n    assert a.question_file == '-'\n    (r/'stdin.json').write_text(json.dumps({'question':sys.stdin.read(),'platform':a.platform,'handle':a.handle,'cwd':str(Path.cwd())}))\nelse: raise ValueError(a.stage)\n`;
+    const script = `import argparse, json, os, sys\nfrom pathlib import Path\np=argparse.ArgumentParser()\np.add_argument('stage')\np.add_argument('--run', default=os.getcwd())\np.add_argument('--platform')\np.add_argument('--handle')\np.add_argument('--question-file')\np.add_argument('--placed')\na=p.parse_args()\nr=Path(a.run)\nassert os.environ.get('PYTHONDONTWRITEBYTECODE') == '1'\nif a.stage == 'start':\n    assert sorted(x.name for x in r.iterdir()) == ['analysis','owner','report','run-manifest.json','snapshot']\n    (r/'request.json').write_text(json.dumps({'connector_id':'fixture','operation':'read'}))\n    print('hand-over: fetch fixture/read; repeat with --placed')\nelif a.stage == 'content':\n    e=json.loads(Path(a.placed).read_text())\n    assert e['status'] == 'completed_partial' and e['limitations'] == ['Missing one comment page']\n    (r/'placed.json').write_bytes(Path(a.placed).read_bytes())\n    (r/'analysis.json').write_text(json.dumps({'items':e['data']['items']}))\n    print('content complete; model judgment required')\nelif a.stage == 'report':\n    if (r/'context.json').exists():\n        assert json.loads(os.environ['KABO_RUN_CONTEXT']) == json.loads((r/'context.json').read_text())\n    d=json.loads((r/'decision.json').read_text())\n    e=json.loads((r/'placed.json').read_text())\n    assert d == {'chosen':['account-a']}\n    text='# Fixture report\\n\\n[account-a](https://example.test/post/1)\\n\\nMissing one comment page.\\n'\n    (r/'creator-reply.md').write_text(text)\n    assert (r/'creator-reply.md').read_text() == text\nelif a.stage == 'context':\n    context=json.loads(os.environ['KABO_RUN_CONTEXT'])\n    assert context['run'] == str(Path.cwd().resolve()) == str(r.resolve())\n    assert context['run_id'] == r.name\n    assert (r/'snapshot/envelope-01.json').is_file()\n    (r/'context.json').write_text(json.dumps(context))\n    (r/'placed.json').write_bytes((r/'snapshot/envelope-01.json').read_bytes())\n    (r/'analysis.json').write_text('{}')\n    print('adopted prefilled reservation')\nelif a.stage == 'fetch':\n    assert a.question_file == '-'\n    (r/'stdin.json').write_text(json.dumps({'question':sys.stdin.read(),'platform':a.platform,'handle':a.handle,'cwd':str(Path.cwd())}))\nelse: raise ValueError(a.stage)\n`;
     const files = [
       { path: 'manifest.json', content: Buffer.from(JSON.stringify({ name: id, version: '1.0.0', execution: 'subagent', required: { tools: [] }, min_plugin_version: '0.21.9', pipeline: [{ name: 'fixed', cmd: 'printf fixed > {report}/FIXED.md' }], pipeline_operations: { staged: [] } })) },
       { path: 'SKILL.md', content: Buffer.from('Synthetic fixture: start -> fetch -> content -> model decision -> validated report.') },
@@ -154,6 +154,35 @@ for (const host of ['claude', 'codex']) {
       const closed = await bin('kabo-run-pipeline', [...args(runId), '--continue', '--step', 'touch {run}/AFTER-CLOSE']);
       assert.equal(closed.code, 1);
       await assert.rejects(fs.stat(path.join(work, 'AFTER-CLOSE')), { code: 'ENOENT' });
+    });
+
+    await t.test('first-stage staging receives the actual reservation and package context, replacing inherited context', async () => {
+      const foreignRun = await reserve();
+      const runId = await reserve();
+      const work = path.join(data, 'work', runId);
+      const envelope = JSON.stringify({ connector_id: 'fixture', operation: 'read', status: 'completed_partial', limitations: ['Missing one comment page'], data: { items: [{ id: 'account-a' }] } });
+      const session = `context-${host}`;
+      const hook = await run(path.join(plugin, 'scripts/hooks/persist-envelope.js'), [], env,
+        JSON.stringify({ session_id: session, hook_event_name: 'PostToolUse', tool_use_id: 'prefetch', tool_response: envelope }));
+      assert.equal(hook.code, 0, hook.stderr);
+      const inherited = { ...env, KABO_RUN_CONTEXT: JSON.stringify({ format_version: 1, run_id: foreignRun, run: path.join(data, 'work', foreignRun), skill: '/foreign/skill', checksum: 'foreign' }) };
+      const started = await run(path.join(plugin, 'bin/kabo-run-pipeline'), [...args(runId), '--continue', '--staging', path.join(data, 'envelope-staging', session), '--step', step('context')], inherited);
+      assert.equal(started.code, 0, started.stderr);
+      assert.match(started.stdout, /adopted prefilled reservation/);
+      const expected = { format_version: 1, run_id: runId, run: await fs.realpath(work), skill: await fs.realpath(skill), skill_id: id, checksum, manifest_sha256: common.sha256hex(await fs.readFile(path.join(skill, 'manifest.json'))) };
+      assert.deepEqual(JSON.parse(await fs.readFile(path.join(work, 'context.json'), 'utf8')), expected);
+      assert.deepEqual(JSON.parse(await fs.readFile(path.join(work, 'placed.json'), 'utf8')), JSON.parse(envelope));
+      assert.equal((await record(runId)).status, 'running');
+      assert.equal((await record(foreignRun)).status, 'running');
+      await assert.rejects(fs.stat(path.join(data, 'work', foreignRun, 'context.json')), { code: 'ENOENT' });
+      await fs.writeFile(path.join(work, 'decision.json'), JSON.stringify({ chosen: ['account-a'] }));
+      const finished = await run(path.join(plugin, 'bin/kabo-run-pipeline'), [...args(runId), '--report-file', 'creator-reply.md', '--step', step('report')], { ...env, KABO_RUN_CONTEXT: 'malformed inherited context' });
+      assert.equal(finished.code, 0, finished.stderr);
+      assert.equal((await record(runId)).status, 'ok');
+      assert.ok((await record(runId)).finished_at);
+      const closed = await run(path.join(plugin, 'bin/kabo-run-pipeline'), [...args(runId), '--continue', '--step', 'touch {run}/CONTEXT-AFTER-CLOSE'], inherited);
+      assert.equal(closed.code, 1);
+      await assert.rejects(fs.stat(path.join(work, 'CONTEXT-AFTER-CLOSE')), { code: 'ENOENT' });
     });
 
     await t.test('failure stops later steps, ends the staged run and announces no report', async () => {
