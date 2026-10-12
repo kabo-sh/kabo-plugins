@@ -13,10 +13,10 @@ import { prepareSkill, stageInput, handleRpc, requestLines, MAX_REQUEST_BYTES } 
 import * as common from '../plugins/codex/kabo-alpha/scripts/lib/common.js';
 
 const plugin = fileURLToPath(new URL('../plugins/codex/kabo-alpha/', import.meta.url));
-function rpc(data, endpoint, requests) {
+function runtimeRpc(data, endpoint, requests, host) {
   return new Promise((resolve, reject) => {
-    const child = spawn(process.execPath, [path.join(plugin, 'scripts/runtime-server.js')], {
-      env: { PATH: process.env.PATH, KABO_CODEX_DATA: data, KABO_API_ENDPOINT: endpoint },
+    const child = spawn(process.execPath, [fileURLToPath(new URL(`../plugins/${host}/kabo-alpha/scripts/runtime-server.js`, import.meta.url))], {
+      env: { PATH: process.env.PATH, [host === 'codex' ? 'KABO_CODEX_DATA' : 'KABO_DATA_ROOT']: data, KABO_API_ENDPOINT: endpoint },
       stdio: ['pipe', 'pipe', 'pipe'],
     });
     let stdout = '', stderr = '';
@@ -33,7 +33,8 @@ function rpc(data, endpoint, requests) {
   });
 }
 
-test('native stdio package transport verifies real signatures, binds identity and preserves failed receipts', async t => {
+for (const host of ['codex', 'claude']) test(`${host} layout native stdio package transport verifies real signatures, binds identity and preserves failed receipts`, async t => {
+  const rpc = (data, endpoint, requests) => runtimeRpc(data, endpoint, requests, host);
   const scratch = await fs.mkdtemp(path.join(os.tmpdir(), 'kabo-package-runtime-'));
   t.after(() => fs.rm(scratch, { recursive: true, force: true }));
   let revoked = [], syncs = 0;

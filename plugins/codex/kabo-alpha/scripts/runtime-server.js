@@ -13,7 +13,7 @@ export const MAX_REQUEST_BYTES = 32 * 1024 * 1024;
 const TOKEN = /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/;
 export const prepareDefinition = {
   name: 'prepare_skill',
-  description: 'Prepare one registry Skill for execution in the active Codex data root. A cache hit runs the original network-aware skill-verify once. A miss returns download_required; pass registry_skill_download.structuredContent unchanged as package in the next call. The tool pipes JSON directly to skill-unpack --verify and returns its terminal result and verified manifest. Never manually unpack, reverify or execute after isError/verified:false. Does not execute business code or access OAuth credentials.',
+  description: 'Prepare one registry Skill for execution in the active host data root. A cache hit runs the original network-aware skill-verify once. A miss returns download_required; pass registry_skill_download.structuredContent unchanged as package in the next call. The tool pipes JSON directly to skill-unpack --verify and returns its terminal result and verified manifest. Never manually unpack, reverify or execute after isError/verified:false. Does not execute business code or access OAuth credentials.',
   inputSchema: { type: 'object', properties: {
     id: { type: 'string', pattern: TOKEN.source }, version: { type: 'string', pattern: TOKEN.source },
     package: { type: 'object', description: 'The unchanged native registry download structuredContent; only for a cache miss.' },
