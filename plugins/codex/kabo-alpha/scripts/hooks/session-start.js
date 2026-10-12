@@ -54,7 +54,14 @@ const REQUEST_TIMEOUT_MS = 3000; // session startup path: better to come back em
 /** Load this installed host's mechanics before interpreting cross-host signed guidance. */
 function buildHostGuidanceSection() {
   const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..');
-  return `Before using Kabo skills on Codex, read \`${root}/skills/meta-guidance/SKILL.md\`. Its Codex client deltas define this installed version's local cache, tools, authorization and runner mechanics; apply them when interpreting the signed platform guidance. Never bypass signature verification or revocation checks.`;
+  const file = path.join(root, 'skills', 'meta-guidance', 'SKILL.md');
+  let delivery = '';
+  try {
+    delivery = fs.readFileSync(file, 'utf8').split('\n')
+      .find(line => line.startsWith('- **Validated report passthrough**:')) ?? '';
+  } catch { /* Keep the installed-file pointer when local guidance is unavailable. */ }
+  const bootstrap = `Before using Kabo skills on Codex, read \`${root}/skills/meta-guidance/SKILL.md\`. Apply its Codex client deltas. Never bypass signature verification or revocation checks.`;
+  return delivery ? `${bootstrap}\n\nCodex delivery rule (installed locally, outside the signed platform guidance):\n${delivery}` : bootstrap;
 }
 
 /**
