@@ -1571,3 +1571,15 @@ export function extractGuidanceSection(text, letter) {
   const section = lines.slice(start, end).join('\n').trim();
   return section || null;
 }
+
+// Desktop ships the POSIX shell next to this runtime. Windows must never fall back to PATH.
+export function resolvePipelineShell(binDir, platform = process.platform) {
+  if (platform !== 'win32') return { executable: '/bin/sh', args: ['-c'] };
+  const executable = path.resolve(binDir, '..', 'shell', 'busybox.exe');
+  let stat;
+  try { stat = fs.lstatSync(executable); } catch {
+    throw new Error('Bundled Windows pipeline shell is missing');
+  }
+  if (!stat.isFile() || stat.isSymbolicLink()) throw new Error('Bundled Windows pipeline shell is not a regular file');
+  return { executable, args: ['sh', '-c'] };
+}

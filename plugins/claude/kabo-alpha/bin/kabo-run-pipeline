@@ -54,7 +54,7 @@ import { selectSignedStage, readStageInput, resolveSignedReportPath } from '../s
 import { prepareStageOutcome, readStageOutcome } from '../scripts/lib/stage-outcomes.js';
 import { assertRunAttempt } from '../scripts/lib/host-attempt.js';
 
-import { PLUGIN_VERSION, isSafeName, readJsonSilent, sha256hex, workRoot } from '../scripts/lib/common.js';
+import { PLUGIN_VERSION, resolvePipelineShell, isSafeName, readJsonSilent, sha256hex, workRoot } from '../scripts/lib/common.js';
 
 const USAGE = `Usage: kabo-run-pipeline --run-id <id> --skill <skill-dir> [--staging <dir>] [--language <tag>]
                          [--param k=v]... [--continue | --fail <reason>] [--report <file-name> | --report-file <run-file>]
@@ -82,7 +82,7 @@ const USAGE = `Usage: kabo-run-pipeline --run-id <id> --skill <skill-dir> [--sta
               stop; no commands or report are executed. Requires a nonblank diagnostic reason;
               cannot combine with --step, --continue, --staging, --operation or report flags.
               Retains locking, signed-package checks, hygiene, hardening and evidence hashes.
-  --step      one shell command, run via /bin/sh -c with cwd {run}; repeatable, run in order,
+  --step      one shell command, run via bundled POSIX shell with cwd {run}; repeatable, run in order,
               stopping at the first non-zero exit. Placeholders stand bare (write {param.handle},
               not "{param.handle}"): each value is quoted for the shell as it is substituted. Omit
               to use the "pipeline" array in the skill's manifest.json.
@@ -449,6 +449,8 @@ process.umask(0o077);
 
 let failure = null;
 let drained = null;
+let pipelineShell;
+try { pipelineShell = resolvePipelineShell(BIN_DIR); } catch (cause) { failure = cause.message; }
 
 // A continued run may have paused for a model judgment. Recheck its signed cache before allowing
 // another stage, as well as after it; no network or credential access is introduced.
@@ -480,7 +482,7 @@ if (failure === null && opts.fail === null) {
     const command = expand(steps[index], envelopes, false);
     const echo = echoLine(expand(steps[index], envelopes, true));
     const startedAt = process.hrtime.bigint();
-    const result = spawnSync('/bin/sh', ['-c', command], {
+    const result = spawnSync(pipelineShell.executable, [...pipelineShell.args, command], {
       cwd: runDir,
       env: { ...process.env, PYTHONDONTWRITEBYTECODE: '1' },
       stdio: ['inherit', 'pipe', 'inherit'],
