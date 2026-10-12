@@ -48,6 +48,7 @@ import { fileURLToPath } from 'node:url';
 import { remakeArtifactContract } from '../lib/remake-artifact-contract.js';
 
 import { dataRoot, ensurePrivateDir, isSafeName, sha256hex } from '../lib/common.js';
+import { recordExecutor } from '../lib/executor-context.js';
 
 /**
  * The drain command, resolved from this file's own location rather than from
@@ -358,6 +359,7 @@ function nextSequence(dir) {
 async function main() {
   const event = await readEvent();
   if (!event || typeof event !== 'object') return;
+  recordExecutor(event);
 
   // `PostToolUse` carries the result as `tool_response`; `PostToolUseFailure` carries the very same
   // bytes as `error` and has no `tool_response` at all.

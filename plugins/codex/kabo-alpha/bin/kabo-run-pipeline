@@ -51,6 +51,7 @@ import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 
 import { PLUGIN_VERSION, isSafeName, readJsonSilent, sha256hex, workRoot } from '../scripts/lib/common.js';
+import { runnerDispatchError } from '../scripts/lib/executor-context.js';
 
 const USAGE = `Usage: kabo-run-pipeline --run-id <id> --skill <skill-dir> [--staging <dir>] [--language <tag>]
                          [--param k=v]... [--continue | --fail <reason>] [--report <file-name> | --report-file <run-file>]
@@ -247,6 +248,9 @@ function isRegularFile(p) {
 
 if (!isDirectory(runDir)) refuse(`run ${runId} has no work directory yet; reserve it with kabo-run-dir first`);
 if (!isDirectory(skillDir)) refuse(`skill directory does not exist: ${skillDir}`);
+const manifest = readJsonSilent(path.join(skillDir, 'manifest.json'));
+const dispatchError = opts.fail === null ? runnerDispatchError(manifest, opts.operation) : null;
+if (dispatchError) refuse(dispatchError);
 
 // Stage state is separate from the public manifest schema. Write it only after the first stage:
 // an empty reserved run must remain empty so a skill driver can adopt it instead of forking a run.
@@ -300,7 +304,6 @@ for (const dir of Object.values(subdirs)) fs.mkdirSync(dir, { recursive: true, m
 
 // ---------- steps and placeholders ----------
 
-const manifest = readJsonSilent(path.join(skillDir, 'manifest.json'));
 // An explicit empty operation override disables the default pipeline for that operation.
 const operations = manifest?.pipeline_operations;
 const selected = opts.operation !== null && operations && Object.hasOwn(operations, opts.operation)

@@ -72,7 +72,7 @@ for (const host of ['codex','claude']) {
   test(`${host}: corrupted pin refuses binary while existing envelope persistence still works`,async t=>{
     const {data,env,staging}=await setup(t);
     const isolated=path.join(data,'isolated-plugin');
-    for(const relative of ['package.json','scripts/hooks/persist-envelope.js','scripts/lib/common.js',
+    for(const relative of ['package.json','scripts/hooks/persist-envelope.js','scripts/lib/common.js','scripts/lib/executor-context.js',
       'scripts/lib/remake-artifact-contract.js','scripts/contracts/remake-artifact-v1.json','scripts/contracts/remake-artifact-v1.sha256']) {
       const target=path.join(isolated,relative);await fs.mkdir(path.dirname(target),{recursive:true});
       await fs.copyFile(path.join(plugin,relative),target);
@@ -163,7 +163,7 @@ for (const host of ['codex','claude']) {
     const {data,env,staging}=await setup(t);
     for(const mutation of ['ambiguous','unknown']) {
       const isolated=path.join(data,mutation);
-      for(const relative of ['package.json','scripts/hooks/persist-envelope.js','scripts/lib/common.js',
+      for(const relative of ['package.json','scripts/hooks/persist-envelope.js','scripts/lib/common.js','scripts/lib/executor-context.js',
         'scripts/lib/remake-artifact-contract.js','scripts/contracts/remake-artifact-v1.json','scripts/contracts/remake-artifact-v1.sha256']) {
         const target=path.join(isolated,relative);await fs.mkdir(path.dirname(target),{recursive:true});
         await fs.copyFile(path.join(plugin,relative),target);
