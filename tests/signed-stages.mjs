@@ -16,7 +16,7 @@ function run(file,args,env,input='') { return new Promise((resolve,reject)=>{
 for(const host of ['codex','claude']) test(`${host}: real signed stages bind JSON and prevent bypass/replay`,async t=>{
  const plugin=path.join(root,'plugins',host,'kabo-alpha');const common=await import(pathToFileURL(path.join(plugin,'scripts/lib/common.js')));
  const {validateExecutionStages}=await import(pathToFileURL(path.join(plugin,'scripts/lib/signed-stages.js')));
- const {bindRunAttempt}=await import(pathToFileURL(path.join(plugin,'scripts/lib/host-attempt.js')));
+ const {bindRunAttempt,readCompletedReport}=await import(pathToFileURL(path.join(plugin,'scripts/lib/host-attempt.js')));
  const data=await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(),'signed-stage-')));t.after(()=>fs.rm(data,{recursive:true,force:true}));
  const server=http.createServer((req,res)=>{assert.equal(req.headers.authorization,undefined);res.setHeader('Content-Type','application/json');res.end(JSON.stringify({revocations:[],catalog:[],server_api_version:'1.0.0'}))});
  await new Promise(r=>server.listen(0,'127.0.0.1',r));t.after(()=>{server.closeAllConnections();return new Promise(r=>server.close(r))});
@@ -58,6 +58,33 @@ for(const host of ['codex','claude']) test(`${host}: real signed stages bind JSO
   assert.equal(JSON.parse(await fs.readFile(path.join(work(r),'run-manifest.json'))).status,'running');assert.notEqual((await call(r,['--stage','prepare','--input-receipt',bound])).code,0);
   assert.notEqual((await call(r,['--stage','finish','--input-receipt',bound])).code,0);
   result=await call(r,['--stage','finish']);assert.equal(result.code,0,result.stderr);assert.match(result.stdout,/creator_report: .* → done.md/);assert.equal(JSON.parse(await fs.readFile(path.join(work(r),'run-manifest.json'))).status,'ok');assert.notEqual((await call(r,['--stage','finish'])).code,0);
+ });
+ await t.test('final artifact handoff preserves full body and rejects stale, failed, changed or foreign reports',async()=>{
+  const scope=JSON.parse(await fs.readFile(path.join(work(r),'.pipeline-attempt.json'))).host_scope;
+  const read=()=>readCompletedReport({runDir:work(r),runId:r,hostScope:scope,root:data});
+  const original=await fs.readFile(path.join(work(r),'done.md'));
+  assert.equal(read().text,original.toString('utf8'));assert.equal(read().sha256,hash(original));
+  const revoked=path.join(data,'skill-cache',id+'.disabled');await fs.writeFile(revoked,'revoked');assert.throws(read,/revoked/);await fs.unlink(revoked);
+  const reportFile=path.join(work(r),'done.md'),saved=path.join(work(r),'saved.md');await fs.rename(reportFile,saved);await fs.symlink(saved,reportFile);assert.throws(read,/not_regular/);await fs.unlink(reportFile);await fs.link(saved,reportFile);assert.throws(read,/hardlinked/);await fs.unlink(reportFile);await fs.rename(saved,reportFile);
+  assert.throws(()=>readCompletedReport({runDir:work(r),runId:r,hostScope:{...scope,turn_id:'foreign-turn'},root:data}),/scope/);
+  const stateFile=path.join(work(r),'.pipeline-stages.json'),state=await fs.readFile(stateFile);
+  for(const status of ['running','failed']){const value=JSON.parse(state);value.status=status;await fs.writeFile(stateFile,JSON.stringify(value));assert.throws(read,/not_completed/);}
+  const value=JSON.parse(state);delete value.execution_stages.finish;await fs.writeFile(stateFile,JSON.stringify(value));assert.throws(read,/final_stage/);await fs.writeFile(stateFile,state);
+  await fs.writeFile(path.join(work(r),'done.md'),'truncated');assert.throws(read,/digest/);
+  await fs.writeFile(path.join(work(r),'done.md'),original);
+  const recordFile=path.join(work(r),'run-manifest.json'),record=await fs.readFile(recordFile);
+  const long=Buffer.from('\ufeff# Full report\n'+'完整交付与证据。\n'.repeat(3000));
+  const modified=JSON.parse(record);modified.artifacts.find(a=>a.path_or_uri==='done.md').sha256=hash(long);
+  await fs.writeFile(path.join(work(r),'done.md'),long);await fs.writeFile(recordFile,JSON.stringify(modified));
+  assert.equal(read().text,long.toString('utf8'));assert.equal(read().bytes,long.length);assert.ok(long.length>32000);
+  const invalid=Buffer.from([0xff,0xfe]);modified.artifacts.find(a=>a.path_or_uri==='done.md').sha256=hash(invalid);
+  await fs.writeFile(path.join(work(r),'done.md'),invalid);await fs.writeFile(recordFile,JSON.stringify(modified));assert.throws(read,/encoded data|encoding/);
+  await fs.writeFile(path.join(work(r),'done.md'),Buffer.alloc(256*1024+1,65));assert.throws(read,/too_large/);
+  await fs.writeFile(path.join(work(r),'done.md'),original);await fs.writeFile(recordFile,record);
+  const {handleRpc}=await import(pathToFileURL(path.join(plugin,'scripts/runtime-server.js')));
+  const rpc=argumentsValue=>handleRpc({jsonrpc:'2.0',id:1,method:'tools/call',params:{name:'read_report',arguments:argumentsValue,_meta:{threadId:scope.session_id,'x-codex-turn-metadata':{turn_id:scope.turn_id}}}},{dataRoot:data,workRoot:path.join(data,'work')});
+  assert.equal((await rpc({run_id:r})).result.structuredContent.text,original.toString('utf8'));
+  assert.equal((await rpc({run_id:r,path:'/etc/passwd'})).result.isError,true);
  });
  await t.test('failure closes the run and rejects later stages and explicit bypass',async()=>{
   const linked=await reserve(),outside=path.join(data,'outside-state.json');await fs.writeFile(outside,'{"sentinel":true}',{mode:0o600});await fs.symlink(outside,path.join(work(linked),'.pipeline-stages.json'));assert.notEqual((await call(linked,['--stage','fail'])).code,0);assert.equal(await fs.readFile(outside,'utf8'),'{"sentinel":true}');

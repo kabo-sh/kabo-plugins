@@ -7,7 +7,7 @@ import { spawn } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { cacheRoot, dataRoot, workRoot, ensurePrivateDir } from './lib/common.js';
 import { selectSignedStage, validateExecutionStages } from './lib/signed-stages.js';
-import { bindRunAttempt, hostScopeFromParams } from './lib/host-attempt.js';
+import { bindRunAttempt, hostScopeFromParams, readCompletedReport } from './lib/host-attempt.js';
 
 const PLUGIN = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 export const MAX_REQUEST_BYTES = 32 * 1024 * 1024;
@@ -37,6 +37,19 @@ export const bindDefinition = {
     preparation: { type: 'string', pattern: '^[0-9]+-[a-f0-9-]+\\.json$' },
   }, required: ['run_id', 'preparation'], additionalProperties: false },
 };
+export const reportDefinition = {
+  name: 'read_report',
+  description: "Read the complete unchanged report from this native turn's successfully finalized signed Skill attempt. Accepts only run_id, not a file path. Checks native turn binding, signed final stage, completed predecessors and finalized artifact SHA. Returns full UTF-8 body or an explicit failure, never a summary or truncation. Deliver this body in full using the host file-delivery path when available; a tool response alone is not creator delivery. Does not execute, fetch, or grant shell permission.",
+  inputSchema: { type: 'object', properties: { run_id: { type: 'string', pattern: TOKEN.source } }, required: ['run_id'], additionalProperties: false },
+};
+export async function readReport(args, deps = {}) {
+  if (!args || typeof args !== 'object' || Object.keys(args).some(key => key !== 'run_id') || typeof args.run_id !== 'string' || !TOKEN.test(args.run_id))
+    return response({ error: 'invalid_report_identity' }, true);
+  const data = path.resolve(deps.dataRoot ?? dataRoot());
+  const work = path.resolve(deps.workRoot ?? workRoot());
+  for (const dir of [data, work]) if (!fs.lstatSync(dir).isDirectory()) throw new Error('report_directory_not_regular');
+  return response(readCompletedReport({ runDir: path.join(work, args.run_id), runId: args.run_id, hostScope: deps.hostScope, root: data }));
+}
 const sha = bytes => createHash('sha256').update(bytes).digest('hex');
 
 function response(value, isError = false) {
@@ -206,9 +219,9 @@ export async function handleRpc(request, deps = {}) {
   let result;
   if (method === 'initialize') result = { protocolVersion: params.protocolVersion ?? '2024-11-05', capabilities: { tools: {} }, serverInfo: { name: 'kabo-skill-runtime', version: '1.0.0' } };
   else if (method === 'ping') result = {};
-  else if (method === 'tools/list') result = { tools: [prepareDefinition, inputDefinition, bindDefinition] };
-  else if (method === 'tools/call' && ['prepare_skill', 'stage_input', 'bind_run'].includes(params.name)) {
-    try { result = await ({ prepare_skill: prepareSkill, stage_input: stageInput, bind_run: bindRun }[params.name])(params.arguments, { ...deps, hostScope: hostScopeFromParams(params) }); }
+  else if (method === 'tools/list') result = { tools: [prepareDefinition, inputDefinition, bindDefinition, reportDefinition] };
+  else if (method === 'tools/call' && ['prepare_skill', 'stage_input', 'bind_run', 'read_report'].includes(params.name)) {
+    try { result = await ({ prepare_skill: prepareSkill, stage_input: stageInput, bind_run: bindRun, read_report: readReport }[params.name])(params.arguments, { ...deps, hostScope: hostScopeFromParams(params) }); }
     catch (e) { result = response({ verified: false, error: 'skill_preparation_failed', reason: e.code ?? e.message }, true); }
   }
   else return { jsonrpc: '2.0', id, error: { code: -32601, message: 'Method not found' } };

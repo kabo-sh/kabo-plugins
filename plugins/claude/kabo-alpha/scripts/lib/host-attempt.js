@@ -3,16 +3,17 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { createHash } from 'node:crypto';
 import { dataRoot } from './common.js';
+import { validateExecutionStages } from './signed-stages.js';
 
 const token = /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/;
 const sha = value => createHash('sha256').update(value).digest('hex');
 const check = (ok, reason) => { if (!ok) throw new Error(reason); };
 const equal = (left, right) => JSON.stringify(left) === JSON.stringify(right);
 
-function privateStat(file, directory = false) {
+function privateStat(file, directory = false, privateMode = true) {
   const stat = fs.lstatSync(file);
   check(directory ? stat.isDirectory() : stat.isFile(), 'attempt_path_not_regular');
-  check((stat.mode & 0o077) === 0 && (!process.getuid || stat.uid === process.getuid()), 'attempt_path_not_private');
+  check((stat.mode & (privateMode ? 0o077 : 0o022)) === 0 && (!process.getuid || stat.uid === process.getuid()), 'attempt_path_not_private');
   if (!directory) check(stat.nlink === 1, 'attempt_file_hardlinked');
   return stat;
 }
@@ -23,8 +24,8 @@ function directory(dir) {
 function ensureDirectory(dir) {
   try { directory(dir); } catch (error) { if (error.code !== 'EEXIST') throw error; privateStat(dir, true); }
 }
-function read(file) {
-  privateStat(file);
+function read(file, privateMode = true) {
+  privateStat(file, false, privateMode);
   const fd = fs.openSync(file, fs.constants.O_RDONLY | fs.constants.O_NOFOLLOW);
   try {
     const stat = fs.fstatSync(fd);
@@ -82,3 +83,46 @@ export function assertRunAttempt({ runDir, runId, skillDir, checksum, manifest, 
   return binding;
 }
 
+
+// Read the signed final artifact, never a caller-selected file or a model summary.
+export function readCompletedReport({ runDir, runId, hostScope, root = dataRoot() }) {
+  const scope = scopeOf(hostScope);
+  privateStat(runDir, true);
+  const binding = read(path.join(runDir, '.pipeline-attempt.json'));
+  check(equal(binding.host_scope, scope), 'report_host_scope_mismatch');
+  assertRunAttempt({ runDir, runId, skillDir: binding.skill, checksum: binding.checksum, manifest: binding.manifest, root });
+  privateStat(binding.skill, true);
+  check(!fs.existsSync(path.join(path.dirname(path.dirname(binding.skill)), `${binding.skill_id}.disabled`)), 'report_skill_revoked');
+  const manifest = read(path.join(binding.skill, 'manifest.json'), false);
+  check(sha(fs.readFileSync(path.join(binding.skill, 'manifest.json'))) === binding.manifest &&
+    read(path.join(binding.skill, '.meta.json'), false).checksum === binding.checksum && manifest.name === binding.skill_id,
+    'report_package_binding_changed');
+  const stages = validateExecutionStages(manifest);
+  const state = read(path.join(runDir, '.pipeline-stages.json'));
+  const record = read(path.join(runDir, 'run-manifest.json'));
+  check(state.status === 'ok' && record.status === 'ok' && record.run_id === runId && record.skill_id === binding.skill_id &&
+    state.skill === binding.skill && state.checksum === binding.checksum && state.manifest === binding.manifest,
+    'report_run_not_completed');
+  const history = state.execution_stages ?? {};
+  const finals = Object.entries(stages).filter(([name, stage]) => stage.final && history[name]?.status === 'completed');
+  check(finals.length === 1 && Object.values(history).every(stage => stage.status === 'completed'), 'report_final_stage_missing');
+  const [stageName, stage] = finals[0];
+  check(stage.after.every(name => history[name]?.status === 'completed'), 'report_predecessors_incomplete');
+  const file = path.join(runDir, stage.report_file);
+  privateStat(file);
+  const fd = fs.openSync(file, fs.constants.O_RDONLY | fs.constants.O_NOFOLLOW);
+  let bytes;
+  try {
+    const stat = fs.fstatSync(fd);
+    check(stat.isFile() && stat.nlink === 1 && stat.size > 0 && stat.size <= 256 * 1024, 'report_file_invalid_or_too_large');
+    bytes = fs.readFileSync(fd);
+  } finally { fs.closeSync(fd); }
+  const digest = sha(bytes);
+  const artifact = record.artifacts?.filter(item => item.kind === 'report' && item.path_or_uri === stage.report_file);
+  check(bytes.length > 0 && bytes.length <= 256 * 1024, 'report_file_invalid_or_too_large');
+  check(artifact?.length === 1 && artifact[0].sha256 === digest, 'report_artifact_digest_mismatch');
+  // Fatal decoding preserves valid UTF-8 byte content, including an intentional BOM.
+  const text = new TextDecoder('utf-8', { fatal: true, ignoreBOM: true }).decode(bytes);
+  check(text.trim().length > 0, 'report_empty');
+  return { run_id: runId, stage: stageName, path: file, sha256: digest, bytes: bytes.length, text };
+}
