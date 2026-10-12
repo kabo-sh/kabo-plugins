@@ -425,6 +425,17 @@ if (failure === null && stagingDir !== null) {
 
 if (failure === null && opts.fail === null) {
   const envelopes = listEnvelopes();
+  // Bind child drivers to this reservation even when staging has already populated it.
+  // This is an interface value, not a replacement for package verification or host approval.
+  const runContext = JSON.stringify({
+    format_version: 1,
+    run_id: runId,
+    run: fs.realpathSync(runDir),
+    skill: fs.realpathSync(skillDir),
+    skill_id: manifest?.name,
+    checksum: readJsonSilent(path.join(skillDir, '.meta.json'))?.checksum ?? null,
+    manifest_sha256: sha256hex(fs.readFileSync(path.join(skillDir, 'manifest.json'))),
+  });
   const total = steps.length;
   for (let index = 0; index < total; index += 1) {
     const command = expand(steps[index], envelopes, false);
@@ -432,7 +443,7 @@ if (failure === null && opts.fail === null) {
     const startedAt = process.hrtime.bigint();
     const result = spawnSync('/bin/sh', ['-c', command], {
       cwd: runDir,
-      env: { ...process.env, PYTHONDONTWRITEBYTECODE: '1' },
+      env: { ...process.env, PYTHONDONTWRITEBYTECODE: '1', KABO_RUN_CONTEXT: runContext },
       stdio: ['inherit', 'pipe', 'inherit'],
       encoding: 'utf8',
       maxBuffer: STEP_STDOUT_MAX_BYTES,

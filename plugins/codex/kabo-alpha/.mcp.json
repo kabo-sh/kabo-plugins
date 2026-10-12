@@ -4,7 +4,7 @@
       "url": "https://kabo.sh/mcp",
       "auth": "oauth",
       "http_headers": {
-        "X-Kabo-Plugin-Version": "0.21.26"
+        "X-Kabo-Plugin-Version": "0.21.30"
       }
     },
     "kabo_links": {
