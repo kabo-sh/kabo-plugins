@@ -13,7 +13,7 @@ import { prepareSkill, stageInput, handleRpc, requestLines, MAX_REQUEST_BYTES } 
 import * as common from '../plugins/codex/kabo-alpha/scripts/lib/common.js';
 
 const plugin = fileURLToPath(new URL('../plugins/codex/kabo-alpha/', import.meta.url));
-function runtimeRpc(data, endpoint, requests, host) {
+function runtimeRpc(data, endpoint, requests, host, meta) {
   return new Promise((resolve, reject) => {
     const child = spawn(process.execPath, [fileURLToPath(new URL(`../plugins/${host}/kabo-alpha/scripts/runtime-server.js`, import.meta.url))], {
       env: { PATH: process.env.PATH, [host === 'codex' ? 'KABO_CODEX_DATA' : 'KABO_DATA_ROOT']: data, KABO_API_ENDPOINT: endpoint },
@@ -29,12 +29,12 @@ function runtimeRpc(data, endpoint, requests, host) {
       try { assert.equal(code, 0, stderr); resolve(stdout.trim().split('\n').filter(Boolean).map(line => JSON.parse(line))); }
       catch (e) { reject(e); }
     });
-    child.stdin.end(requests.map((args, n) => JSON.stringify({ jsonrpc: '2.0', id: n + 1, method: 'tools/call', params: { name: 'prepare_skill', arguments: args } })).join('\n') + '\n');
+    child.stdin.end(requests.map((args, n) => JSON.stringify({ jsonrpc: '2.0', id: n + 1, method: 'tools/call', params: { name: 'prepare_skill', arguments: args, ...(meta ? { _meta: meta } : {}) } })).join('\n') + '\n');
   });
 }
 
 for (const host of ['codex', 'claude']) test(`${host} layout native stdio package transport verifies real signatures, binds identity and preserves failed receipts`, async t => {
-  const rpc = (data, endpoint, requests) => runtimeRpc(data, endpoint, requests, host);
+  const rpc = (data, endpoint, requests, meta) => runtimeRpc(data, endpoint, requests, host, meta);
   const scratch = await fs.mkdtemp(path.join(os.tmpdir(), 'kabo-package-runtime-'));
   t.after(() => fs.rm(scratch, { recursive: true, force: true }));
   let revoked = [], syncs = 0;
@@ -55,9 +55,9 @@ for (const host of ['codex', 'claude']) test(`${host} layout native stdio packag
     await fs.writeFile(path.join(dir, `public-keys.${common.sha256hex(endpoint).slice(0, 16)}.json`), JSON.stringify({ issued_at: null, keys: [{ kid, public_key_pem: pair.publicKey.export({ type: 'spki', format: 'pem' }).toString() }] }));
     return dir;
   }
-  function signed(id, version = '1.0.0') {
+  function signed(id, version = '1.0.0', contract = false) {
     const files = [
-      { path: 'manifest.json', content: Buffer.from(JSON.stringify({ name: id, version, execution: 'subagent', required: { tools: [] }, min_plugin_version: '0.21.0' })) },
+      { path: 'manifest.json', content: Buffer.from(JSON.stringify({ name: id, version, execution: 'subagent', required: { tools: [] }, min_plugin_version: contract ? '0.21.28' : '0.21.0', ...(contract ? { execution_stages: { format_version: 1, stages: { report: { cmd: 'node {skill}/report.js', input: 'none', after: [], final: true, report_file: 'report.md' } } } } : {}) })) },
       { path: 'SKILL.md', content: Buffer.from('Synthetic local fixture.\n' + 'x'.repeat(1_500_000)) },
     ];
     const checksum = common.computeChecksum(files, 1);
@@ -103,6 +103,18 @@ for (const host of ['codex', 'claude']) test(`${host} layout native stdio packag
     assert.equal(row.result.structuredContent.error, 'signed_manifest_identity_mismatch');
     assert.equal(row.result.structuredContent.manifest, undefined);
   }
+  const contractId = 'native-scope-fixture', contractPkg = signed(contractId, version, true), contractDir = await data('contract');
+  const noScope = (await rpc(contractDir, endpoint, [{ id: contractId, version, package: contractPkg }]))[0].result;
+  assert.equal(noScope.isError, true);
+  assert.equal(noScope.structuredContent.error, 'host_attempt_scope_missing');
+  const nativeMeta = { threadId: 'fixture-thread', 'x-codex-turn-metadata': { thread_id: 'fixture-thread', turn_id: 'fixture-turn' } };
+  const scoped = (await rpc(contractDir, endpoint, [{ id: contractId, version }], nativeMeta))[0].result;
+  assert.equal(scoped.structuredContent.verified, true);
+  const scopeReceipt = JSON.parse(await fs.readFile(scoped.structuredContent.receipt, 'utf8'));
+  assert.deepEqual(scopeReceipt.host_scope, { session_id: 'fixture-thread', turn_id: 'fixture-turn' });
+  const forged = (await rpc(contractDir, endpoint, [{ id: contractId, version, host_scope: scopeReceipt.host_scope }], nativeMeta))[0].result;
+  assert.equal(forged.isError, true);
+  assert.equal(forged.structuredContent.error, 'invalid_skill_identity');
   revoked = [id];
   const revokeDir = await data('revoked');
   const revoke = await rpc(revokeDir, endpoint, [{ id, version, package: pkg }, { id, version }]);
@@ -169,9 +181,10 @@ test('data-only stage input binds native JSON to a running reservation without e
   await fs.writeFile(path.join(run, 'run-manifest.json'), JSON.stringify({ skill_id: 'fixture', status: 'running' }));
   const preparation = '123-abcdef.json';
   const realSkill = await fs.realpath(skill);
-  await fs.writeFile(path.join(dataRoot, 'runtime-preparations', preparation), JSON.stringify({ id: 'fixture', version: '1', verified: true, skill_directory: realSkill, checksum: 'synthetic-binding-fixture', manifest_sha256: hash }));
-  const deps = { root, dataRoot, workRoot };
+  await fs.writeFile(path.join(dataRoot, 'runtime-preparations', preparation), JSON.stringify({ id: 'fixture', version: '1', verified: true, host_scope: { session_id: 'fixture-session', turn_id: 'fixture-turn' }, skill_directory: realSkill, checksum: 'synthetic-binding-fixture', manifest_sha256: hash }));
+  const deps = { root, dataRoot, workRoot, hostScope: { session_id: 'fixture-session', turn_id: 'fixture-turn' } };
   await assert.rejects(stageInput({ run_id: 'run-1', stage: 'report', preparation, input: {} }, deps), /predecessors/);
+  await assert.rejects(stageInput({ run_id: 'run-1', stage: 'prepare', preparation, input: {} }, { ...deps, hostScope: { session_id: 'other', turn_id: 'turn' } }), /host_scope_mismatch/);
   const value = { user_request: '保持原文', groups: [{ label: 'earlier', values: [1, 2] }] };
   const staged = await stageInput({ run_id: 'run-1', stage: 'prepare', preparation, input: value }, deps);
   assert.equal(staged.structuredContent.staged, true);

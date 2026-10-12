@@ -6,7 +6,8 @@ import { createHash, randomUUID } from 'node:crypto';
 import { spawn } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { cacheRoot, dataRoot, workRoot, ensurePrivateDir } from './lib/common.js';
-import { selectSignedStage } from './lib/signed-stages.js';
+import { selectSignedStage, validateExecutionStages } from './lib/signed-stages.js';
+import { bindRunAttempt, hostScopeFromParams } from './lib/host-attempt.js';
 
 const PLUGIN = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 export const MAX_REQUEST_BYTES = 32 * 1024 * 1024;
@@ -27,6 +28,14 @@ export const inputDefinition = {
     preparation: { type: 'string', pattern: '^[0-9]+-[a-f0-9-]+\\.json$' },
     input: { type: 'object', description: 'One plan or synthesis object, unchanged. Not a connector envelope or command.' },
   }, required: ['run_id', 'stage', 'preparation', 'input'], additionalProperties: false },
+};
+export const bindDefinition = {
+  name: 'bind_run',
+  description: 'Bind an existing Skill reservation to the native host turn that verified its preparation receipt. Use before a signed stage with no JSON input; stage_input performs the same binding for JSON stages. One Skill attempt has one reservation even after failure. A new run or a new preparation receipt for the same host turn cannot replace it. This does not execute scripts or grant shell approval.',
+  inputSchema: { type: 'object', properties: {
+    run_id: { type: 'string', pattern: TOKEN.source },
+    preparation: { type: 'string', pattern: '^[0-9]+-[a-f0-9-]+\\.json$' },
+  }, required: ['run_id', 'preparation'], additionalProperties: false },
 };
 const sha = bytes => createHash('sha256').update(bytes).digest('hex');
 
@@ -107,21 +116,26 @@ export async function prepareSkill(args, deps = {}) {
     catch { return finish({ verified: false, error: 'verified_manifest_unreadable' }, true); }
     if (manifest.name !== args.id || manifest.version !== args.version)
       return finish({ verified: false, error: 'signed_manifest_identity_mismatch' }, true);
-    return finish({ verified: true, source: cached ? 'cache' : 'download', skill_directory: fs.realpathSync(dir), manifest,
+    if (manifest.execution_stages !== undefined && !deps.hostScope)
+      return finish({ verified: false, error: 'host_attempt_scope_missing' }, true);
+    return finish({ ...(deps.hostScope ? { host_scope: deps.hostScope } : {}), verified: true, source: cached ? 'cache' : 'download', skill_directory: fs.realpathSync(dir), manifest,
       checksum: JSON.parse(fs.readFileSync(path.join(dir, '.meta.json'), 'utf8')).checksum,
       manifest_sha256: sha(fs.readFileSync(path.join(dir, 'manifest.json'))), ...terminal });
   } finally { fs.closeSync(fd); fs.unlinkSync(lock); }
 }
 
-export async function stageInput(args, deps = {}) {
-  if (!args || typeof args !== 'object' || Object.keys(args).some(k => !['run_id', 'stage', 'preparation', 'input'].includes(k)) ||
-      typeof args.run_id !== 'string' || !TOKEN.test(args.run_id) || typeof args.stage !== 'string' || !TOKEN.test(args.stage) ||
+export async function stageInput(args, deps = {}) { return stageRequest(args, deps, false); }
+export async function bindRun(args, deps = {}) { return stageRequest(args, deps, true); }
+async function stageRequest(args, deps, bindOnly) {
+  const keys = bindOnly ? ['run_id', 'preparation'] : ['run_id', 'stage', 'preparation', 'input'];
+  if (!args || typeof args !== 'object' || Object.keys(args).some(k => !keys.includes(k)) ||
+      typeof args.run_id !== 'string' || !TOKEN.test(args.run_id) || (!bindOnly && (typeof args.stage !== 'string' || !TOKEN.test(args.stage))) ||
       typeof args.preparation !== 'string' || !/^[0-9]+-[a-f0-9-]+\.json$/.test(args.preparation) ||
-      !args.input || typeof args.input !== 'object' || Array.isArray(args.input))
+      (!bindOnly && (!args.input || typeof args.input !== 'object' || Array.isArray(args.input))))
     return response({ error: 'invalid_stage_input' }, true);
-  if (Object.hasOwn(args.input, 'connector_id') && Object.hasOwn(args.input, 'status'))
+  if (!bindOnly && Object.hasOwn(args.input, 'connector_id') && Object.hasOwn(args.input, 'status'))
     return response({ error: 'connector_envelopes_use_native_staging' }, true);
-  const input = JSON.stringify(args.input);
+  const input = bindOnly ? '' : JSON.stringify(args.input);
   if (Buffer.byteLength(input) + 1 > MAX_REQUEST_BYTES) return response({ error: 'stage_input_too_large' }, true);
   const data = path.resolve(deps.dataRoot ?? dataRoot()), cache = path.resolve(deps.root ?? cacheRoot());
   const work = path.resolve(deps.workRoot ?? workRoot()), runPath = path.join(work, args.run_id);
@@ -140,6 +154,8 @@ export async function stageInput(args, deps = {}) {
     if ((stat.mode & 0o077) !== 0 || (process.getuid && stat.uid !== process.getuid())) throw new Error('run_input_paths_not_private');
   }
   const prepared = JSON.parse(regular(preparation));
+  if (!deps.hostScope || JSON.stringify(prepared.host_scope) !== JSON.stringify(deps.hostScope))
+    throw new Error('preparation_host_scope_mismatch');
   if (prepared.verified !== true || typeof prepared.id !== 'string' || !TOKEN.test(prepared.id) ||
       typeof prepared.version !== 'string' || !TOKEN.test(prepared.version)) throw new Error('invalid_preparation_receipt');
   const skill = path.join(cache, prepared.id, prepared.version);
@@ -162,8 +178,14 @@ export async function stageInput(args, deps = {}) {
     catch (e) { if (e.code !== 'ENOENT') throw e; }
     if (state && (state.status !== 'running' || state.skill !== prepared.skill_directory || state.manifest !== prepared.manifest_sha256 || state.checksum !== prepared.checksum))
       throw new Error('run_stage_binding_changed');
+    if (bindOnly) {
+      validateExecutionStages(manifest);
+      bindRunAttempt({ prepared, runDir: run, runId: args.run_id, root: data });
+      return response({ bound: true, run_id: args.run_id });
+    }
     const stage = selectSignedStage({ manifest, name: args.stage, state });
     if (stage.input !== 'json') throw new Error('stage_has_no_signed_json_input');
+    bindRunAttempt({ prepared, runDir: run, runId: args.run_id, root: data });
     const base = path.join(run, 'owner', 'stage-inputs');
     try { directories([base]); } catch (e) { if (e.code !== 'ENOENT') throw e; ensurePrivateDir(base); }
     const file = path.join(base, `${args.stage}.json`), receipt = path.join(base, `${args.stage}.receipt.json`);
@@ -184,9 +206,9 @@ export async function handleRpc(request, deps = {}) {
   let result;
   if (method === 'initialize') result = { protocolVersion: params.protocolVersion ?? '2024-11-05', capabilities: { tools: {} }, serverInfo: { name: 'kabo-skill-runtime', version: '1.0.0' } };
   else if (method === 'ping') result = {};
-  else if (method === 'tools/list') result = { tools: [prepareDefinition, inputDefinition] };
-  else if (method === 'tools/call' && ['prepare_skill', 'stage_input'].includes(params.name)) {
-    try { result = await (params.name === 'prepare_skill' ? prepareSkill : stageInput)(params.arguments, deps); }
+  else if (method === 'tools/list') result = { tools: [prepareDefinition, inputDefinition, bindDefinition] };
+  else if (method === 'tools/call' && ['prepare_skill', 'stage_input', 'bind_run'].includes(params.name)) {
+    try { result = await ({ prepare_skill: prepareSkill, stage_input: stageInput, bind_run: bindRun }[params.name])(params.arguments, { ...deps, hostScope: hostScopeFromParams(params) }); }
     catch (e) { result = response({ verified: false, error: 'skill_preparation_failed', reason: e.code ?? e.message }, true); }
   }
   else return { jsonrpc: '2.0', id, error: { code: -32601, message: 'Method not found' } };

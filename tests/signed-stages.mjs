@@ -16,6 +16,7 @@ function run(file,args,env,input='') { return new Promise((resolve,reject)=>{
 for(const host of ['codex','claude']) test(`${host}: real signed stages bind JSON and prevent bypass/replay`,async t=>{
  const plugin=path.join(root,'plugins',host,'kabo-alpha');const common=await import(pathToFileURL(path.join(plugin,'scripts/lib/common.js')));
  const {validateExecutionStages}=await import(pathToFileURL(path.join(plugin,'scripts/lib/signed-stages.js')));
+ const {bindRunAttempt}=await import(pathToFileURL(path.join(plugin,'scripts/lib/host-attempt.js')));
  const data=await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(),'signed-stage-')));t.after(()=>fs.rm(data,{recursive:true,force:true}));
  const server=http.createServer((req,res)=>{assert.equal(req.headers.authorization,undefined);res.setHeader('Content-Type','application/json');res.end(JSON.stringify({revocations:[],catalog:[],server_api_version:'1.0.0'}))});
  await new Promise(r=>server.listen(0,'127.0.0.1',r));t.after(()=>{server.closeAllConnections();return new Promise(r=>server.close(r))});
@@ -37,7 +38,8 @@ for(const host of ['codex','claude']) test(`${host}: real signed stages bind JSO
  const checksum=common.computeChecksum(files,1);const pkg={id,version,format_version:1,checksum,key_id:kid,signature:crypto.sign(null,Buffer.from(checksum),pair.privateKey).toString('base64'),files:files.map(f=>({path:f.path,content_base64:f.content.toString('base64')}))};
  const bin=(name,args,input)=>run(path.join(plugin,'bin',name),args,env,input);assert.equal((await bin('skill-unpack',['--verify','-'],JSON.stringify(pkg))).code,0);
  const skill=await fs.realpath(path.join(data,'skill-cache',id,version)),rawManifest=await fs.readFile(path.join(skill,'manifest.json'));
- const reserve=async()=>{const r=await bin('kabo-run-dir',['--skill',skill]);assert.equal(r.code,0,r.stderr);return r.stdout.trim()};
+ let fixtureTurn = 0;
+ const reserve=async(scope)=>{const r=await bin('kabo-run-dir',['--skill',skill]);assert.equal(r.code,0,r.stderr);const runId=r.stdout.trim();bindRunAttempt({prepared:{id,verified:true,skill_directory:skill,checksum,manifest_sha256:hash(rawManifest),host_scope:scope??{session_id:'mechanism-fixture',turn_id:`independent-case-${++fixtureTurn}`}},runDir:path.join(data,'work',runId),runId,root:data});return runId;};
  const work=r=>path.join(data,'work',r),call=(r,args)=>bin('kabo-run-pipeline',['--run-id',r,'--skill',skill,...args]);
  const receipt=async(r,stage,body={literal:"引号' $() `not code`"})=>{const folder=path.join(work(r),'owner','stage-inputs');await fs.mkdir(folder,{recursive:true,mode:0o700});const input=path.join(folder,`${stage}.json`),out=path.join(folder,`${stage}.receipt.json`);const bytes=Buffer.from(JSON.stringify(body));await fs.writeFile(input,bytes,{flag:'wx',mode:0o600});await fs.writeFile(out,JSON.stringify({format_version:1,run_id:r,skill,checksum,manifest:hash(rawManifest),stage,input_file:input,input_sha256:hash(bytes)}),{flag:'wx',mode:0o600});return out;};
  const r=await reserve();
@@ -61,4 +63,15 @@ for(const host of ['codex','claude']) test(`${host}: real signed stages bind JSO
   const linked=await reserve(),outside=path.join(data,'outside-state.json');await fs.writeFile(outside,'{"sentinel":true}',{mode:0o600});await fs.symlink(outside,path.join(work(linked),'.pipeline-stages.json'));assert.notEqual((await call(linked,['--stage','fail'])).code,0);assert.equal(await fs.readFile(outside,'utf8'),'{"sentinel":true}');
   const failed=await reserve();let result=await call(failed,['--stage','fail']);assert.notEqual(result.code,0);assert.equal(JSON.parse(await fs.readFile(path.join(work(failed),'run-manifest.json'))).status,'failed');assert.notEqual((await call(failed,['--stage','finish'])).code,0);assert.notEqual((await call(failed,['--step','touch BYPASS'])).code,0);
  });
+ await t.test('a failed signed stage cannot be reset by a new reservation in the same native turn',async()=>{
+  const scope={session_id:'mechanism-fixture',turn_id:'replacement-case'}, failed=await reserve(scope);
+  assert.notEqual((await call(failed,['--stage','fail'])).code,0);
+  await assert.rejects(reserve(scope),/host_attempt_already_reserved/);
+  const candidate=(await bin('kabo-run-dir',['--skill',skill])).stdout.trim();
+  const rejected=await call(candidate,['--stage','fail']);
+  assert.notEqual(rejected.code,0);assert.match(rejected.stderr,/pipeline-attempt|ENOENT/);
+  const later=await reserve({...scope,turn_id:'next-user-turn'});
+  await receipt(later,'prepare');assert.equal((await call(later,['--stage','prepare'])).code,0);
+ });
+
 });

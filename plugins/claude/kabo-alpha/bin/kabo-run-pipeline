@@ -51,6 +51,7 @@ import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 
 import { selectSignedStage, readStageInput } from '../scripts/lib/signed-stages.js';
+import { assertRunAttempt } from '../scripts/lib/host-attempt.js';
 
 import { PLUGIN_VERSION, isSafeName, readJsonSilent, sha256hex, workRoot } from '../scripts/lib/common.js';
 
@@ -329,6 +330,7 @@ for (const dir of Object.values(subdirs)) fs.mkdirSync(dir, { recursive: true, m
 if (opts.stage !== null) {
   try {
     signedStage = selectSignedStage({manifest, name:opts.stage, state:stageState});
+    assertRunAttempt({ runDir, runId, skillDir, checksum: stageState.checksum, manifest: stageState.manifest });
     stageInput = readStageInput({runDir,runId,skillDir,stage:opts.stage,contract:signedStage,receiptPath:opts.inputReceipt});
   } catch (error) { refuse(error.message); }
   opts.continue = !signedStage.final;
