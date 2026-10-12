@@ -3,7 +3,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { createHash } from 'node:crypto';
 import { dataRoot } from './common.js';
-import { validateExecutionStages } from './signed-stages.js';
+import { validateExecutionStages, resolveSignedReportPath } from './signed-stages.js';
 
 const token = /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/;
 const sha = value => createHash('sha256').update(value).digest('hex');
@@ -110,13 +110,13 @@ export function readCompletedReport({ runDir, runId, hostScope, root = dataRoot(
   check(finals.length === 1 && Object.values(history).every(stage => stage.status === 'completed'), 'report_final_stage_missing');
   const [stageName, stage] = finals[0];
   check(stage.after.every(name => history[name]?.status === 'completed'), 'report_predecessors_incomplete');
-  const file = path.join(runDir, stage.report_file);
+  const file = resolveSignedReportPath(runDir, stage.report_file);
   privateStat(file);
   const fd = fs.openSync(file, fs.constants.O_RDONLY | fs.constants.O_NOFOLLOW);
   let bytes;
   try {
     const stat = fs.fstatSync(fd);
-    check(stat.isFile() && stat.nlink === 1 && stat.size > 0 && stat.size <= 256 * 1024, 'report_file_invalid_or_too_large');
+    check(stat.isFile() && stat.nlink === 1 && (stat.mode & 0o077) === 0 && (!process.getuid || stat.uid === process.getuid()) && stat.size > 0 && stat.size <= 256 * 1024, 'report_file_invalid_or_too_large');
     bytes = fs.readFileSync(fd);
   } finally { fs.closeSync(fd); }
   const digest = sha(bytes);

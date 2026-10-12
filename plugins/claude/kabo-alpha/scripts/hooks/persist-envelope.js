@@ -47,7 +47,7 @@ import os from 'node:os';
 import { fileURLToPath } from 'node:url';
 import { remakeArtifactContract } from '../lib/remake-artifact-contract.js';
 
-import { dataRoot, ensurePrivateDir, isSafeName, sha256hex } from '../lib/common.js';
+import { dataRoot, ensurePrivateDir, isSafeName, sha256hex, NATIVE_KABO_MCP_PREFIX } from '../lib/common.js';
 
 /**
  * The drain command, resolved from this file's own location rather than from
@@ -462,6 +462,18 @@ async function main() {
           staged_at: new Date().toISOString(),
           tool_use_id: typeof event.tool_use_id === 'string' ? event.tool_use_id : null,
         };
+    // V2 continuation trusts only the normal native hook's exact turn and resolved
+    // tool arguments. Older hosts without these fields keep staging, but cannot resume.
+    const nativeTool = typeof event.tool_name === 'string' && event.tool_name.startsWith(NATIVE_KABO_MCP_PREFIX) && /^(data_connector_run|data_connector_batch_run)$/.exec(event.tool_name.slice(NATIVE_KABO_MCP_PREFIX.length));
+    const nativeTurn = typeof event.turn_id === 'string' && /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/.test(event.turn_id) ? event.turn_id : null;
+    const nativeArgs = event.tool_input;
+    const nativeRequest = nativeTool?.[1] === 'data_connector_run' && envelopes.length === 1 ? nativeArgs
+      : nativeTool?.[1] === 'data_connector_batch_run' && Array.isArray(nativeArgs?.requests) && nativeArgs.requests.length === envelopes.length ? nativeArgs.requests[envelopes.indexOf(envelope)] : null;
+    if (event.hook_event_name === 'PostToolUse' && nativeTool && nativeTurn && typeof event.tool_use_id === 'string' && event.tool_use_id &&
+        nativeRequest?.connector_id === envelope.connector_id && nativeRequest?.operation === envelope.operation && nativeRequest?.params && typeof nativeRequest.params === 'object' && !Array.isArray(nativeRequest.params)) {
+      meta.native_scope = {session_id:agentId ?? sessionId,turn_id:nativeTurn};
+      meta.native_request = nativeRequest;
+    }
     // **Exclusive create, and step over a collision.** `nextSequence` read the directory in this
     // process, but the write happens later and other hook processes are running concurrently — the
     // runner is explicitly told to submit independent connector calls in the same turn, so two

@@ -17,7 +17,9 @@ import path from 'node:path';
 import os from 'node:os';
 import crypto from 'node:crypto';
 import { fileURLToPath } from 'node:url';
-export const PLUGIN_VERSION = '0.21.28';
+export const PLUGIN_VERSION = '0.21.29';
+// Fixed installed server identity for normal native connector receipt proof.
+export const NATIVE_KABO_MCP_PREFIX = 'mcp__kabo__';
 export const SUPPORTED_API_VERSION = '1.0.0';
 export const DEFAULT_ENDPOINT = 'https://kabo.sh';
 export const CACHE_TTL_MS = 14 * 24 * 60 * 60 * 1000; // skill cache TTL: 14 days

@@ -50,7 +50,8 @@ import path from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 
-import { selectSignedStage, readStageInput } from '../scripts/lib/signed-stages.js';
+import { selectSignedStage, readStageInput, resolveSignedReportPath } from '../scripts/lib/signed-stages.js';
+import { prepareStageOutcome, readStageOutcome } from '../scripts/lib/stage-outcomes.js';
 import { assertRunAttempt } from '../scripts/lib/host-attempt.js';
 
 import { PLUGIN_VERSION, isSafeName, readJsonSilent, sha256hex, workRoot } from '../scripts/lib/common.js';
@@ -101,7 +102,7 @@ const STEP_ECHO_CHARS = 60;
 /** Captured stdout budget per step; the scripts print a one-line JSON status, so this is generous. */
 const STEP_STDOUT_MAX_BYTES = 64 * 1024 * 1024;
 
-const PLACEHOLDER = /(?<!\$)\{(run|skill|plugin|cr|snapshot|analysis|report|owner|language|stage_input|envelopes|param\.[A-Za-z0-9_-]+)\}/g;
+const PLACEHOLDER = /(?<!\$)\{(run|skill|plugin|cr|snapshot|analysis|report|owner|language|stage_input|stage_outcome|envelopes|param\.[A-Za-z0-9_-]+)\}/g;
 const PLACEHOLDER_ONE = new RegExp(`^${PLACEHOLDER.source}$`);
 // Case-insensitive on purpose while PLACEHOLDER is not: {Snapshot} must be refused, not shipped to sh.
 const PLACEHOLDER_LIKE = /(?<!\$)\{[A-Za-z][A-Za-z0-9_.-]*\}/g;
@@ -264,7 +265,7 @@ if (hasSignedStages) {
   if (opts.fail === null && opts.stage === null) refuse('this package requires --stage');
 } else if (opts.stage !== null || opts.inputReceipt !== null) refuse('this package has no signed execution_stages');
 if (opts.inputReceipt !== null && opts.stage === null) refuse('--input-receipt requires --stage');
-let signedStage = null, stageInput = null;
+let signedStage = null, stageInput = null, outcomeContext = null, machineOutcome = null, priorStage = null;
 
 // Stage state is separate from the public manifest schema. Write it only after the first stage:
 // an empty reserved run must remain empty so a skill driver can adopt it instead of forking a run.
@@ -330,8 +331,11 @@ for (const dir of Object.values(subdirs)) fs.mkdirSync(dir, { recursive: true, m
 if (opts.stage !== null) {
   try {
     signedStage = selectSignedStage({manifest, name:opts.stage, state:stageState});
-    assertRunAttempt({ runDir, runId, skillDir, checksum: stageState.checksum, manifest: stageState.manifest });
+    const attempt = assertRunAttempt({ runDir, runId, skillDir, checksum: stageState.checksum, manifest: stageState.manifest });
+    priorStage = stageState.execution_stages?.[opts.stage] ?? null;
     stageInput = readStageInput({runDir,runId,skillDir,stage:opts.stage,contract:signedStage,receiptPath:opts.inputReceipt});
+    if (manifest.execution_stages.format_version === 2)
+      outcomeContext = prepareStageOutcome({runDir,runId,stage:opts.stage,inputSha:stageInput?.sha256 ?? null,manifestSha:stageState.manifest,skillId:manifest.name,binding:attempt,previous:priorStage,language:opts.language});
   } catch (error) { refuse(error.message); }
   opts.continue = !signedStage.final;
   opts.reportFile = signedStage.final ? signedStage.report_file : null;
@@ -378,6 +382,7 @@ if (opts.fail === null && steps.length === 0) {
 
 const values = {
   stage_input: stageInput?.file,
+  stage_outcome: outcomeContext?.file,
   run: runDir,
   skill: skillDir,
   plugin: PLUGIN_ROOT,
@@ -387,6 +392,7 @@ const values = {
 };
 const echoValues = {
   stage_input: `{run}/owner/stage-inputs/${opts.stage}.json`,
+  stage_outcome: `{run}/owner/stage-outcomes/${opts.stage}.json`,
   run: '{run}',
   skill: '{skill}',
   plugin: '{plugin}',
@@ -453,7 +459,7 @@ if (staged) {
 
 if (failure === null && signedStage) {
   stageState.execution_stages ??= {};
-  stageState.execution_stages[opts.stage] = {status:'started',started_at:new Date().toISOString(), ...(stageInput ? {input_sha256:stageInput.sha256} : {})};
+  stageState.execution_stages[opts.stage] = {...(priorStage ?? {}),status:'started',started_at:priorStage?.started_at ?? new Date().toISOString(), ...(stageInput ? {input_sha256:stageInput.sha256} : {})};
   fs.writeFileSync(stageStateFile, `${JSON.stringify(stageState)}\n`, {mode:0o600});
 }
 
@@ -531,6 +537,13 @@ if (failure === null) {
   }
 }
 
+if (failure === null && outcomeContext) {
+  try {
+    machineOutcome = readStageOutcome(outcomeContext);
+    if (machineOutcome.status === 'awaiting_connector') { opts.continue = true; opts.reportFile = null; }
+  } catch (error) { failure = `invalid signed stage outcome: ${error.message}`; }
+}
+
 // The manifest vouches for artifacts by content hash; a symlink's content is whatever its target
 // holds later, so it is not an artifact and the run cannot be reported as ok with one in place.
 if (failure === null) {
@@ -572,8 +585,16 @@ if (failure === null && opts.fail !== null) failure = opts.fail;
 let reportNames = [];
 if (failure === null && !opts.continue) {
   if (opts.reportFile !== null) {
-    if (isRegularFile(path.join(runDir, opts.reportFile))) reportNames = [opts.reportFile];
-    else failure = `every step passed but ${opts.reportFile} does not exist`;
+    try {
+      const reportPath = signedStage ? resolveSignedReportPath(runDir, opts.reportFile) : path.join(runDir, opts.reportFile);
+      if (signedStage) {
+        const stat = fs.lstatSync(reportPath);
+        if (!stat.isFile() || stat.nlink !== 1 || (stat.mode & 0o077) !== 0 || (process.getuid && stat.uid !== process.getuid()))
+          throw new Error('invalid signed final report');
+      }
+      if (isRegularFile(reportPath)) reportNames = [opts.reportFile];
+      else failure = `every step passed but ${opts.reportFile} does not exist`;
+    } catch { failure = 'signed final report path is not a private regular run-relative path'; }
   } else
   if (opts.report !== null) {
     if (isRegularFile(path.join(subdirs.report, opts.report))) reportNames = [opts.report];
@@ -704,6 +725,21 @@ function finalizeRunManifest(status) {
       record.artifacts.push({ kind: entry.name === opts.reportFile ? 'report' : value?.connector_id ? 'snapshot' : 'analysis', path_or_uri: entry.name, sha256: sha256hex(fs.readFileSync(full)) });
     }
   }
+  if (signedStage?.final && status === 'ok') {
+    const reportPath = resolveSignedReportPath(runDir, signedStage.report_file);
+    const stat = fs.lstatSync(reportPath);
+    if (!stat.isFile() || stat.nlink !== 1 || (stat.mode & 0o077) !== 0 || (process.getuid && stat.uid !== process.getuid()))
+      throw new Error('signed final report must be a private regular file');
+    // Existing report/analysis enumeration may already contain this exact path.
+    record.artifacts = record.artifacts.filter(item => item.path_or_uri !== signedStage.report_file);
+    const fd = fs.openSync(reportPath, fs.constants.O_RDONLY | fs.constants.O_NOFOLLOW);
+    try {
+      const opened = fs.fstatSync(fd);
+      if (!opened.isFile() || opened.nlink !== 1 || (opened.mode & 0o077) !== 0 || (process.getuid && opened.uid !== process.getuid()))
+        throw new Error('signed final report changed before archival');
+      record.artifacts.push({ kind: 'report', path_or_uri: signedStage.report_file, sha256: sha256hex(fs.readFileSync(fd)) });
+    } finally { fs.closeSync(fd); }
+  }
   fs.writeFileSync(file, `${JSON.stringify(record, null, 2)}\n`, { mode: 0o600 });
   fs.chmodSync(file, 0o600);
 }
@@ -715,7 +751,7 @@ try {
     if (signedStage) {
       const previous = stageState.execution_stages?.[opts.stage] ?? {};
       stageState.execution_stages ??= {};
-      stageState.execution_stages[opts.stage] = {...previous, status: failure === null ? 'completed' : 'failed', finished_at:new Date().toISOString()};
+      stageState.execution_stages[opts.stage] = {...previous, ...(failure === null && machineOutcome ? machineOutcome : {}), status: failure === null ? (machineOutcome?.status ?? 'completed') : 'failed', finished_at:new Date().toISOString()};
     }
     stageState.status = status;
     stageState.phases += 1;
@@ -727,6 +763,7 @@ try {
 
 if (drained !== null) out(`drained=${drained}\n`);
 for (const name of failure === null ? reportNames : []) out(`creator_report: ${runId} → ${opts.reportFile !== null ? name : `report/${name}`}\n`);
+if (failure === null && machineOutcome?.status === 'awaiting_connector') out(`stage-outcome: ${JSON.stringify({status:'awaiting_connector',rounds:machineOutcome.rounds,requests:JSON.parse(fs.readFileSync(outcomeContext.file,'utf8')).requests})}\n`);
 if (failure === null && opts.continue) out('run-status: running; follow the next skill judgment or fetch before the final stage\n');
 out(`run-manifest: ${runId} → run-manifest.json\n`);
 

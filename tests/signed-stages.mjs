@@ -27,13 +27,20 @@ for(const host of ['codex','claude']) test(`${host}: real signed stages bind JSO
  const manifest={name:id,version,execution:'subagent',required:{tools:[]},min_plugin_version:'0.21.28',execution_stages:{format_version:1,stages:{
   prepare:{cmd:`${node} {skill}/scripts/stage.js prepare {stage_input}`,input:'json',after:[],final:false},
   finish:{cmd:`${node} {skill}/scripts/stage.js finish`,input:'none',after:['prepare'],final:true,report_file:'done.md'},
+  nested_report:{cmd:`${node} {skill}/scripts/stage.js finish report/RULE_CHECK.md`,input:'none',after:['prepare'],final:true,report_file:'report/RULE_CHECK.md'},
+  nested_other:{cmd:`${node} {skill}/scripts/stage.js finish results/deep/FINAL.md`,input:'none',after:['prepare'],final:true,report_file:'results/deep/FINAL.md'},
   fail:{cmd:`${node} {skill}/scripts/stage.js fail`,input:'none',after:[],final:false}
  }}};
  await t.test('signed stage capability floor rejects old, malformed and prerelease minima',()=>{
   for(const minimum of [undefined,'0.21.27','garbage','0.21.28-alpha','0.21.28-01','00.21.28']) assert.throws(()=>validateExecutionStages({...manifest,min_plugin_version:minimum}),/min_plugin_version/);
   assert.doesNotThrow(()=>validateExecutionStages(manifest));
  });
- const script=`import fs from 'node:fs';const stage=process.argv[2];if(stage==='prepare'){fs.writeFileSync('analysis/received.json',fs.readFileSync(process.argv[3]));}else if(stage==='finish'){JSON.parse(fs.readFileSync('analysis/received.json'));fs.writeFileSync('done.md','# Validated fixture\\n');}else process.exit(7);`;
+ await t.test('report_file accepts only bounded safe run-relative segments',()=>{
+  const candidate=report_file=>({...manifest,execution_stages:{format_version:1,stages:{final:{cmd:'true',input:'none',after:[],final:true,report_file}}}});
+  for(const value of ['','/tmp/report.md','../report.md','report/../x','report/./x','report//x','report/','report\\x','.hidden', 'a'.repeat(65),'a/'.repeat(256)+'z']) assert.throws(()=>validateExecutionStages(candidate(value)),/report_file/);
+  for(const value of ['done.md','report/RULE_CHECK.md','results/deep/FINAL.md','a'.repeat(64),Array(8).fill('a'.repeat(63)).join('/')+'x']) assert.doesNotThrow(()=>validateExecutionStages(candidate(value)));
+ });
+ const script=`import path from 'node:path';import fs from 'node:fs';const stage=process.argv[2];if(stage==='prepare'){fs.writeFileSync('analysis/received.json',fs.readFileSync(process.argv[3]));}else if(stage==='finish'){JSON.parse(fs.readFileSync('analysis/received.json'));const target=process.argv[3]||'done.md';fs.mkdirSync(path.dirname(target),{recursive:true,mode:0o700});fs.writeFileSync(target,'# Validated fixture\\n');}else process.exit(7);`;
  const files=[{path:'manifest.json',content:Buffer.from(JSON.stringify(manifest))},{path:'SKILL.md',content:Buffer.from('Synthetic signed stage fixture.')},{path:'scripts/stage.js',content:Buffer.from(script)}];
  const checksum=common.computeChecksum(files,1);const pkg={id,version,format_version:1,checksum,key_id:kid,signature:crypto.sign(null,Buffer.from(checksum),pair.privateKey).toString('base64'),files:files.map(f=>({path:f.path,content_base64:f.content.toString('base64')}))};
  const bin=(name,args,input)=>run(path.join(plugin,'bin',name),args,env,input);assert.equal((await bin('skill-unpack',['--verify','-'],JSON.stringify(pkg))).code,0);
@@ -95,6 +102,18 @@ for(const host of ['codex','claude']) test(`${host}: real signed stages bind JSO
   const failedRecord=JSON.parse(record);failedRecord.status='failed';await fs.writeFile(recordFile,JSON.stringify(failedRecord));
   assert.deepEqual(checkReportDelivery(event,{root:data,workRoot:path.join(data,'work')}),{});await fs.writeFile(recordFile,record);
 
+ });
+ await t.test('nested signed final reports preserve exact artifact identity and reject linked/non-private parents',async()=>{
+  for(const [stage,relative] of [['nested_report','report/RULE_CHECK.md'],['nested_other','results/deep/FINAL.md']]) {
+   const nested=await reserve();await receipt(nested,'prepare');assert.equal((await call(nested,['--stage','prepare'])).code,0);
+   const result=await call(nested,['--stage',stage]);assert.equal(result.code,0,result.stderr);assert.ok(result.stdout.includes(`→ ${relative}`));
+   const record=JSON.parse(await fs.readFile(path.join(work(nested),'run-manifest.json')));
+   const artifacts=record.artifacts.filter(a=>a.path_or_uri===relative);assert.equal(artifacts.length,1);assert.equal(artifacts[0].kind,'report');
+   const scope=JSON.parse(await fs.readFile(path.join(work(nested),'.pipeline-attempt.json'))).host_scope;
+   const read=()=>readCompletedReport({runDir:work(nested),runId:nested,hostScope:scope,root:data});assert.equal(read().sha256,artifacts[0].sha256);assert.equal(read().text,'# Validated fixture\n');
+   const parent=path.dirname(path.join(work(nested),relative)),saved=parent+'-saved';await fs.rename(parent,saved);await fs.symlink(saved,parent);assert.throws(read,/symlinked/);await fs.unlink(parent);await fs.rename(saved,parent);
+   await fs.chmod(parent,0o755);assert.throws(read,/private/);await fs.chmod(parent,0o700);assert.equal(read().text,'# Validated fixture\n');
+  }
  });
  await t.test('failure closes the run and rejects later stages and explicit bypass',async()=>{
   const linked=await reserve(),outside=path.join(data,'outside-state.json');await fs.writeFile(outside,'{"sentinel":true}',{mode:0o600});await fs.symlink(outside,path.join(work(linked),'.pipeline-stages.json'));assert.notEqual((await call(linked,['--stage','fail'])).code,0);assert.equal(await fs.readFile(outside,'utf8'),'{"sentinel":true}');

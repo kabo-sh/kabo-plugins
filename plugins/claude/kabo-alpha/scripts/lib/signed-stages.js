@@ -4,6 +4,7 @@ import path from 'node:path';
 import { createHash } from 'node:crypto';
 import { compareSemver } from './common.js';
 const TOKEN = /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/;
+const reportPath = value => typeof value === 'string' && value.length >= 1 && value.length <= 512 && value.split('/').every(segment => TOKEN.test(segment));
 const hash = bytes => createHash('sha256').update(bytes).digest('hex');
 const object = value => value !== null && typeof value === 'object' && !Array.isArray(value);
 function require(ok, message) { if (!ok) throw new Error(message); }
@@ -11,10 +12,12 @@ export function validateExecutionStages(manifest) {
   const minimum = manifest.min_plugin_version;
   const semver = typeof minimum === 'string' && /^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(?:-([0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*))?(?:\+[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?$/.exec(minimum);
   require(semver && (!semver[4] || semver[4].split('.').every(x => !/^[0-9]+$/.test(x) || x === '0' || !x.startsWith('0'))), 'execution_stages requires a legal min_plugin_version');
-  const ordering = compareSemver(minimum, '0.21.28');
-  require(ordering > 0 || (ordering === 0 && !semver[4]), 'execution_stages requires min_plugin_version >= 0.21.28');
+  const version = manifest.execution_stages?.format_version;
+  const floor = version === 2 ? '0.21.29' : '0.21.28';
+  const ordering = compareSemver(minimum, floor);
+  require(ordering > 0 || (ordering === 0 && !semver[4]), `execution_stages requires min_plugin_version >= ${floor}`);
   const contract = manifest.execution_stages;
-  require(object(contract) && contract.format_version === 1 && Object.keys(contract).every(k => ['format_version','stages'].includes(k)) && object(contract.stages), 'invalid execution_stages contract');
+  require(object(contract) && [1,2].includes(contract.format_version) && Object.keys(contract).every(k => ['format_version','stages'].includes(k)) && object(contract.stages), 'invalid execution_stages contract');
   const stages = contract.stages, names = Object.keys(stages);
   require(names.length > 0 && names.every(n => TOKEN.test(n)), 'invalid signed stage names');
   for (const [name, s] of Object.entries(stages)) {
@@ -22,8 +25,9 @@ export function validateExecutionStages(manifest) {
     require(typeof s.cmd === 'string' && s.cmd.trim() && ['json','none'].includes(s.input) && typeof s.final === 'boolean' && Array.isArray(s.after), `incomplete signed stage ${name}`);
     require(s.after.every(n => typeof n === 'string' && Object.hasOwn(stages,n) && n !== name) && new Set(s.after).size === s.after.length, `invalid predecessors for ${name}`);
     require((s.input === 'json') === s.cmd.includes('{stage_input}'), `stage ${name} input placeholder mismatch`);
+    require(version !== 2 || s.cmd.includes('{stage_outcome}'), 'V2 stages require the fixed stage_outcome placeholder');
     require(!/\{param\./.test(s.cmd), 'signed stages do not accept caller-selected parameters');
-    require(s.final ? typeof s.report_file === 'string' && TOKEN.test(s.report_file) : s.report_file === undefined, `invalid report_file for ${name}`);
+    require(s.final ? reportPath(s.report_file) : s.report_file === undefined, `invalid report_file for ${name}`);
   }
   const active = new Set(), done = new Set();
   function visit(name) { require(!active.has(name), 'cyclic signed stage predecessors'); if (done.has(name)) return; active.add(name); stages[name].after.forEach(visit); active.delete(name); done.add(name); }
@@ -35,8 +39,9 @@ export function selectSignedStage({manifest, name, state}) {
   require(TOKEN.test(name ?? '') && Object.hasOwn(stages,name), 'unknown signed stage');
   const history = state?.execution_stages ?? {};
   require(object(history), 'invalid signed stage history');
-  require(!Object.hasOwn(history,name), 'signed stage was already attempted; preserve artifacts and stop');
-  require(Object.values(history).every(x => x?.status === 'completed'), 'a previous signed stage is unfinished or failed; preserve artifacts and stop');
+  const paused = manifest.execution_stages.format_version === 2 && history[name]?.status === 'awaiting_connector';
+  require(paused || !Object.hasOwn(history,name), 'signed stage was already attempted; preserve artifacts and stop');
+  require(Object.entries(history).every(([n,x]) => x?.status === 'completed' || (paused && n === name && x?.status === 'awaiting_connector')), 'a previous signed stage is unfinished or failed; preserve artifacts and stop');
   require(stages[name].after.every(n => history[n]?.status === 'completed'), 'signed stage predecessors are incomplete');
   return stages[name];
 }
@@ -45,6 +50,18 @@ function privatePath(file, directory = false) {
   require(!stat.isSymbolicLink() && (directory ? stat.isDirectory() : stat.isFile()), 'stage input paths must be regular and not symlinked');
   require((stat.mode & 0o077) === 0 && (process.getuid === undefined || stat.uid === process.getuid()), 'stage input paths must be private and owned by this user');
   if (!directory) require(stat.nlink === 1, 'stage input must not be hardlinked');
+}
+// Resolve only manifest-owned paths and reject every linked/non-private directory.
+export function resolveSignedReportPath(runDir, reportFile) {
+  require(reportPath(reportFile), 'invalid signed report_file');
+  privatePath(runDir, true);
+  const segments = reportFile.split('/');
+  let parent = runDir;
+  for (const segment of segments.slice(0, -1)) {
+    parent = path.join(parent, segment);
+    privatePath(parent, true);
+  }
+  return path.join(parent, segments.at(-1));
 }
 function privateRead(file) {
   privatePath(file);
