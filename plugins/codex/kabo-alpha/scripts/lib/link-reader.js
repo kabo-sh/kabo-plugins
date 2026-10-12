@@ -16,7 +16,7 @@ export const readLinkDefinition = {
 const record = value => value !== null && typeof value === 'object' && !Array.isArray(value) ? value : {};
 const text = value => ({ type: 'text', text: typeof value === 'string' ? value : JSON.stringify(value) });
 const fail = message => ({ isError: true, content: [text(message)] });
-const canonicalShareUrl = value => {
+export const canonicalShareUrl = value => {
   if (typeof value !== 'string' || identifyPublicLink(value).resource_kind !== 'share') return null;
   const url = new URL(value);
   url.hash = '';
@@ -79,6 +79,10 @@ export async function readPublicLink(args, deps = {}) {
   if (Object.keys(input).some(k => !['source_url','offset','count','envelope_file'].includes(k))) return fail('Only source_url, offset, count and the plugin envelope_file are accepted.');
   const identity = identifyPublicLink(source_url), route = identity.read;
   if (!route) return fail('No supported reading route for this link. Keep the original URL; do not guess a different resource type.');
+  if (offset > 0 && envelope_file === undefined && !deps.call) return fail({
+    code: 'batch_envelope_required', source_url, offset, count,
+    recovery: 'Continue with the same staged envelope_file used by the first batch. Do not fetch the post again: all image batches must share one source request.',
+  });
   let raw;
   try {
     if (envelope_file !== undefined) {
@@ -109,8 +113,13 @@ export async function readPublicLink(args, deps = {}) {
   const envelope = connectorEnvelope(raw);
   if (!envelope || envelope.connector_id !== route.connector_id || envelope.operation !== route.operation) return fail('The result does not match this link reading route.');
   if (!['completed','completed_partial'].includes(envelope.status)) return { content: [text({ identity, status: envelope.status, error_code: envelope.error_code ?? null, limitations: envelope.limitations, missing: 'No usable post content was delivered. This does not establish a format limitation.' })] };
-  if (envelope_file !== undefined && identity.platform === 'tiktok' && identity.resource_kind === 'share' &&
-      canonicalShareUrl(record(envelope.params).url) !== canonicalShareUrl(source_url)) return fail('The staged result cannot be bound to this TikTok share link. Fetch the original link again and use its envelope with matching params.url.');
+  if (envelope_file !== undefined && identity.platform === 'tiktok' && identity.resource_kind === 'share') {
+    const echoedUrl = record(envelope.params).url;
+    const bound = echoedUrl !== undefined
+      ? canonicalShareUrl(echoedUrl) === canonicalShareUrl(source_url)
+      : deps.isRequestBound?.(envelope, source_url) === true;
+    if (!bound) return fail('The staged result cannot be bound to this TikTok share link. Use an envelope with matching params.url or a verified local request binding.');
+  }
   const data = record(envelope.data);
   let media = identity.platform === 'tiktok' && ['post','share'].includes(identity.resource_kind) ? tiktokPostMedia(source_url, data.video) :
     identity.platform === 'instagram' && identity.resource_kind === 'post' ? instagramPostMedia(source_url, data.post) : null;
@@ -130,6 +139,8 @@ export async function readPublicLink(args, deps = {}) {
   }
   const { slides: unused, video: unusedVideo, ...summary } = media;
   const delivered = slides.filter(s => s.status === 'delivered').map(s => s.index);
+  const nextOffset = offset + count < media.slides.length ? offset + count : null;
   return { evidence: { schema_version: 'linked-media-evidence.v1', identity, ...summary, source: { connector_id: envelope.connector_id, operation: envelope.operation, request_id: envelope.request_id, retrieved_at: envelope.retrieved_at, raw_sha256: envelope.raw_sha256 }, images }, content: [text({ identity, ...summary, source: { status: envelope.status, retrieved_at: envelope.retrieved_at, limitations: envelope.limitations, evidence_ref: envelope.evidence_ref }, slides, delivered_indices: delivered, next_offset: offset + count < media.slides.length ? offset + count : null,
+    ...(nextOffset !== null && envelope_file !== undefined ? { next_batch: { source_url, offset: nextOffset, count, envelope_file } } : {}),
     missing: media.media_type === 'unknown' ? 'No verified media details. Source failure reason unconfirmed.' : media.media_type === 'video' ? 'Video verified; use its transcript/frame capability if required.' : delivered.length < selected.length ? 'Some requested images were not delivered; leave their contents unassessed.' : null }), ...content] };
 }

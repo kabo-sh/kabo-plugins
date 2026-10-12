@@ -4,6 +4,7 @@ import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import crypto from 'node:crypto';
+import { spawnSync } from 'node:child_process';
 import { readPublicLink, allowedImageUrl } from '../plugins/codex/kabo-alpha/scripts/lib/link-reader.js';
 import { stageLinkEvidence } from '../plugins/codex/kabo-alpha/scripts/lib/stage-link-evidence.js';
 import { identifyPublicLink } from '../plugins/codex/kabo-alpha/scripts/lib/link-routing.js';
@@ -31,8 +32,17 @@ test('插件先返回确定性取数请求，拿到信封后才交付图像', as
   const r=await readPublicLink({source_url:url,envelope_file:'fixture'}, {readEnvelope,fetchFn});
   assert.equal(r.content.filter(p=>p.type==='image').length,4);
   assert.deepEqual(parse(r).delivered_indices,[1,2,3,4]); assert.equal(parse(r).next_offset,4); assert.equal(parse(r).completeness,'unknown');
+  assert.deepEqual(parse(r).next_batch,{source_url:url,offset:4,count:4,envelope_file:'fixture'});
   const second=await readPublicLink({source_url:url,envelope_file:'fixture',offset:4}, {readEnvelope,fetchFn});
   assert.deepEqual(parse(second).delivered_indices,[6,7,8]); assert.equal(parse(second).slides[4].status,'missing'); assert.equal(parse(second).next_offset,8);
+});
+test('插件后续批次缺少原信封时不生成重复取数计划',async()=>{
+  const result=await readPublicLink({source_url:url,offset:4,count:4});
+  const value=parse(result);
+  assert.equal(result.isError,true);assert.equal(value.code,'batch_envelope_required');
+  assert.equal(value.request,undefined);assert.match(value.recovery,/same staged envelope_file/);
+  const last=await readPublicLink({source_url:url,offset:8,count:4,envelope_file:'fixture'},{readEnvelope,fetchFn});
+  assert.equal(parse(last).next_batch,undefined);assert.equal(parse(last).next_offset,null);
 });
 test('照片实际结构覆盖video路径提示；身份不符和404不产生图片',async()=>{
   const r=await readPublicLink({source_url:url.replace('/photo/','/video/'),envelope_file:'fixture'},{readEnvelope,fetchFn});
@@ -55,6 +65,38 @@ test('TikTok短链暂存证据必须绑定回显请求URL，缺失或不符时�
   assert.notEqual(result.isError,true);assert.equal(downloads,1);
   assert.equal(result.evidence.original_url,source_url);
   assert.equal(result.evidence.post_id,'12345');
+});
+test('原生hook绑定没有回显params的短链信封，拒绝错请求和冲突回显',async()=>{
+  const root=await fs.mkdtemp(path.join(os.tmpdir(),'kabo-share-binding-'));
+  const source_url='https://vt.tiktok.com/abc/';
+  let downloads=0;
+  try {
+    const value={...envelope,request_id:'req-share'};
+    const hook=spawnSync(process.execPath,[new URL('../plugins/codex/kabo-alpha/scripts/hooks/persist-envelope.js',import.meta.url).pathname],{
+      env:{...process.env,KABO_CODEX_DATA:root},encoding:'utf8',input:JSON.stringify({
+        session_id:'thread-share',tool_name:'mcp__kabo__data_connector_run',tool_use_id:'call-share',
+        tool_input:{connector_id:'tiktok-search',operation:'get_video',params:{url:source_url}},
+        tool_response:{structuredContent:value},
+      }),
+    });
+    assert.equal(hook.status,0,hook.stderr);
+    const file=path.join(root,'envelope-staging/thread-share/01.json'),sidecar=file.replace('.json','.meta');
+    const meta=JSON.parse(await fs.readFile(sidecar,'utf8'));
+    assert.equal(meta.requested_url,source_url);
+    assert.deepEqual(JSON.parse(await fs.readFile(file,'utf8')),value,'hook preserves envelope');
+    const call=()=>handleRpc({id:1,method:'tools/call',params:{name:'read_link',arguments:{source_url,envelope_file:file,count:1},_meta:{threadId:'thread-share'}}},
+      {root,fetchFn:async()=>{downloads++;return new Response(png);}});
+    for(const changed of [{requested_url:undefined},{requested_url:'https://vt.tiktok.com/other/'},{request_id:'other'},{connector_id:'other'},{operation:'other'},{tool_use_id:null}]) {
+      await fs.writeFile(sidecar,JSON.stringify({...meta,...changed}));
+      assert.equal((await call()).result.isError,true);
+    }
+    assert.equal(downloads,0);
+    await fs.writeFile(sidecar,JSON.stringify(meta));
+    assert.notEqual((await call()).result.isError,true);assert.equal(downloads,1);
+    const conflict=Buffer.from(JSON.stringify({...value,params:{url:'https://vt.tiktok.com/other/'}}));
+    await fs.writeFile(file,conflict);await fs.writeFile(sidecar,JSON.stringify({...meta,bytes:conflict.length,sha256:crypto.createHash('sha256').update(conflict).digest('hex')}));
+    assert.equal((await call()).result.isError,true);assert.equal(downloads,1);
+  } finally {await fs.rm(root,{recursive:true,force:true});}
 });
 test('下载有界、不跟随跳转、不向任意主机请求，失败保留原位置',async()=>{
   assert.equal(allowedImageUrl('https://127.0.0.1/a.jpg'),false);

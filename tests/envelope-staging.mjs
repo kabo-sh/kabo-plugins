@@ -69,6 +69,22 @@ for (const host of ['claude', 'codex']) {
     assert.equal(JSON.parse(await fs.readFile(path.join(staging, '01.meta'), 'utf8')).verbatim, false);
   });
 
+  test(`${host}: request binding is limited to matching direct Kabo share requests`, async t => {
+    const {env,staging}=await setup(t);
+    const payload={...envelope('req-share'),connector_id:'tiktok-search',operation:'get_video'};
+    const event={session_id:'staging-session',tool_use_id:'call-share',tool_name:'mcp__kabo__data_connector_run',
+      tool_input:{connector_id:'tiktok-search',operation:'get_video',params:{url:'https://vm.tiktok.com/abc/'}},tool_response:{structuredContent:payload}};
+    const cases=[{tool_name:'mcp__other__data_connector_run'},{tool_use_id:null},
+      {tool_input:{...event.tool_input,operation:'search'}},
+      {tool_input:{...event.tool_input,params:{url:'https://vm.tiktok.com.evil.test/abc/'}}},{}];
+    for(let i=0;i<cases.length;i++) {
+      const result=await run(process.execPath,[hookFile],env,JSON.stringify({...event,...cases[i]}));
+      assert.equal(result.code,0,result.stderr);
+      const meta=JSON.parse(await fs.readFile(path.join(staging,String(i+1).padStart(2,'0')+'.meta'),'utf8'));
+      assert.equal(meta.requested_url,i===cases.length-1?event.tool_input.params.url:undefined);
+    }
+  });
+
   test(`${host}: host-owned saved results are recovered only within the current session`, async t => {
     const { data, env, staging } = await setup(t);
     const config = path.join(data, 'host-config');
