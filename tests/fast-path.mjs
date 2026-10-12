@@ -156,7 +156,13 @@ for (const host of ['claude', 'codex']) {
 
 test('Codex hooks.json stages PostToolUse as command and never declares unknown events', async () => {
   const hooks = JSON.parse(await fs.readFile(path.join(root, 'plugins/codex/kabo-alpha/hooks/hooks.json'), 'utf8'));
-  assert.deepEqual(Object.keys(hooks.hooks).sort(), ['PostToolUse', 'SessionStart']);
+  assert.deepEqual(Object.keys(hooks.hooks).sort(), ['PostToolUse', 'SessionStart', 'Stop']);
+  // Stop is a synchronous command event in the supported native Codex schema.
+  // Keep exact event coverage: an unknown event can disable the entire hook file.
+  const stop = hooks.hooks.Stop[0].hooks[0];
+  assert.equal(stop.type, 'command');
+  assert.match(stop.command, /report-delivery\.js$/);
+  assert.notEqual(stop.async, true);
   const persist = hooks.hooks.PostToolUse[0];
   // Both families the hook stages: the connector tools, and the aggregate `collect_*` /
   // `enrich_*` tools whose typed results it also has to reach.
