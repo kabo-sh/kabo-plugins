@@ -7,15 +7,21 @@ import { fileURLToPath } from 'node:url';
 import crypto from 'node:crypto';
 import { createInterface } from 'node:readline';
 import { dataRoot } from './lib/common.js';
-import { readLinkDefinition, readPublicLink } from './lib/link-reader.js';
+import { readLinkDefinition, readPublicLink, canonicalShareUrl } from './lib/link-reader.js';
 import { stageLinkEvidence } from './lib/stage-link-evidence.js';
 
-export async function readStagedEnvelope(file, root, threadId) {
+export async function readStagedEnvelope(file, root, threadId, onVerified) {
   if (typeof threadId !== 'string' || !/^[A-Za-z0-9_-]{1,128}$/.test(threadId)) throw new Error('missing_thread_identity');
   const base = await fs.realpath(path.join(root, 'envelope-staging'));
-  const resolved = await fs.realpath(file), relative = path.relative(base, resolved);
+  const resolveOrOpen = async action => {
+    try { return await action(); } catch (error) {
+      if (error?.code === 'ENOENT') throw new Error('staged_envelope_path_missing');
+      throw error;
+    }
+  };
+  const resolved = await resolveOrOpen(() => fs.realpath(file)), relative = path.relative(base, resolved);
   if (relative.startsWith('..') || path.isAbsolute(relative) || !relative.split(path.sep).slice(0, -1).includes(threadId) || !/^\d{2,}\.json$/.test(path.basename(resolved))) throw new Error('invalid_staged_path');
-  const handle = await fs.open(resolved, constants.O_RDONLY | constants.O_NOFOLLOW);
+  const handle = await resolveOrOpen(() => fs.open(resolved, constants.O_RDONLY | constants.O_NOFOLLOW));
   let body;
   try {
     const stat = await handle.stat();
@@ -24,6 +30,7 @@ export async function readStagedEnvelope(file, root, threadId) {
   } finally { await handle.close(); }
   const meta = JSON.parse(await fs.readFile(resolved.replace(/\.json$/, '.meta'), 'utf8'));
   if (meta.bytes !== body.length || meta.sha256 !== crypto.createHash('sha256').update(body).digest('hex')) throw new Error('staged_digest_mismatch');
+  onVerified?.(meta);
   return JSON.parse(body.toString('utf8'));
 }
 
@@ -69,7 +76,14 @@ export async function handleRpc(request, deps = {}) {
   else if (method === 'ping') result = {};
   else if (method === 'tools/list') result = { tools: [toolDefinition] };
   else if (method === 'tools/call' && params.name === 'read_link') {
-    result = params.arguments?.connector_failure !== undefined ? await reportedFailure(params.arguments) : await readPublicLink(params.arguments, { ...deps, readEnvelope: file => readStagedEnvelope(file, deps.root ?? dataRoot(), params._meta?.threadId) });
+    let verifiedMeta;
+    result = params.arguments?.connector_failure !== undefined ? await reportedFailure(params.arguments) : await readPublicLink(params.arguments, {
+      ...deps,
+      readEnvelope: file => readStagedEnvelope(file, deps.root ?? dataRoot(), params._meta?.threadId, meta => { verifiedMeta = meta; }),
+      isRequestBound: (envelope, sourceUrl) => Boolean(verifiedMeta?.tool_use_id && envelope.request_id &&
+        verifiedMeta.request_id === envelope.request_id && verifiedMeta.connector_id === envelope.connector_id &&
+        verifiedMeta.operation === envelope.operation && canonicalShareUrl(verifiedMeta.requested_url) === canonicalShareUrl(sourceUrl)),
+    });
     if (result.evidence) {
       const staged = stageLinkEvidence(deps.root ?? dataRoot(), params._meta?.threadId, result.evidence);
       result.content.push({ type: 'text', text: JSON.stringify({ evidence_file: staged.file,

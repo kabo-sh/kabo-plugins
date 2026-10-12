@@ -1,6 +1,7 @@
 // Diagnostic only: execute the actual Public hook against a loopback server and
 // freshly generated test trust. Never read host credentials or contact production.
 import assert from 'node:assert/strict';
+import fsSync from 'node:fs';
 import { spawn } from 'node:child_process';
 import crypto from 'node:crypto';
 import fs from 'node:fs/promises';
@@ -77,6 +78,10 @@ function record(name, value, expectedContent, installRoot = pluginRoot) {
   const context = value.hookSpecificOutput?.additionalContext ?? '';
   assert.ok(context.startsWith(`Before using Kabo skills on Codex, read \`${installRoot.replace(/\/$/, '')}/skills/meta-guidance/SKILL.md\`.`));
   assert.ok(context.length <= common.MAX_ADDITIONAL_CONTEXT_CHARS);
+  const localDelivery = fsSync.readFileSync(path.join(installRoot, 'skills/meta-guidance/SKILL.md'), 'utf8')
+    .split('\n').find(line => line.startsWith('- **Validated report passthrough**:'));
+  assert.ok(localDelivery && context.includes(localDelivery), `${name}: local delivery rule was lost`);
+  assert.ok(context.indexOf(localDelivery) < context.indexOf(common.GUIDANCE_BEGIN) || !context.includes(common.GUIDANCE_BEGIN));
   const start = context.indexOf(common.GUIDANCE_BEGIN), end = context.indexOf(common.GUIDANCE_END);
   const extracted = start >= 0 && end > start ? context.slice(start + common.GUIDANCE_BEGIN.length + 1, end - 1) : null;
   assert.equal(extracted, expectedContent, `${name}: signature/fallback behavior changed`);
