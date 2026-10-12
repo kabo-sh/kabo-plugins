@@ -281,7 +281,7 @@ if (staged) {
   const binding = { skill: fs.realpathSync(skillDir), checksum: readJsonSilent(path.join(skillDir, '.meta.json'))?.checksum, manifest: sha256hex(fs.readFileSync(path.join(skillDir, 'manifest.json'))) };
   if (typeof binding.checksum !== 'string') refuse('staged execution requires signed package metadata');
   stageState = readJsonSilent(stageStateFile);
-  if (fs.existsSync(stageStateFile) && (!stageState || stageState.status !== 'running')) refuse('this staged run is closed or its stage record is unreadable; reserve a new run');
+  if (fs.existsSync(stageStateFile) && (!stageState || stageState.status !== 'running')) refuse('this staged run is closed or its stage record is unreadable; preserve artifacts and stop; do not retry or reserve a replacement for this attempt');
   if (stageState && (stageState.skill !== binding.skill || stageState.manifest !== binding.manifest || stageState.checksum !== binding.checksum)) refuse('a staged run cannot switch skill packages');
   const record = readJsonSilent(path.join(runDir, 'run-manifest.json'));
   const skillManifest = readJsonSilent(path.join(skillDir, 'manifest.json'));
@@ -683,6 +683,7 @@ out(`run-manifest: ${runId} → run-manifest.json\n`);
 
 if (failure !== null) {
   console.error(failure);
+  console.error('preserve artifacts and stop; do not retry or reserve a replacement for this attempt');
   process.exit(1);
 }
 process.exit(0);

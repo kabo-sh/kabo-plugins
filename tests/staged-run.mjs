@@ -163,8 +163,15 @@ for (const host of ['claude', 'codex']) {
       assert.doesNotMatch(failed.stdout, /creator_report:/);
       assert.equal((await record(runId)).status, 'failed');
       assert.ok((await record(runId)).finished_at);
+      assert.match(failed.stderr, /preserve artifacts and stop; do not retry or reserve a replacement for this attempt/);
+      const final = await record(runId);
+      const runs = await fs.readdir(path.join(data, 'work'));
       const replay = await bin('kabo-run-pipeline', [...args(runId), '--continue', '--step', 'touch {run}/SHOULD-NOT-RUN']);
       assert.equal(replay.code, 1);
+      assert.match(replay.stderr, /preserve artifacts and stop/);
+      assert.doesNotMatch(replay.stderr, /reserve a new run/);
+      assert.deepEqual(await record(runId), final);
+      assert.deepEqual(await fs.readdir(path.join(data, 'work')), runs);
       await assert.rejects(fs.stat(path.join(data, 'work', runId, 'SHOULD-NOT-RUN')), { code: 'ENOENT' });
     });
 
