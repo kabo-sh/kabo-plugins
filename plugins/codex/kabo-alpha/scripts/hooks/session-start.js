@@ -54,7 +54,9 @@ const REQUEST_TIMEOUT_MS = 3000; // session startup path: better to come back em
 /** Load this installed host's mechanics before interpreting cross-host signed guidance. */
 function buildHostGuidanceSection() {
   const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..');
-  return `Before using Kabo skills on Codex, read \`${root}/skills/meta-guidance/SKILL.md\`. Its Codex client deltas define this installed version's local cache, tools, authorization and runner mechanics; apply them when interpreting the signed platform guidance. Never bypass signature verification or revocation checks.`;
+  const paths = JSON.stringify({ data_root: dataRoot(), execution_conventions: executionConventionsPath() })
+    .replace(/[<>&`\u2028\u2029]/g, char => `\\u${char.charCodeAt(0).toString(16).padStart(4, '0')}`);
+  return `Before using Kabo skills on Codex, read \`${root}/skills/meta-guidance/SKILL.md\`. Its Codex client deltas define this installed version's local cache, tools, authorization and runner mechanics; apply them when interpreting the signed platform guidance. Active Codex data paths (JSON): ${paths}. Never bypass signature verification or revocation checks.`;
 }
 
 /**

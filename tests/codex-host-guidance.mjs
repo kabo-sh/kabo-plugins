@@ -47,16 +47,18 @@ const signed = content => {
 /** Give each cold-path case its own disposable test trust, never host trust. */
 async function dataDir(name) {
   const directory = path.join(scratch, name);
-  await fs.mkdir(directory, { mode: 0o700 });
+  await fs.mkdir(directory, { recursive: true, mode: 0o700 });
   await fs.writeFile(path.join(directory, `public-keys.${common.sha256hex(endpoint).slice(0, 16)}.json`),
     JSON.stringify({ issued_at: null, keys: [{ kid, public_key_pem: pem }] }), { mode: 0o600 });
   return directory;
 }
 /** Exercise the real hook with only isolated storage and the loopback endpoint. */
-function hook(directory, installRoot = pluginRoot) {
+const hookRoots = new WeakMap();
+function hook(directory, installRoot = pluginRoot, { home, defaultRoot = false } = {}) {
   return new Promise((resolve, reject) => {
     const child = spawn(process.execPath, [path.join(installRoot, 'scripts/hooks/session-start.js')], {
-      env: { PATH: process.env.PATH, KABO_CODEX_DATA: directory, KABO_API_ENDPOINT: endpoint },
+      env: { PATH: process.env.PATH, ...(home ? { HOME: home } : {}),
+        ...(!defaultRoot ? { KABO_CODEX_DATA: directory } : {}), KABO_API_ENDPOINT: endpoint },
       stdio: ['pipe', 'pipe', 'pipe'],
     });
     let stdout = '', stderr = '';
@@ -66,7 +68,12 @@ function hook(directory, installRoot = pluginRoot) {
     child.once('error', error => { clearTimeout(watchdog); reject(error); });
     child.once('close', code => {
       clearTimeout(watchdog);
-      try { assert.equal(code, 0, stderr); resolve(JSON.parse(stdout)); } catch (error) { reject(error); }
+      try {
+        assert.equal(code, 0, stderr);
+        const value = JSON.parse(stdout);
+        hookRoots.set(value, directory);
+        resolve(value);
+      } catch (error) { reject(error); }
     });
     child.stdin.end('{}');
   });
@@ -77,6 +84,13 @@ function record(name, value, expectedContent, installRoot = pluginRoot) {
   const context = value.hookSpecificOutput?.additionalContext ?? '';
   assert.ok(context.startsWith(`Before using Kabo skills on Codex, read \`${installRoot.replace(/\/$/, '')}/skills/meta-guidance/SKILL.md\`.`));
   assert.ok(context.length <= common.MAX_ADDITIONAL_CONTEXT_CHARS);
+  const resolved = context.match(/Active Codex data paths \(JSON\): (.+?)\. Never bypass/);
+  assert.ok(resolved, `${name}: resolved paths missing`);
+  assert.deepEqual(JSON.parse(resolved[1]), {
+    data_root: hookRoots.get(value),
+    execution_conventions: path.join(hookRoots.get(value), 'execution-conventions.md'),
+  }, `${name}: bootstrap must expose the hook's actual paths`);
+  assert.doesNotMatch(resolved[1], /[<>&`\u2028\u2029]/, `${name}: path JSON must remain display safe`);
   const start = context.indexOf(common.GUIDANCE_BEGIN), end = context.indexOf(common.GUIDANCE_END);
   const extracted = start >= 0 && end > start ? context.slice(start + common.GUIDANCE_BEGIN.length + 1, end - 1) : null;
   assert.equal(extracted, expectedContent, `${name}: signature/fallback behavior changed`);
@@ -84,6 +98,7 @@ function record(name, value, expectedContent, installRoot = pluginRoot) {
     case: name, signed_content_present: extracted !== null,
     codex_host_bootstrap_present: /Codex client deltas|skills\/meta-guidance\/SKILL\.md/.test(context),
     context_characters: context.length,
+    resolved_paths_roundtrip: true,
     system_message: value.systemMessage,
   });
 }
@@ -95,11 +110,33 @@ try {
   mode = 'offline';
   record('verified-cache-fallback', await hook(warm), content);
   record('offline-no-guidance-cache', await hook(await dataDir('cold')), null);
+  const isolatedHome = path.join(scratch, 'isolated-home');
+  const defaultDirectory = await dataDir('isolated-home/.kabo/codex');
+  record('default-root-isolated-home', await hook(defaultDirectory, pluginRoot,
+    { home: isolatedHome, defaultRoot: true }), null);
   mode = 'valid';
   current = { ...signed(content), content: `${content}TAMPERED` };
   record('tampered-guidance-without-cache', await hook(await dataDir('tampered')), null);
   current = signed('x'.repeat(common.MAX_ADDITIONAL_CONTEXT_CHARS + 100));
   record('oversize-guidance-rejected-by-verifier', await hook(await dataDir('oversize')), null);
+  const special = await dataDir('special 空格 "quote" \\ newline\n`<>&\u2028\u2029');
+  current = signed(content);
+  record('custom-root-special-characters', await hook(special), content);
+  const boundary = await dataDir(path.join('budget-'.repeat(32), 'boundary-'.repeat(15)));
+  const probe = await hook(boundary);
+  record('context-budget-probe', probe, content);
+  const exactContent = 'b'.repeat(content.length + common.MAX_ADDITIONAL_CONTEXT_CHARS
+    - probe.hookSpecificOutput.additionalContext.length);
+  assert.ok(exactContent.length > 0 && exactContent.length <= 8000);
+  current = signed(exactContent);
+  const exact = await hook(boundary);
+  record('exact-context-budget-keeps-complete-signed-body', exact, exactContent);
+  assert.equal(exact.hookSpecificOutput.additionalContext.length, common.MAX_ADDITIONAL_CONTEXT_CHARS);
+  current = signed(`${exactContent}x`);
+  const overflow = await hook(boundary);
+  record('one-character-context-overflow-keeps-paths-drops-whole-body', overflow, null);
+  assert.match(overflow.systemMessage, /dynamic guidance too long/);
+  assert.doesNotMatch(overflow.hookSpecificOutput.additionalContext, /b{20}/);
   const crowded = await dataDir('crowded');
   current = signed('x'.repeat(8000));
   const entries = Array.from({ length: 10 }, (_, index) => ({ event: 'skill_verify_fail',
