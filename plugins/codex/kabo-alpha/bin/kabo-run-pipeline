@@ -384,7 +384,7 @@ const values = {
   language: opts.language,
 };
 const echoValues = {
-  stage_input: '{run}/owner/stage-inputs/input.json',
+  stage_input: `{run}/owner/stage-inputs/${opts.stage}.json`,
   run: '{run}',
   skill: '{skill}',
   plugin: '{plugin}',

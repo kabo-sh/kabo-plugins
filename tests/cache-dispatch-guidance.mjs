@@ -16,6 +16,7 @@ test('both CLI clients read verified cache dispatch fields without changing sign
     const shared = source.indexOf(marker);
     assert.ok(start >= 0 && shared > start, 'local cache mechanics precede the shared signed snapshot');
     const section = source.slice(start, shared).trim();
+    const localMechanics = source.slice(0, shared);
     if (index === 0) {
       assert.match(section, /After `skill-verify <dir>` exits successfully on a cache hit, read that verified directory's `manifest\.json` once before dispatch/);
       assert.match(section, /Verification output alone is not a manifest digest/);
@@ -24,9 +25,9 @@ test('both CLI clients read verified cache dispatch fields without changing sign
       assert.match(section, /cold download keeps its existing unpack-and-verify digest flow/);
     } else {
       assert.match(section, /`prepare_skill`'s verified manifest for both cache hits and downloads/);
-      assert.match(source, /Require terminal `exit_code: 0` and `verified: true` before dispatch/);
-      assert.match(source, /verification failure or unavailable local runtime tool stops this evidence path/);
-      assert.match(source, /never redownload, manually unpack, reverify, or execute afterward/);
+      assert.match(localMechanics, /Require terminal `exit_code: 0` and `verified: true` before dispatch/);
+      assert.match(localMechanics, /verification failure or unavailable local runtime tool stops this evidence path/);
+      assert.match(localMechanics, /never redownload, manually unpack, reverify, or execute afterward/);
       assert.match(section, /perform a second verification/);
     }
     for (const field of ['execution', 'pipeline', 'pipeline_operations', 'required.tools', 'min_plugin_version']) {
