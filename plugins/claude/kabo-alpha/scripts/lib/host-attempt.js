@@ -52,7 +52,9 @@ function indexFor(binding, root) {
   const scope = scopeOf(binding.host_scope);
   const base = path.join(root, 'runtime-attempts');
   ensureDirectory(base);
-  return path.join(base, `${sha(JSON.stringify([scope.session_id, scope.turn_id, binding.skill_id]))}.json`);
+  const turn = path.join(base, sha(JSON.stringify([scope.session_id, scope.turn_id])));
+  ensureDirectory(turn);
+  return path.join(turn, `${sha(binding.skill_id)}.json`);
 }
 function bindingFor(prepared, runId) {
   check(prepared.verified === true && token.test(prepared.id ?? '') && token.test(runId ?? ''), 'attempt_preparation_invalid');
@@ -125,4 +127,27 @@ export function readCompletedReport({ runDir, runId, hostScope, root = dataRoot(
   const text = new TextDecoder('utf-8', { fatal: true, ignoreBOM: true }).decode(bytes);
   check(text.trim().length > 0, 'report_empty');
   return { run_id: runId, stage: stageName, path: file, sha256: digest, bytes: bytes.length, text };
+}
+
+
+// Stop only checks reports that actually completed in this native turn. It does not
+// turn a legitimate clarification or a failed/partial run into a completion demand.
+export function completedReportsForScope({ hostScope, root = dataRoot(), workRoot }) {
+  const scope = scopeOf(hostScope), attempts = path.join(root, 'runtime-attempts');
+  const base = path.join(attempts, sha(JSON.stringify([scope.session_id, scope.turn_id])));
+  if (!fs.existsSync(base)) return [];
+  privateStat(root, true); privateStat(attempts, true); privateStat(base, true); privateStat(workRoot, true);
+  const reports = [];
+  for (const name of fs.readdirSync(base)) {
+    if (!/^[a-f0-9]{64}\.json$/.test(name)) continue;
+    const binding = read(path.join(base, name));
+    if (!equal(binding.host_scope, scope)) continue;
+    check(token.test(binding.run_id ?? ''), 'report_attempt_identity_invalid');
+    const runDir = path.join(workRoot, binding.run_id);
+    privateStat(runDir, true);
+    const record = read(path.join(runDir, 'run-manifest.json'));
+    if (record.status !== 'ok') continue;
+    reports.push(readCompletedReport({ runDir, runId: binding.run_id, hostScope: scope, root }));
+  }
+  return reports;
 }

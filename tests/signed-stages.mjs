@@ -42,6 +42,7 @@ for(const host of ['codex','claude']) test(`${host}: real signed stages bind JSO
  const reserve=async(scope)=>{const r=await bin('kabo-run-dir',['--skill',skill]);assert.equal(r.code,0,r.stderr);const runId=r.stdout.trim();bindRunAttempt({prepared:{id,verified:true,skill_directory:skill,checksum,manifest_sha256:hash(rawManifest),host_scope:scope??{session_id:'mechanism-fixture',turn_id:`independent-case-${++fixtureTurn}`}},runDir:path.join(data,'work',runId),runId,root:data});return runId;};
  const work=r=>path.join(data,'work',r),call=(r,args)=>bin('kabo-run-pipeline',['--run-id',r,'--skill',skill,...args]);
  const receipt=async(r,stage,body={literal:"引号' $() `not code`"})=>{const folder=path.join(work(r),'owner','stage-inputs');await fs.mkdir(folder,{recursive:true,mode:0o700});const input=path.join(folder,`${stage}.json`),out=path.join(folder,`${stage}.receipt.json`);const bytes=Buffer.from(JSON.stringify(body));await fs.writeFile(input,bytes,{flag:'wx',mode:0o600});await fs.writeFile(out,JSON.stringify({format_version:1,run_id:r,skill,checksum,manifest:hash(rawManifest),stage,input_file:input,input_sha256:hash(bytes)}),{flag:'wx',mode:0o600});return out;};
+ const {checkReportDelivery}=await import(pathToFileURL(path.join(plugin,'scripts/hooks/report-delivery.js')));
  const r=await reserve();
  await t.test('rejects caller commands, reports, continuation, missing stage/input and out-of-order final',async()=>{
   for(const flags of [['--step','touch BYPASS'],['--stage','prepare','--continue'],['--stage','finish','--report','done.md'],['--stage','prepare'],[],['--stage','finish']]){const result=await call(r,flags);assert.notEqual(result.code,0,result.stdout);}
@@ -85,6 +86,15 @@ for(const host of ['codex','claude']) test(`${host}: real signed stages bind JSO
   const rpc=argumentsValue=>handleRpc({jsonrpc:'2.0',id:1,method:'tools/call',params:{name:'read_report',arguments:argumentsValue,_meta:{threadId:scope.session_id,'x-codex-turn-metadata':{turn_id:scope.turn_id}}}},{dataRoot:data,workRoot:path.join(data,'work')});
   assert.equal((await rpc({run_id:r})).result.structuredContent.text,original.toString('utf8'));
   assert.equal((await rpc({run_id:r,path:'/etc/passwd'})).result.isError,true);
+  const event={hook_event_name:'Stop',...scope,last_assistant_message:'Done.',stop_hook_active:false};
+  assert.equal(checkReportDelivery(event,{root:data,workRoot:path.join(data,'work')}).decision,'block');
+  assert.deepEqual(checkReportDelivery({...event,last_assistant_message:original.toString('utf8')},{root:data,workRoot:path.join(data,'work')}),{});
+  assert.deepEqual(checkReportDelivery({...event,turn_id:'unrelated-clarification'},{root:data,workRoot:path.join(data,'work')}),{});
+  const second=checkReportDelivery({...event,stop_hook_active:true},{root:data,workRoot:path.join(data,'work')});
+  assert.equal(second.continue,false);assert.match(second.stopReason,/incomplete/);
+  const failedRecord=JSON.parse(record);failedRecord.status='failed';await fs.writeFile(recordFile,JSON.stringify(failedRecord));
+  assert.deepEqual(checkReportDelivery(event,{root:data,workRoot:path.join(data,'work')}),{});await fs.writeFile(recordFile,record);
+
  });
  await t.test('failure closes the run and rejects later stages and explicit bypass',async()=>{
   const linked=await reserve(),outside=path.join(data,'outside-state.json');await fs.writeFile(outside,'{"sentinel":true}',{mode:0o600});await fs.symlink(outside,path.join(work(linked),'.pipeline-stages.json'));assert.notEqual((await call(linked,['--stage','fail'])).code,0);assert.equal(await fs.readFile(outside,'utf8'),'{"sentinel":true}');

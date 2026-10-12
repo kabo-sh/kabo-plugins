@@ -52,7 +52,8 @@ test('attempt index changes and local binding substitutions are rejected before 
   const f = fixture(t);
   const prepared = f.prepared, runDir = f.run('r1');
   bindRunAttempt({ prepared, runDir, runId: 'r1', root: f.root });
-  const index = path.join(f.root, 'runtime-attempts', fs.readdirSync(path.join(f.root, 'runtime-attempts'))[0]);
+  const turn = path.join(f.root, 'runtime-attempts', fs.readdirSync(path.join(f.root, 'runtime-attempts'))[0]);
+  const index = path.join(turn, fs.readdirSync(turn)[0]);
   const expected = fs.readFileSync(index);
   fs.writeFileSync(index, JSON.stringify({ ...JSON.parse(expected), run_id: 'other' }));
   const check = () => assertRunAttempt({ runDir, runId: 'r1', skillDir: f.skill,
