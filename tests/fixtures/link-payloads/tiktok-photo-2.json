@@ -1,0 +1,52 @@
+{
+ "connector_id": "tiktok-search",
+ "operation": "get_video",
+ "captured_at": "20261012T151139",
+ "data": {
+  "video": {
+   "aweme_id": "7671344430384827670",
+   "aweme_type": 150,
+   "desc": "#retrac #fortnite #setup #retracisnotavirus ",
+   "author": {
+    "unique_id": "nexywtw",
+    "secret": 0
+   },
+   "status": {
+    "private_status": 0
+   },
+   "statistics": {
+    "play_count": 372680,
+    "digg_count": 28899,
+    "comment_count": 862
+   },
+   "image_post_info": {
+    "images": [
+     {
+      "display_image": {
+       "url_list": [
+        "https://p16-common-sign.tiktokcdn-us.com/tos-no1a-i-photomode-no/a889f7ed4ba34f68a39c666c6fb1aeb2~tplv-photomode-sr-vqe2-new:1440:0:1080:0:q80.heic",
+        "https://p16-common-sign.tiktokcdn-us.com/tos-no1a-i-photomode-no/a889f7ed4ba34f68a39c666c6fb1aeb2~tplv-photomode-sr-vqe2-new:1440:0:1080:0:q80.jpeg"
+       ]
+      }
+     },
+     {
+      "display_image": {
+       "url_list": [
+        "https://p16-common-sign.tiktokcdn-us.com/tos-no1a-i-photomode-no/6893e2d137384aeb89f70757a64e74dc~tplv-photomode-sr-vqe2-new:1440:0:1080:0:q80.heic",
+        "https://p16-common-sign.tiktokcdn-us.com/tos-no1a-i-photomode-no/6893e2d137384aeb89f70757a64e74dc~tplv-photomode-sr-vqe2-new:1440:0:1080:0:q80.jpeg"
+       ]
+      }
+     }
+    ]
+   },
+   "video": {
+    "duration": 0,
+    "play_addr": {
+     "url_list": [
+      "https://v16m.tiktokcdn-us.com/715eb8d94566d3b975dd7adc45d02994/6ad6333b/video/tos/useast8/tos-useast8-v-27dcd7-tx2/ogqsI59UCDEXAAGJFRJBfFCeSEVCaMk7JsNraG/"
+     ]
+    }
+   }
+  }
+ }
+}

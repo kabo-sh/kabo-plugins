@@ -1,4 +1,8 @@
 // URL/media contract adapted from Web Agent PR120 (3786368). No network or credentials.
+// TikTok 用户名允许点号开头或结尾（真实数据里有 @..name、@.name）。帖子按原链接读取，
+// 可以接住；账号接口的 unique_id 契约仍不收点号开头，账号路由沿用契约规则。
+const TIKTOK_HANDLE_PATH = /^@[A-Za-z0-9_.]{1,24}$/;
+const TIKTOK_ACCOUNT_PATH = /^@[A-Za-z0-9_][A-Za-z0-9_.]{0,23}$/;
 // Agent 只做纯 URL 路由；真实媒体类型来自现有数据接口，不自行请求跳转或供应商。
 export function identifyPublicLink(input) {
     const result = {
@@ -55,7 +59,7 @@ export function identifyPublicLink(input) {
             return route("tiktok-search", "get_video", { url: url.href });
         }
         if (path.length === 3 &&
-            /^@[A-Za-z0-9_][A-Za-z0-9_.]{0,23}$/.test(path[0]) &&
+            TIKTOK_HANDLE_PATH.test(path[0]) &&
             ["video", "photo"].includes(path[1]) &&
             /^\d{1,32}$/.test(path[2])) {
             result.resource_kind = "post";
@@ -64,7 +68,7 @@ export function identifyPublicLink(input) {
             return route("tiktok-search", "get_video", { url: url.href });
         }
         if (path.length === 1 &&
-            /^@[A-Za-z0-9_][A-Za-z0-9_.]{0,23}$/.test(path[0])) {
+            TIKTOK_ACCOUNT_PATH.test(path[0])) {
             result.resource_kind = "account";
             result.resource_id = path[0].slice(1);
             return route("tiktok-discovery", "get_profile", {
@@ -75,13 +79,20 @@ export function identifyPublicLink(input) {
     }
     if (["instagram.com", "www.instagram.com", "m.instagram.com"].includes(host)) {
         result.platform = "instagram";
-        if (path.length === 2 &&
-            ["p", "reel", "reels", "tv"].includes(path[0]) &&
-            /^[A-Za-z0-9_-]+$/.test(path[1])) {
+        // /<用户名>/p/<码>/ 是 Instagram 的另一种帖子地址，Kabo 自己的 list_posts 也输出这种形状。
+        const postPath = path.length === 3 && /^[A-Za-z0-9._]{1,30}$/.test(path[0])
+            ? path.slice(1)
+            : path;
+        if (postPath.length === 2 &&
+            ["p", "reel", "reels", "tv"].includes(postPath[0]) &&
+            /^[A-Za-z0-9_-]+$/.test(postPath[1])) {
             result.resource_kind = "post";
-            result.resource_id = path[1];
-            result.media_type_hint = path[0] === "p" ? "unknown" : "video";
-            return route("instagram-discovery", "get_post", { url: url.href });
+            result.resource_id = postPath[1];
+            result.media_type_hint = postPath[0] === "p" ? "unknown" : "video";
+            const href = postPath === path
+                ? url.href
+                : `https://www.instagram.com/${postPath[0]}/${postPath[1]}/`;
+            return route("instagram-discovery", "get_post", { url: href });
         }
         if (path.length === 1 &&
             /^[A-Za-z0-9._]{1,30}$/.test(path[0]) &&
@@ -140,20 +151,30 @@ export function identifyPublicLink(input) {
     }
     return officialOrUnknown();
 }
+// Instagram 有两代类型名：旧的 Graph*，以及至少从 2026-09 起为主的 XDTGraph*。
+// 类型名只当一条线索；is_video / product_type 是更直接的视频依据。
+function instagramMediaType(post) {
+    const kind = typeof post.__typename === "string"
+        ? post.__typename.replace(/^XDT/, "")
+        : null;
+    if (kind === "GraphVideo" ||
+        post.is_video === true ||
+        post.product_type === "clips" ||
+        post.product_type === "igtv")
+        return "video";
+    if (kind === "GraphSidecar")
+        return "image_carousel";
+    if (kind === "GraphImage")
+        return "image";
+    return "unknown";
+}
 // 只采信上游明确的媒体结构；轮播缺一项仍保留原位置，单张封面不当成整套图片。
 export function instagramPostMedia(sourceUrl, raw) {
     const obj = (v) => v !== null && typeof v === "object" && !Array.isArray(v)
         ? v
         : {};
     const post = obj(raw);
-    const kind = post.__typename;
-    const type = kind === "GraphSidecar"
-        ? "image_carousel"
-        : kind === "GraphImage"
-            ? "image"
-            : kind === "GraphVideo"
-                ? "video"
-                : "unknown";
+    const type = instagramMediaType(post);
     const edge = obj(post.edge_sidecar_to_children);
     const items = type === "image_carousel" && Array.isArray(edge.edges)
         ? edge.edges.map((v) => obj(v).node)
@@ -186,8 +207,11 @@ export function instagramPostMedia(sourceUrl, raw) {
         caption: typeof caption === "string" ? caption : null,
         metrics: {
             likes: obj(post.edge_media_preview_like).count ?? null,
-            comments: obj(post.edge_media_to_comment).count ?? null,
-            views: post.video_view_count ?? null,
+            comments: post.comment_count ??
+                obj(post.edge_media_to_parent_comment).count ??
+                obj(post.edge_media_to_comment).count ??
+                null,
+            views: post.video_play_count ?? post.video_view_count ?? null,
         },
         slides,
         returned_count: slides.length,
@@ -226,7 +250,7 @@ export function tiktokPostMedia(sourceUrl, raw) {
         const media_url = candidates.find(u => /\.jpe?g(?:\?|$)/i.test(u)) ?? candidates[0] ?? null;
         return { index: index + 1, media_url, fetch_status: media_url ? "available" : "missing" };
     }) : [];
-    const handle = typeof author.unique_id === "string" && /^[A-Za-z0-9_][A-Za-z0-9_.]{0,23}$/.test(author.unique_id) ? author.unique_id : null;
+    const handle = typeof author.unique_id === "string" && TIKTOK_HANDLE_PATH.test(`@${author.unique_id}`) ? author.unique_id : null;
     return {
         original_url: sourceUrl,
         resolved_url: available && handle ? `https://www.tiktok.com/@${handle}/${photo ? "photo" : "video"}/${id}` : null,

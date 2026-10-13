@@ -1,0 +1,34 @@
+{
+ "connector_id": "instagram-discovery",
+ "operation": "get_post",
+ "captured_at": "20261013T094114",
+ "data": {
+  "post": {
+   "__typename": "XDTGraphVideo",
+   "shortcode": "DZYr1DsjUDV",
+   "is_video": true,
+   "product_type": "clips",
+   "video_duration": 47.738,
+   "video_play_count": 177,
+   "comment_count": 1,
+   "display_url": "https://scontent-phl2-1.cdninstagram.com/v/t51.82787-15/727799695_18595741999019729_4659222775021759847_n.jpg",
+   "edge_media_preview_like": {
+    "count": 17
+   },
+   "edge_media_to_parent_comment": {
+    "count": 1
+   },
+   "edge_media_to_caption": {
+    "edges": [
+     {
+      "node": {
+       "id": "3916072638099570901",
+       "text": "Proud to take the stage at @websummit Rio 2026 as a speaker in the Breakout Startups Showcase. 🚀\n\nFrom the mic checks and final run-throughs backstage to sharing Dealism’s vision in front of a global audience, every moment reminded me that great products are never built alone. \n\nA huge thank you to the Web Summit team, the production crew, our partners, customers, and everyone working behind the scenes to make this experience possible.\n\nThis is just the beginning! 🇧🇷✨\n\n#WebSummitRio #BreakoutStartups #dealism",
+       "created_at": "1781052297"
+      }
+     }
+    ]
+   }
+  }
+ }
+}

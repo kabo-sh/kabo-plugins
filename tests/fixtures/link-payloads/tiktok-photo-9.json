@@ -1,0 +1,108 @@
+{
+ "connector_id": "tiktok-search",
+ "operation": "get_video",
+ "captured_at": "20261013T092739",
+ "data": {
+  "video": {
+   "aweme_id": "7690195386924961044",
+   "aweme_type": 150,
+   "desc": "Service 8/10 - waiter wasn’t friendly at first but he came around Ambience 100/10 Food 1000/10 - the most amazing prawns and mussels. Highly recommend    . #thenines #capetownresturants #seapoint #datenight #girlsnightout ",
+   "author": {
+    "unique_id": "leighratwo_",
+    "secret": 0
+   },
+   "status": {
+    "private_status": 0
+   },
+   "statistics": {
+    "play_count": 1144,
+    "digg_count": 63,
+    "comment_count": 6
+   },
+   "image_post_info": {
+    "images": [
+     {
+      "display_image": {
+       "url_list": [
+        "https://p16-common-sign.tiktokcdn-us.com/tos-alisg-i-photomode-sg/dfdaa08ec8bf4d43b50aacf2214d7d48~tplv-photomode-shrink-v1:1080:0:q80.heic",
+        "https://p16-common-sign.tiktokcdn-us.com/tos-alisg-i-photomode-sg/dfdaa08ec8bf4d43b50aacf2214d7d48~tplv-photomode-shrink-v1:1080:0:q80.jpeg"
+       ]
+      }
+     },
+     {
+      "display_image": {
+       "url_list": [
+        "https://p16-common-sign.tiktokcdn-us.com/tos-alisg-i-photomode-sg/d0d0e8fbbb934bd2bfc81dbc1a037fbf~tplv-photomode-shrink-v1:1080:0:q80.heic",
+        "https://p16-common-sign.tiktokcdn-us.com/tos-alisg-i-photomode-sg/d0d0e8fbbb934bd2bfc81dbc1a037fbf~tplv-photomode-shrink-v1:1080:0:q80.jpeg"
+       ]
+      }
+     },
+     {
+      "display_image": {
+       "url_list": [
+        "https://p16-common-sign.tiktokcdn-us.com/tos-alisg-i-photomode-sg/684c02e167ac4c62af11d1ba2ff926a6~tplv-photomode-shrink-v1:1080:0:q80.heic",
+        "https://p16-common-sign.tiktokcdn-us.com/tos-alisg-i-photomode-sg/684c02e167ac4c62af11d1ba2ff926a6~tplv-photomode-shrink-v1:1080:0:q80.jpeg"
+       ]
+      }
+     },
+     {
+      "display_image": {
+       "url_list": [
+        "https://p16-common-sign.tiktokcdn-us.com/tos-alisg-i-photomode-sg/19b5c19658024460aaf2005d5ce522fd~tplv-photomode-shrink-v1:1080:0:q80.heic",
+        "https://p16-common-sign.tiktokcdn-us.com/tos-alisg-i-photomode-sg/19b5c19658024460aaf2005d5ce522fd~tplv-photomode-shrink-v1:1080:0:q80.jpeg"
+       ]
+      }
+     },
+     {
+      "display_image": {
+       "url_list": [
+        "https://p16-common-sign.tiktokcdn-us.com/tos-alisg-i-photomode-sg/94e88b2271ee49d2a3d67fc359199b18~tplv-photomode-shrink-v1:1080:0:q80.heic",
+        "https://p16-common-sign.tiktokcdn-us.com/tos-alisg-i-photomode-sg/94e88b2271ee49d2a3d67fc359199b18~tplv-photomode-shrink-v1:1080:0:q80.jpeg"
+       ]
+      }
+     },
+     {
+      "display_image": {
+       "url_list": [
+        "https://p16-common-sign.tiktokcdn-us.com/tos-alisg-i-photomode-sg/4a248ec9212d448ab29dd729e62897ad~tplv-photomode-shrink-v1:1080:0:q80.heic",
+        "https://p16-common-sign.tiktokcdn-us.com/tos-alisg-i-photomode-sg/4a248ec9212d448ab29dd729e62897ad~tplv-photomode-shrink-v1:1080:0:q80.jpeg"
+       ]
+      }
+     },
+     {
+      "display_image": {
+       "url_list": [
+        "https://p16-common-sign.tiktokcdn-us.com/tos-alisg-i-photomode-sg/95287c3b8ff149aeb00fa8e99911003c~tplv-photomode-shrink-v1:1080:0:q80.heic",
+        "https://p16-common-sign.tiktokcdn-us.com/tos-alisg-i-photomode-sg/95287c3b8ff149aeb00fa8e99911003c~tplv-photomode-shrink-v1:1080:0:q80.jpeg"
+       ]
+      }
+     },
+     {
+      "display_image": {
+       "url_list": [
+        "https://p16-common-sign.tiktokcdn-us.com/tos-alisg-i-photomode-sg/b88aca11477e4eaaa0732ded90da0cf0~tplv-photomode-shrink-v1:1080:0:q80.heic",
+        "https://p16-common-sign.tiktokcdn-us.com/tos-alisg-i-photomode-sg/b88aca11477e4eaaa0732ded90da0cf0~tplv-photomode-shrink-v1:1080:0:q80.jpeg"
+       ]
+      }
+     },
+     {
+      "display_image": {
+       "url_list": [
+        "https://p16-common-sign.tiktokcdn-us.com/tos-alisg-i-photomode-sg/476de65ea94a47d799d27b14020b012a~tplv-photomode-shrink-v1:1080:0:q80.heic",
+        "https://p16-common-sign.tiktokcdn-us.com/tos-alisg-i-photomode-sg/476de65ea94a47d799d27b14020b012a~tplv-photomode-shrink-v1:1080:0:q80.jpeg"
+       ]
+      }
+     }
+    ]
+   },
+   "video": {
+    "duration": 0,
+    "play_addr": {
+     "url_list": [
+      "https://v45.tiktokcdn-us.com/0535cc807180a203fb8711f04a5b39d9/6ad732db/video/tos/useast2a/tos-useast2a-v-27dcd7/oofKTonkIeC4MBBVaNDJTSUzBZILbJJ5k8PtQz/"
+     ]
+    }
+   }
+  }
+ }
+}

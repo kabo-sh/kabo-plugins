@@ -1,0 +1,72 @@
+{
+ "connector_id": "instagram-discovery",
+ "operation": "get_post",
+ "captured_at": "20261013T093817",
+ "data": {
+  "post": {
+   "__typename": "XDTGraphSidecar",
+   "shortcode": "DZ6HAQUAQDX",
+   "is_video": false,
+   "product_type": null,
+   "video_duration": null,
+   "comment_count": 1,
+   "display_url": "https://scontent-sjc6-1.cdninstagram.com/v/t39.30808-6/729729961_1229249753596641_6141908226307412950_n.jpg",
+   "edge_media_preview_like": {
+    "count": 8
+   },
+   "edge_media_to_parent_comment": {
+    "count": 1
+   },
+   "edge_media_to_caption": {
+    "edges": [
+     {
+      "node": {
+       "id": "3925480829047865559",
+       "text": "Great conversations with founders, operators, and AI builders at the Gemini Startup Forum. \n\nLeaving with fresh insights, meaningful connections, and even more conviction about the future we’re building at Dealism. 🚀\n\n#Gemini #GeminiStartupForum #GoogleForStartups #AI",
+       "created_at": "1782173802"
+      }
+     }
+    ]
+   },
+   "edge_sidecar_to_children": {
+    "edges": [
+     {
+      "node": {
+       "__typename": "XDTGraphImage",
+       "is_video": false,
+       "display_url": "https://scontent-sjc6-1.cdninstagram.com/v/t39.30808-6/729729961_1229249753596641_6141908226307412950_n.jpg"
+      }
+     },
+     {
+      "node": {
+       "__typename": "XDTGraphImage",
+       "is_video": false,
+       "display_url": "https://scontent-sjc3-1.cdninstagram.com/v/t39.30808-6/729769205_1229249740263309_8480809079464846216_n.jpg"
+      }
+     },
+     {
+      "node": {
+       "__typename": "XDTGraphImage",
+       "is_video": false,
+       "display_url": "https://scontent-sjc3-1.cdninstagram.com/v/t39.30808-6/729736660_1229249743596642_6770772384944344848_n.jpg"
+      }
+     },
+     {
+      "node": {
+       "__typename": "XDTGraphImage",
+       "is_video": false,
+       "display_url": "https://scontent-sjc6-1.cdninstagram.com/v/t39.30808-6/729729410_1229249756929974_5452726233097399618_n.jpg"
+      }
+     },
+     {
+      "node": {
+       "__typename": "XDTGraphImage",
+       "is_video": false,
+       "display_url": "https://scontent-sjc6-1.cdninstagram.com/v/t39.30808-6/729716855_1229249760263307_4751279086447270554_n.jpg"
+      }
+     }
+    ]
+   }
+  }
+ }
+}

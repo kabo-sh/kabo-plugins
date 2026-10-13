@@ -1,0 +1,32 @@
+{
+ "connector_id": "tiktok-search",
+ "operation": "get_video",
+ "captured_at": "20261013T093249",
+ "data": {
+  "video": {
+   "aweme_id": "7686371296120147222",
+   "aweme_type": 0,
+   "desc": "Inspo from @Kyrox 😝 | #retrac #fortnite #fortnitenostaliga #chapter2 #ogfortnite ",
+   "author": {
+    "unique_id": "nexywtw",
+    "secret": 0
+   },
+   "status": {
+    "private_status": 0
+   },
+   "statistics": {
+    "play_count": 2069,
+    "digg_count": 68,
+    "comment_count": 14
+   },
+   "video": {
+    "duration": 37034,
+    "play_addr": {
+     "url_list": [
+      "https://v16m.tiktokcdn-us.com/90cabd073512464d055e4daa4171ebc4/6ace4eba/video/tos/useast5/tos-useast5-ve-0068c799-tx/oovhpWIIvHQGVQiVABgIje2LgedpkUIILGoDAf/"
+     ]
+    }
+   }
+  }
+ }
+}

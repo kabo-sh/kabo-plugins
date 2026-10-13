@@ -16,7 +16,7 @@
 
 桌面使用同一读取合同的离线副本（`gateway/link-reading`），通过自己的凭据持有进程调用既有平台接口、按回合记账和暂存，并用原生图片编码器限制尺寸。插件采用两步hand-over是因为其OAuth由Codex持有，适配器不能读取或复制凭据。这是宿主差异，不是新增后台接口。
 
-URL及媒体投影源自 Web Agent PR120（3786368）`link-routing.ts`，网络交付由各宿主承担。变更时对照三端的路由与媒体测试；不把任一端通过写成三端验收。此PR仅覆盖Codex插件；Claude业务行为未改。
+URL及媒体投影源自 Web Agent PR120（3786368）`link-routing.ts`，网络交付由各宿主承担。本仓的 `scripts/lib/link-routing.js` 是 Desktop 那份的唯一来源：Desktop 保存逐字镜像并钉住来源提交与 sha256，不在 Desktop 侧手改。解析测试使用 `tests/fixtures/link-payloads/` 里的后台真实返回（与 Web 同一批样本）；上游格式变化时补新的真实样本，不手改样本迁就代码。变更时对照三端的路由与媒体测试；不把任一端通过写成三端验收。此PR仅覆盖Codex插件；Claude业务行为未改。
 
 离线验证：`node --test tests/*.mjs`、`node scripts/plugin-version.mjs --base origin/main --tags`。安装态验证使用隔离Codex home、原生插件安装及签名/撤销流程；固定原问、真实MCP、模型gpt-5.6-luna/medium，正常确认只续“继续”。同版本缓存更新只用于隔离开发，发布由版本检查与负责人合并闸门控制。
 
