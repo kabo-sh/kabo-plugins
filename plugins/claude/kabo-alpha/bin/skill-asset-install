@@ -311,11 +311,11 @@ async function hookMode() {
   const event = parseJson(await readAll(process.stdin) ?? '');
   // hooks.json only routes registry_skill_asset here, so an event this hook cannot read still
   // belongs to that tool: reject it rather than leave an unverified result in place.
-  if (!event || typeof event !== 'object') {
+  if (!event || typeof event !== 'object' || Array.isArray(event) || typeof event.tool_name !== 'string') {
     rejectHook('bad_response');
     return;
   }
-  if (!TOOL_NAME.test(String(event.tool_name || ''))) return;
+  if (!TOOL_NAME.test(event.tool_name)) return;
   const result = classify(event.tool_response);
   // A tool error (unknown_skill, version_superseded, ...) is the model's to read; nothing to install.
   if (result.kind === 'error') return;

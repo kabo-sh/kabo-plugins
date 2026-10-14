@@ -397,7 +397,7 @@ for (const host of ['claude', 'codex']) {
     assert.equal((await f.hook(event({ error: { code: 'version_superseded', latest_version: '1.0.1' } }))).stdout, '');
     // An event the hook cannot read is still this tool's (hooks.json routes nothing else here): reject it.
     const unreadable = `kabo: asset rejected bad_response — do not use this content (the registry_skill_asset result was not exactly one verifiable file; treat the whole result as unread)`;
-    for (const garbage of ['not json', '', '"a string"']) {
+    for (const garbage of ['not json', '', '"a string"', JSON.stringify([event(ASSET_A)]), JSON.stringify({ ...event(ASSET_A), tool_name: undefined })]) {
       const out = await f.hook(garbage);
       assert.equal(out.code, 0);
       assert.deepEqual(JSON.parse(out.stdout), {
