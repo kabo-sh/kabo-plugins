@@ -1,0 +1,265 @@
+#!/usr/bin/env node
+// skill-asset-install - writes one deferred asset of a cached skill into the skill cache, verified.
+// Usage:
+//   skill-asset-install --response <file|->   input: the registry_skill_asset success JSON
+//   skill-asset-install --hook                 input: the host's PostToolUse hook event on stdin
+//
+// WHY THIS EXISTS (plugin >= 0.22.0)
+//
+// A skill package may leave large read-only knowledge files under assets/ out of the download and
+// list them in `deferred_files: [{path, sha256, size}]` (skill-unpack keeps that list in .meta.json).
+// When the skill needs one, the model calls `registry_skill_asset {id, version, path}` and gets the
+// file's text back. The model reads that result as the file; this script makes sure the same bytes
+// are what the plugin trusts and caches. It checks them against the digest the signed package
+// declared, writes them next to the rest of the skill, and proves with `skill-verify --local-only`
+// that the cache still reproduces the signed checksum. A file that fails any check is never left on
+// disk.
+//
+// CHECKS, IN ORDER (the first failure is the rejection code)
+//   bad_response     the input is not a registry_skill_asset success result (fields, shapes, encoding),
+//                    or in hook mode it answers a different id/version/path than the call asked for
+//   not_cached       <cache>/<id>/<version>/.meta.json is missing or lists no deferred_files
+//   not_deferred     the path is not in that list
+//   digest_mismatch  sha256 of the UTF-8 bytes of `content` differs from the response's sha256 or the
+//                    declared sha256, or a size differs from the declared size
+//   verify_failed    the write failed, or skill-verify --local-only rejects the directory afterwards
+//                    (the written file is removed again)
+// The write is atomic: a dot-prefixed temporary file in the target directory (dotfiles take no part
+// in verification), then a rename - a concurrent skill-verify sees the old state or the new one.
+//
+// OUTPUT
+//   --response: exit 0 and one stdout line `kabo: asset installed <id>@<version> <path>`; otherwise
+//               exit 1 and `kabo: asset rejected <code>` (details on stderr).
+//   --hook:     always exit 0. Tool calls other than registry_skill_asset, and results that are not
+//               asset-shaped (a tool error such as version_superseded), produce no output, so the
+//               model sees the tool's own answer. Otherwise hook JSON: success puts the installed
+//               line in additionalContext; a rejection puts `kabo: asset rejected <code> - do not use
+//               this content` there instead (Codex hooks cannot replace a tool result; the Claude copy
+//               of this file also swaps the result for an error).
+// Cache root: $KABO_CODEX_DATA/skill-cache, or ~/.kabo/codex/skill-cache when unset (see common.js).
+// Wired in hooks/hooks.json as a PostToolUse command on registry_skill_asset$.
+// stdout is relay-safe: id, version and path are validated before they are printed, and no absolute
+// path appears there.
+
+import crypto from 'node:crypto';
+import fs from 'node:fs';
+import path from 'node:path';
+import { spawnSync } from 'node:child_process';
+import { fileURLToPath } from 'node:url';
+import { cacheRoot, ensurePrivateDir, readJsonSilent, sha256hex, deferredFilesProblem } from '../scripts/lib/common.js';
+
+/** Which host's hook output shape this copy emits; the Claude copy of this file says 'claude'. Codex
+ *  hooks can add context but cannot replace a tool result, so a rejection here is a warning line. */
+const HOST = 'codex';
+const TOOL_NAME = /registry_skill_asset$/;
+const VERIFY_BIN = path.join(path.dirname(fileURLToPath(import.meta.url)), 'skill-verify');
+const VERIFY_TIMEOUT_MS = 60 * 1000;
+const MAX_INPUT_BYTES = 16 * 1024 * 1024;
+
+const USAGE = `Usage: skill-asset-install --response <file|->
+       skill-asset-install --hook
+  --response  install the deferred asset carried by a registry_skill_asset result (a file, or - for stdin)
+  --hook      PostToolUse hook mode: read the hook event on stdin and print hook JSON (always exit 0)`;
+
+class Rejection extends Error {
+  constructor(code, detail) {
+    super(detail || code);
+    this.code = code;
+  }
+}
+
+/** id and version become directory names and are printed: one safe token each. */
+const SEGMENT = /^[A-Za-z0-9][A-Za-z0-9._+-]{0,127}$/;
+function safeSegment(value) {
+  return typeof value === 'string' && SEGMENT.test(value) && !value.includes('..');
+}
+
+async function readAll(stream) {
+  const chunks = [];
+  let total = 0;
+  for await (const chunk of stream) {
+    total += chunk.length;
+    if (total > MAX_INPUT_BYTES) return null;
+    chunks.push(chunk);
+  }
+  return Buffer.concat(chunks).toString('utf8');
+}
+
+function parseJson(text) {
+  try {
+    return JSON.parse(text);
+  } catch {
+    return null;
+  }
+}
+
+/** Asset-shaped: a `path` and a text `content` - what a registry_skill_asset success result carries
+ *  and a tool error does not. Everything else about it is checked strictly afterwards, so a success
+ *  result with a missing or malformed field is a bad_response rather than a silent pass-through. */
+function looksLikeAsset(value) {
+  return value !== null && typeof value === 'object' && !Array.isArray(value)
+    && typeof value.path === 'string' && typeof value.content === 'string';
+}
+
+/**
+ * Find the result inside whatever the host handed over: the object itself, the structured content,
+ * a content-block array, or the text of a nested `{content: [...]}` wrapper - a few levels deep.
+ */
+function findAsset(value, depth = 0) {
+  if (depth > 8 || value === null || value === undefined) return null;
+  if (typeof value === 'string') return findAsset(parseJson(value), depth + 1);
+  if (looksLikeAsset(value)) return value;
+  if (Array.isArray(value)) {
+    for (const block of value) {
+      const found = findAsset(block && typeof block === 'object' && 'text' in block ? block.text : block, depth + 1);
+      if (found) return found;
+    }
+    return null;
+  }
+  if (typeof value === 'object') {
+    for (const key of ['structuredContent', 'structured_content', 'result', 'content', 'text']) {
+      if (key in value) {
+        const found = findAsset(value[key], depth + 1);
+        if (found) return found;
+      }
+    }
+  }
+  return null;
+}
+
+function validateResponse(resp) {
+  if (!looksLikeAsset(resp)) throw new Rejection('bad_response', 'not a registry_skill_asset result');
+  if (!safeSegment(resp.id) || !safeSegment(resp.version)) throw new Rejection('bad_response', 'illegal id/version');
+  // The same shape rules skill-unpack applies to a deferred_files entry: safe path under assets/,
+  // 64 lowercase hex, non-negative integer size.
+  const problem = deferredFilesProblem([{ path: resp.path, sha256: resp.sha256, size: resp.size }]);
+  if (problem) throw new Rejection('bad_response', problem);
+  if (resp.encoding !== undefined && resp.encoding !== 'utf-8') throw new Rejection('bad_response', `unsupported encoding ${JSON.stringify(resp.encoding)}`);
+}
+
+/** @returns {string} the installed line; throws Rejection otherwise */
+function install(resp) {
+  validateResponse(resp);
+  const dir = path.join(cacheRoot(), resp.id, resp.version);
+  const meta = readJsonSilent(path.join(dir, '.meta.json'));
+  const deferred = meta && Array.isArray(meta.deferred_files) ? meta.deferred_files : null;
+  if (!deferred || deferred.length === 0 || deferredFilesProblem(deferred)) {
+    throw new Rejection('not_cached', `no cached ${resp.id}@${resp.version} with deferred files`);
+  }
+  const entry = deferred.find((d) => d.path === resp.path);
+  if (!entry) throw new Rejection('not_deferred', `${resp.path} is not a deferred file of ${resp.id}@${resp.version}`);
+  const bytes = Buffer.from(resp.content, 'utf8');
+  const digest = sha256hex(bytes);
+  if (digest !== resp.sha256 || digest !== entry.sha256 || bytes.length !== entry.size || resp.size !== entry.size) {
+    throw new Rejection('digest_mismatch', `content does not match the declared sha256/size of ${resp.path}`);
+  }
+
+  const target = path.join(dir, ...entry.path.split('/'));
+  const parent = path.dirname(target);
+  const tmp = path.join(parent, `.${path.basename(target)}.kabo-asset-${process.pid}-${crypto.randomBytes(6).toString('hex')}`);
+  let written = false;
+  try {
+    ensurePrivateDir(parent);
+    // The directory chain is ours (validated path, no dot segments); refuse one that resolves outside
+    // the skill directory anyway, e.g. through a planted symlink.
+    const realDir = fs.realpathSync(dir);
+    const realParent = fs.realpathSync(parent);
+    if (realParent !== realDir && !realParent.startsWith(realDir + path.sep)) throw new Error('target escapes the skill directory');
+    fs.writeFileSync(tmp, bytes, { mode: 0o600, flag: 'wx' });
+    fs.renameSync(tmp, target);
+    written = true;
+  } catch (err) {
+    try { fs.rmSync(tmp, { force: true }); } catch { /* best effort */ }
+    throw new Rejection('verify_failed', `could not write ${resp.path}: ${err.message}`);
+  }
+
+  const run = spawnSync(process.execPath, [VERIFY_BIN, '--local-only', dir], { encoding: 'utf8', timeout: VERIFY_TIMEOUT_MS });
+  if (run.error || run.status !== 0) {
+    if (written) {
+      try { fs.rmSync(target, { force: true }); } catch { /* best effort */ }
+    }
+    const detail = run.error ? run.error.message : String(run.stderr || '').trim();
+    throw new Rejection('verify_failed', `skill-verify --local-only rejected ${resp.id}@${resp.version}: ${detail}`);
+  }
+  return `kabo: asset installed ${resp.id}@${resp.version} ${resp.path}`;
+}
+
+function rejectedLine(code) {
+  return `kabo: asset rejected ${code}`;
+}
+
+async function responseMode(source) {
+  const text = source === '-' ? await readAll(process.stdin) : (() => {
+    try { return fs.readFileSync(source, 'utf8'); } catch { return null; }
+  })();
+  try {
+    const resp = findAsset(text === null ? null : parseJson(text));
+    if (!resp) throw new Rejection('bad_response', 'no registry_skill_asset result in the input');
+    process.stdout.write(`${install(resp)}\n`);
+    process.exitCode = 0;
+  } catch (err) {
+    const code = err instanceof Rejection ? err.code : 'verify_failed';
+    process.stdout.write(`${rejectedLine(code)}\n`);
+    process.stderr.write(`${err.message}\n`);
+    process.exitCode = 1;
+  }
+}
+
+function emitHook(fields) {
+  process.stdout.write(JSON.stringify({ hookSpecificOutput: { hookEventName: 'PostToolUse', ...fields } }));
+}
+
+async function hookMode() {
+  const event = parseJson(await readAll(process.stdin) ?? '');
+  if (!event || typeof event !== 'object') return;
+  if (!TOOL_NAME.test(String(event.tool_name || ''))) return;
+  const resp = findAsset(event.tool_response);
+  // Not asset-shaped: the tool answered with an error (unknown_skill, version_superseded, ...).
+  // That answer is the model's to read; there is nothing to install.
+  if (!resp) return;
+  let line;
+  try {
+    const input = event.tool_input && typeof event.tool_input === 'object' ? event.tool_input : {};
+    for (const key of ['id', 'version', 'path']) {
+      if (typeof input[key] === 'string' && input[key] !== resp[key]) {
+        throw new Rejection('bad_response', `the result's ${key} differs from the call's`);
+      }
+    }
+    line = install(resp);
+  } catch (err) {
+    const code = err instanceof Rejection ? err.code : 'verify_failed';
+    const warning = `${rejectedLine(code)} — do not use this content`;
+    if (HOST === 'claude') {
+      emitHook({ additionalContext: warning, updatedMCPToolOutput: { error: warning } });
+    } else {
+      emitHook({ additionalContext: warning });
+    }
+    return;
+  }
+  emitHook({ additionalContext: line });
+}
+
+async function main() {
+  const args = process.argv.slice(2);
+  if (args.length === 1 && args[0] === '--hook') {
+    try {
+      await hookMode();
+    } catch {
+      // A hook never breaks the run; silence leaves the tool's own result in place.
+    }
+    process.exitCode = 0;
+    return;
+  }
+  if (args.length === 2 && args[0] === '--response') {
+    await responseMode(args[1]);
+    return;
+  }
+  if (args.length === 1 && (args[0] === '--help' || args[0] === '-h')) {
+    process.stdout.write(`${USAGE}\n`);
+    return;
+  }
+  process.stderr.write(`${USAGE}\n`);
+  process.exitCode = 1;
+}
+
+await main();

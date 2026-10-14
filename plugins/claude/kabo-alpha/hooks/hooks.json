@@ -19,6 +19,15 @@
             "command": "sh \"${CLAUDE_PLUGIN_ROOT}/scripts/hooks/persist-envelope.sh\""
           }
         ]
+      },
+      {
+        "matcher": "registry_skill_asset$",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "sh \"${CLAUDE_PLUGIN_ROOT}/scripts/hooks/skill-asset-install.sh\""
+          }
+        ]
       }
     ],
     "PostToolUseFailure": [

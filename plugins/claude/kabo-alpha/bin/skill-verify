@@ -13,7 +13,10 @@
 //         network is unreachable, fall back to the result of a.
 //         --local-only skips b entirely.
 //   3. Recompute the checksum (algorithm verbatim identical to the server's, see computeChecksum in
-//      common.js) and compare it against .meta.json
+//      common.js) and compare it against .meta.json. A package that deferred assets/ files
+//      (.meta.json deferred_files, plugin >= 0.22.0) is checked with what is on disk: an absent
+//      deferred file contributes its declared sha256, a present one must match that sha256 first
+//      (else deferred_mismatch) - so a partially fetched cache verifies, and a wrong file never does.
 //   4. Verify the signature with the server's Ed25519 keyset (GET /api/public-key, pinned after TOFU in
 //      <data root>/public-keys.<bucket>.json; on a key rotation it refreshes once via a continuity proof).
 //      --local-only tries the pinned keys only and never refreshes: no pinned key means
@@ -43,7 +46,7 @@ import {
   isSafeName,
   apiEndpoint, readJsonSilent, writeJsonSilent,
   disabledMarkerPath, revocationSyncPath, REVOCATION_SYNC_TTL_MS, GUIDANCE_CLOCK_SKEW_MS,
-  computeChecksum, artifactFormatOf, ensureVerified, fetchJsonSilent,
+  computeChecksum, artifactFormatOf, deferredFilesProblem, withDeferredFiles, ensureVerified, fetchJsonSilent,
   appendPendingReport, compareSemver, PLUGIN_VERSION,
 } from '../scripts/lib/common.js';
 
@@ -243,9 +246,25 @@ async function main() {
   }
   const files = collectFiles(dir);
   if (files.length === 0) fail(meta, 'the directory is empty, there is nothing to verify', 'empty_dir');
+  // Deferred assets: the list is .meta.json's (unsigned, see skill-unpack), so a malformed one is
+  // refused outright, and a fetched file must carry exactly its declared digest before that digest
+  // stands in anywhere. Whatever the list says, the result still has to reproduce the signed
+  // checksum below - tampering with it can cause a refusal, never an acceptance.
+  let manifestFiles = files;
+  let deferredAbsent = 0;
+  if (meta.deferred_files !== undefined && meta.deferred_files !== null) {
+    const problem = deferredFilesProblem(meta.deferred_files);
+    if (problem) fail(meta, `.meta.json deferred_files is malformed: ${problem}`, 'meta_invalid');
+    const merged = withDeferredFiles(files, meta.deferred_files);
+    if (!merged.ok) {
+      fail(meta, `deferred asset ${JSON.stringify(merged.path)} on disk does not match its declared sha256/size (tampered or corrupt)`, 'deferred_mismatch');
+    }
+    manifestFiles = merged.files;
+    deferredAbsent = merged.absent;
+  }
   let recomputed = null;
   try {
-    recomputed = computeChecksum(files, format.formatVersion);
+    recomputed = computeChecksum(manifestFiles, format.formatVersion);
   } catch (err) {
     // An illegal path on disk (a backslash, a NUL, a newline in a file name) cannot appear in a
     // signed manifest at all, so the cached tree cannot be the one that was signed.
@@ -301,9 +320,10 @@ async function main() {
   // The parenthesis names how the revocation list was consulted, so a transcript shows whether this
   // process went to the network - the difference between the two modes is exactly that.
   const subject = `${meta.id || '?'}@${meta.version || '?'}`;
+  const deferredNote = deferredAbsent > 0 ? `; ${deferredAbsent} deferred asset(s) not fetched yet` : '';
   console.log(localOnly
-    ? `Verification passed: ${subject} (local-only: checksum and ed25519 signature are both valid; revocation list not re-queried)`
-    : `Verification passed: ${subject} (checksum and ed25519 signature are both valid; revocation list ${revocationNote})`);
+    ? `Verification passed: ${subject} (local-only: checksum and ed25519 signature are both valid; revocation list not re-queried)${deferredNote}`
+    : `Verification passed: ${subject} (checksum and ed25519 signature are both valid; revocation list ${revocationNote})${deferredNote}`);
   process.exit(0);
 }
 

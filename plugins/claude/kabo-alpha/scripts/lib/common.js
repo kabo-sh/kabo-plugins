@@ -42,7 +42,7 @@ import os from 'node:os';
 import crypto from 'node:crypto';
 import { fileURLToPath } from 'node:url';
 
-export const PLUGIN_VERSION = '0.21.31';
+export const PLUGIN_VERSION = '0.22.0';
 export const SUPPORTED_API_VERSION = '1.0.0';
 export const DEFAULT_ENDPOINT = 'https://kabo.sh';
 export const CACHE_TTL_MS = 14 * 24 * 60 * 60 * 1000; // skill cache TTL: 14 days
@@ -644,6 +644,15 @@ function assertArtifactPath(p) {
 }
 
 /**
+ * The digest one manifest line carries for a file: hashed from its bytes, or - for a deferred asset
+ * that is not on disk yet - the sha256 the package declared for it (see "Deferred assets" below).
+ * The manifest bytes are the same either way; only where the digest comes from differs.
+ */
+function fileDigest(f) {
+  return typeof f.sha256 === 'string' ? f.sha256 : sha256hex(f.content);
+}
+
+/**
  * Canonical manifest bytes of a signed artifact.
  *
  * Two formats live here at once, and which one applies is decided **by the wire**, never by a guess
@@ -661,7 +670,8 @@ function assertArtifactPath(p) {
  * which is exactly how the wrong sort survived in this file until 0.14.0 - the conformance vectors
  * now pin a non-BMP case for that reason.
  *
- * @param {{path: string, content: Buffer}[]} files
+ * @param {{path: string, content?: Buffer, sha256?: string}[]} files - `sha256` only for a deferred
+ *   asset that is not on disk (see withDeferredFiles)
  * @param {1|null} formatVersion the value carried by the envelope; null means "the field was absent"
  */
 export function canonicalManifest(files, formatVersion = null) {
@@ -669,7 +679,7 @@ export function canonicalManifest(files, formatVersion = null) {
     const sorted = [...files].sort((a, b) => (a.path < b.path ? -1 : a.path > b.path ? 1 : 0));
     let manifest = '';
     for (const f of sorted) {
-      manifest += f.path + '\0' + sha256hex(f.content) + '\n';
+      manifest += f.path + '\0' + fileDigest(f) + '\n';
     }
     return Buffer.from(manifest, 'utf8');
   }
@@ -690,7 +700,7 @@ export function canonicalManifest(files, formatVersion = null) {
   }
   let manifest = `kabo.artifact-format\0${formatVersion}\n`;
   for (const f of sorted) {
-    manifest += f.path + '\0' + sha256hex(f.content) + '\n';
+    manifest += f.path + '\0' + fileDigest(f) + '\n';
   }
   return Buffer.from(manifest, 'utf8');
 }
@@ -704,6 +714,83 @@ export function canonicalManifest(files, formatVersion = null) {
  */
 export function computeChecksum(files, formatVersion = null) {
   return sha256hex(canonicalManifest(files, formatVersion));
+}
+
+// ---------- Deferred assets (plugin >= 0.22.0) ----------
+//
+// A package may leave read-only knowledge files under assets/ out of the download and list them as
+// `deferred_files: [{path, sha256, size}]` (sorted by the UTF-8 bytes of path, like the manifest).
+// The model fetches one such file when it needs it (registry_skill_asset) and bin/skill-asset-install
+// writes it into the cache. The signature scheme is unchanged: checksum and signature still cover
+// every file, deferred or not, and skill-verify fills the line of each deferred file that is not on
+// disk from its declared sha256, while a deferred file that is on disk must match that sha256.
+// skill-unpack copies the list into .meta.json, which is outside signature coverage - safe for the
+// same reason as format_version: a tampered digest, an added entry or a dropped entry changes the
+// recomputed manifest and ends in checksum_mismatch. It can cause a refusal, never an acceptance.
+
+/** Every deferred path lives under this prefix (the bundle builder and the server enforce it too). */
+export const DEFERRED_ASSET_PREFIX = 'assets/';
+
+const SHA256_HEX = /^[0-9a-f]{64}$/;
+
+/** C0 and C1 control characters plus DEL. Deferred paths are echoed on relay-safe stdout. */
+const DEFERRED_PATH_CONTROL = /[\u0000-\u001f\u007f-\u009f]/;
+
+/**
+ * Shape check of a `deferred_files` list, as the server sends it and as .meta.json stores it:
+ * an array of {path, sha256 (64 lowercase hex), size (non-negative integer)}, every path a safe
+ * signed-artifact path under assets/ with no control character, sorted strictly by UTF-8 path bytes
+ * (which also rules out a repeated path).
+ * @returns {string|null} why the list is unacceptable, or null when it is fine
+ */
+export function deferredFilesProblem(list) {
+  if (!Array.isArray(list)) return 'deferred_files is not an array';
+  let previous = null;
+  for (const entry of list) {
+    if (!entry || typeof entry !== 'object' || Array.isArray(entry)) return 'a deferred_files entry is not an object';
+    const p = entry.path;
+    if (typeof p !== 'string' || DEFERRED_PATH_CONTROL.test(p)) return `illegal deferred path ${JSON.stringify(p)}`;
+    try {
+      assertArtifactPath(p);
+    } catch {
+      return `illegal deferred path ${JSON.stringify(p)}`;
+    }
+    if (!p.startsWith(DEFERRED_ASSET_PREFIX)) return `deferred path ${JSON.stringify(p)} is not under ${DEFERRED_ASSET_PREFIX}`;
+    if (typeof entry.sha256 !== 'string' || !SHA256_HEX.test(entry.sha256)) {
+      return `deferred path ${JSON.stringify(p)} has no 64-character lowercase sha256`;
+    }
+    if (!Number.isSafeInteger(entry.size) || entry.size < 0) return `deferred path ${JSON.stringify(p)} has no byte size`;
+    const key = Buffer.from(p, 'utf8');
+    if (previous && Buffer.compare(previous, key) >= 0) return 'deferred_files is not sorted by UTF-8 path bytes, or repeats a path';
+    previous = key;
+  }
+  return null;
+}
+
+/**
+ * The checksum inputs of a cached skill whose package deferred some files: the files on disk, plus
+ * a `{path, sha256}` stand-in for every deferred entry not on disk. A deferred file that is on disk
+ * must have exactly its declared size and sha256.
+ * @param {{path: string, content: Buffer}[]} diskFiles every non-dot file under the skill directory
+ * @param {{path: string, sha256: string, size: number}[]} deferred a list deferredFilesProblem accepted
+ * @returns {{ok: true, files: object[], absent: number} | {ok: false, path: string}}
+ */
+export function withDeferredFiles(diskFiles, deferred) {
+  const onDisk = new Map(diskFiles.map((f) => [f.path, f]));
+  const files = [...diskFiles];
+  let absent = 0;
+  for (const entry of deferred) {
+    const present = onDisk.get(entry.path);
+    if (present) {
+      if (present.content.length !== entry.size || sha256hex(present.content) !== entry.sha256) {
+        return { ok: false, path: entry.path };
+      }
+    } else {
+      files.push({ path: entry.path, sha256: entry.sha256 });
+      absent += 1;
+    }
+  }
+  return { ok: true, files, absent };
 }
 
 /**
