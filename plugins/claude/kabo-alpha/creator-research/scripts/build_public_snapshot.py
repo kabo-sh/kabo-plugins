@@ -358,7 +358,17 @@ def metrics_of(row: dict[str, Any]) -> dict[str, dict[str, Any]]:
             "value": number,
             "native_name": native,
         }
+    if likes_hidden(row):
+        # The creator hid this post's like count. Instagram rows still carry an integer
+        # like_count, but it is a placeholder (2026-10-13: every hidden post returned 3), so it
+        # is reported as missing rather than handed to the analyzer as a real count.
+        metrics["likes"] = {"status": "unavailable", "value": None, "native_name": "like_count"}
     return metrics
+
+
+def likes_hidden(row: dict[str, Any]) -> bool:
+    """Instagram flags posts whose like counts the creator hid; only an explicit true counts."""
+    return row.get("like_and_view_counts_disabled") is True
 
 
 def unwrap(row: dict[str, Any]) -> dict[str, Any]:
@@ -734,6 +744,7 @@ def build(args: argparse.Namespace) -> dict[str, Any]:
     skipped_missing_creator = 0
     skipped_missing_publish_time = 0
     skipped_non_reel = 0
+    likes_hidden_items: set[str] = set()
     duplicate_rows_merged = 0
 
     for envelope, query in zip(envelopes, queries):
@@ -781,6 +792,8 @@ def build(args: argparse.Namespace) -> dict[str, Any]:
                 "format": content_format,
                 "metrics": metrics_of(row),
             }
+            if likes_hidden(row):
+                likes_hidden_items.add(content_id)
             if args.platform == "youtube":
                 item["format_confidence"] = format_confidence
                 item["format_source"] = format_source
@@ -798,6 +811,12 @@ def build(args: argparse.Namespace) -> dict[str, Any]:
                 if args.platform == "youtube":
                     merge_format_evidence(existing, item, content_id)
                 for name, entry in item["metrics"].items():
+                    if name == "likes" and content_id in likes_hidden_items:
+                        # Any envelope flagging the post as hidden wins: a copy without the
+                        # flag must not bring the placeholder like count back.
+                        if likes_hidden(row):
+                            existing["metrics"][name] = entry
+                        continue
                     if existing["metrics"][name]["status"] in ("unavailable", "error") \
                             and entry["status"] in ("available", "zero"):
                         existing["metrics"][name] = entry
@@ -819,6 +838,12 @@ def build(args: argparse.Namespace) -> dict[str, Any]:
     if skipped_unidentifiable:
         limitations.append(
             f"Skipped {skipped_unidentifiable} row(s) with no resolvable content id, creator or publish time"
+        )
+    if likes_hidden_items:
+        limitations.append(
+            f"The creator hides like counts on {len(likes_hidden_items)} Instagram item(s); their "
+            "likes are recorded as unavailable, because the provider returns a placeholder number "
+            "there rather than the real count. Views and comments for those items are unaffected"
         )
     if skipped_non_reel:
         limitations.append(f"Skipped {skipped_non_reel} Instagram row(s) the provider marked as not a reel")
