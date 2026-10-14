@@ -12,10 +12,46 @@ import test from 'node:test';
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const golden = JSON.parse(await fs.readFile(path.join(root, 'tests/fixtures/plugin-artifact-v1.golden.json'), 'utf8'));
-const vectorBytes = await fs.readFile(path.join(root, 'tests/fixtures/deferred-assets-v1.json'));
-const vector = JSON.parse(vectorBytes);
-const PKG = vector.skill_package;
-const [ASSET_A, ASSET_B] = vector.asset_responses;
+// The canonical cross-repo vector, produced by the backend (kabo docs/contracts) and copied here
+// byte for byte: one deferred file, signed with the golden test key.
+const deferredGoldenBytes = await fs.readFile(path.join(root, 'tests/fixtures/plugin-artifact-v1-deferred.golden.json'));
+const deferredGolden = JSON.parse(deferredGoldenBytes);
+const sha = (value) => crypto.createHash('sha256').update(value).digest('hex');
+
+// A local multi-asset package for the cases the golden vector does not reach - two deferred files
+// (partial state "1 of 2"), one in a directory that does not exist until it is fetched, non-BMP
+// text. Built and signed here with a throwaway key, so it is no second source of contract truth:
+// the contract vectors are the two golden files above.
+const localKey = crypto.generateKeyPairSync('ed25519');
+const localKid = sha(localKey.publicKey.export({ type: 'spki', format: 'der' })).slice(0, 16);
+const LOCAL_TEXT = {
+  'manifest.json': `${JSON.stringify({
+    name: 'deferred-skill', version: '1.0.0', execution: 'inline', required: { tools: [] }, min_plugin_version: '0.22.0',
+    deferred_files: { include: ['assets/knowledge/'], exclude: ['assets/knowledge/craft-index.md'] },
+  }, null, 2)}\n`,
+  'SKILL.md': '# deferred-skill\n\nRead assets/knowledge/craft-index.md, then each listed corpus file.\n',
+  'assets/knowledge/craft-index.md': '# Craft index\n\n- hooks.md\n- pacing/notes.md\n',
+  'assets/knowledge/hooks.md': '# Hooks\n\nOpen on the payoff. Ünïcödé, 日本語 and a non-BMP 🎬.\n',
+  'assets/knowledge/pacing/notes.md': '# Pacing\n\nCut on motion.\n',
+};
+const DEFERRED_PATHS = ['assets/knowledge/hooks.md', 'assets/knowledge/pacing/notes.md'];
+const ALL_FILES = Object.entries(LOCAL_TEXT).map(([p, text]) => ({ path: p, content: Buffer.from(text, 'utf8') }));
+const PKG = (() => {
+  const checksum = sha(Buffer.concat([
+    Buffer.from('kabo.artifact-format\u00001\n'),
+    ...[...ALL_FILES].sort((a, b) => Buffer.compare(Buffer.from(a.path), Buffer.from(b.path)))
+      .map((f) => Buffer.from(`${f.path}\u0000${sha(f.content)}\n`, 'utf8')),
+  ]));
+  return {
+    format_version: 1, id: 'deferred-skill', version: '1.0.0', checksum, key_id: localKid, algorithm: 'ed25519',
+    signature: crypto.sign(null, Buffer.from(checksum), localKey.privateKey).toString('base64'),
+    files: ALL_FILES.filter((f) => !DEFERRED_PATHS.includes(f.path)).map((f) => ({ path: f.path, content_base64: f.content.toString('base64') })),
+    deferred_files: ALL_FILES.filter((f) => DEFERRED_PATHS.includes(f.path)).map((f) => ({ path: f.path, sha256: sha(f.content), size: f.content.length })),
+  };
+})();
+const [ASSET_A, ASSET_B] = DEFERRED_PATHS.map((p) => ({
+  id: PKG.id, version: PKG.version, path: p, sha256: sha(Buffer.from(LOCAL_TEXT[p])), size: Buffer.byteLength(LOCAL_TEXT[p]), encoding: 'utf-8', content: LOCAL_TEXT[p],
+}));
 // Unreachable on purpose: verification must never need the network here (the revocation snapshot
 // below is fresh, and the keyset is pinned).
 const ENDPOINT = 'http://127.0.0.1:9';
@@ -35,10 +71,10 @@ function run(file, args, env, input = '') {
 
 const exists = (p) => fs.access(p).then(() => true, () => false);
 const clone = (v) => JSON.parse(JSON.stringify(v));
-/** The full (non-deferred) form of the vector package: every file shipped, same checksum and signature. */
+/** The full (non-deferred) form of the local package: every file shipped, same checksum and signature. */
 function fullPackage() {
   const pkg = clone(PKG);
-  for (const asset of vector.asset_responses) {
+  for (const asset of [ASSET_A, ASSET_B]) {
     pkg.files.push({ path: asset.path, content_base64: Buffer.from(asset.content, 'utf8').toString('base64') });
   }
   delete pkg.deferred_files;
@@ -53,8 +89,9 @@ async function fixture(t, host) {
   const env = { PATH: process.env.PATH, HOME: data, KABO_DATA_ROOT: data, KABO_CODEX_DATA: data, KABO_API_ENDPOINT: ENDPOINT };
   const pem = golden.test_key.public_key_pem;
   const kid = common.sha256hex(crypto.createPublicKey(pem).export({ type: 'spki', format: 'der' })).slice(0, 16);
+  const localPem = localKey.publicKey.export({ type: 'spki', format: 'pem' }).toString();
   await fs.writeFile(path.join(data, `public-keys.${common.sha256hex(ENDPOINT).slice(0, 16)}.json`),
-    JSON.stringify({ issued_at: null, keys: [{ kid, public_key_pem: pem }] }), { mode: 0o600 });
+    JSON.stringify({ issued_at: null, keys: [{ kid, public_key_pem: pem }, { kid: localKid, public_key_pem: localPem }] }), { mode: 0o600 });
   await fs.writeFile(path.join(data, 'revocation-sync.json'),
     JSON.stringify({ synced_at: new Date().toISOString(), revocations: [], server_api_version: '1.0.0' }), { mode: 0o600 });
   const bin = (name, args, input) => run(path.join(plugin, 'bin', name), args, env, input);
@@ -72,35 +109,53 @@ async function fixture(t, host) {
 
 const failType = (result) => (result.stderr.match(/KABO_VERIFY_FAIL error_type=(\S+)/) || [])[1];
 
-test('deferred-assets vector: signed over every file, pinned, and well-formed', async () => {
-  assert.equal(crypto.createHash('sha256').update(vectorBytes).digest('hex'), '483ffa0cca62cb734c32463667c6b6b2ac722dc553be3cb55c10a1767189bb74');
-  assert.equal(PKG.key_id, golden.test_key.key_id);
-  // Ed25519 is deterministic: the golden test key reproduces the pinned signature byte for byte.
-  assert.equal(crypto.sign(null, Buffer.from(PKG.checksum), golden.test_key.private_key_pem).toString('base64'), PKG.signature);
-  assert.equal(crypto.verify(null, Buffer.from(PKG.checksum), golden.test_key.public_key_pem, Buffer.from(PKG.signature, 'base64')), true);
+test('the backend deferred-assets golden vector stays pinned and reproduces its checksum and signature', async () => {
+  assert.equal(sha(deferredGoldenBytes), '6a42f28fb84addff6f9950bade6aaae24288dfc2aa7ac6ecad4f8a3e517df069');
+  const pkg = deferredGolden.skill_package;
+  assert.equal(deferredGolden.test_key.public_key_pem, golden.test_key.public_key_pem);
+  assert.equal(crypto.verify(null, Buffer.from(pkg.checksum), deferredGolden.test_key.public_key_pem, Buffer.from(pkg.signature, 'base64')), true);
+  const asset = deferredGolden.asset_response;
   for (const host of ['claude', 'codex']) {
     const common = await import(pathToFileURL(path.join(root, 'plugins', host, 'kabo-alpha/scripts/lib/common.js')));
-    const shipped = PKG.files.map((f) => ({ path: f.path, content: Buffer.from(f.content_base64, 'base64') }));
-    const full = fullPackage().files.map((f) => ({ path: f.path, content: Buffer.from(f.content_base64, 'base64') }));
-    // The checksum is over files ∪ deferred, whether the deferred digests come from bytes or declarations.
-    assert.equal(common.computeChecksum(full, 1), PKG.checksum);
-    assert.equal(common.canonicalManifest(full, 1).toString('utf8'), vector.canonical_manifest_utf8);
-    const merged = common.withDeferredFiles(shipped, PKG.deferred_files);
+    assert.equal(common.deferredFilesProblem(pkg.deferred_files), null);
+    const shipped = pkg.files.map((f) => ({ path: f.path, content: Buffer.from(f.content_base64, 'base64') }));
+    // From declarations (asset absent) and from bytes (asset fetched): the same signed checksum.
+    const merged = common.withDeferredFiles(shipped, pkg.deferred_files);
     assert.equal(merged.ok, true);
-    assert.equal(merged.absent, 2);
-    assert.equal(common.computeChecksum(merged.files, 1), PKG.checksum);
-    assert.equal(common.deferredFilesProblem(PKG.deferred_files), null);
-    for (const asset of vector.asset_responses) {
-      const declared = PKG.deferred_files.find((d) => d.path === asset.path);
-      const bytes = Buffer.from(asset.content, 'utf8');
-      assert.equal(common.sha256hex(bytes), declared.sha256);
-      assert.equal(bytes.length, declared.size);
-      assert.equal(asset.sha256, declared.sha256);
-    }
-    const manifest = JSON.parse(shipped.find((f) => f.path === 'manifest.json').content);
-    assert.deepEqual(manifest.deferred_files, { include: ['assets/knowledge/'], exclude: ['assets/knowledge/craft-index.md'] });
+    assert.equal(common.computeChecksum(merged.files, 1), pkg.checksum);
+    const full = [...shipped, { path: asset.path, content: Buffer.from(asset.content, 'utf8') }];
+    assert.equal(common.canonicalManifest(full, 1).toString('utf8'), deferredGolden.canonical_manifest_utf8);
+    assert.equal(common.computeChecksum(full, 1), pkg.checksum);
+    assert.equal(common.sha256hex(Buffer.from(asset.content, 'utf8')), pkg.deferred_files[0].sha256);
   }
+  // The local multi-asset package follows the same rules.
+  assert.equal(crypto.verify(null, Buffer.from(PKG.checksum), localKey.publicKey, Buffer.from(PKG.signature, 'base64')), true);
 });
+
+for (const host of ['claude', 'codex']) {
+  test(`${host}: the backend golden deferred package unpacks, takes its asset, and catches a tampered one`, async (t) => {
+    const f = await fixture(t, host);
+    const pkg = deferredGolden.skill_package;
+    const asset = deferredGolden.asset_response;
+    const skill = path.join(f.data, 'skill-cache', pkg.id, pkg.version);
+    const unpacked = await f.bin('skill-unpack', ['--verify', '-'], JSON.stringify(pkg));
+    assert.equal(unpacked.code, 0, unpacked.stderr);
+    assert.match(unpacked.stdout, /Verification passed: golden-deferred-skill@2\.0\.0 .*; 1 deferred asset\(s\) not fetched yet/);
+    assert.equal(await exists(path.join(skill, asset.path)), false);
+    const installed = await f.install(asset);
+    assert.equal(installed.code, 0, installed.stderr);
+    assert.equal(installed.stdout, `kabo: asset installed ${pkg.id}@${pkg.version} ${asset.path}\n`);
+    // BOM and CRLF survive: the cached bytes are exactly the UTF-8 encoding of content.
+    assert.equal(sha(await fs.readFile(path.join(skill, asset.path))), asset.sha256);
+    const local = await f.bin('skill-verify', ['--local-only', skill]);
+    assert.equal(local.code, 0, local.stderr);
+    assert.doesNotMatch(local.stdout, /not fetched yet/);
+    await fs.writeFile(path.join(skill, asset.path), `${asset.content}tampered`);
+    const tampered = await f.bin('skill-verify', ['--local-only', skill]);
+    assert.equal(tampered.code, 1);
+    assert.equal(failType(tampered), 'deferred_mismatch');
+  });
+}
 
 for (const host of ['claude', 'codex']) {
   test(`${host}: a full package unpacks and verifies exactly as before`, async (t) => {

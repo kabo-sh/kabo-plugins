@@ -1,0 +1,71 @@
+{
+  "description": "Kabo plugin signed artifact v1 deferred-assets conformance vector. Same canonical manifest and signature rules as plugin-artifact-v1.golden.json; the package omits deferred files from files[] and lists their sha256/size in deferred_files[]. Verifiers rebuild the canonical manifest from files[] plus the declared deferred digests. The private key is the same test-only key and must never be used in production.",
+  "format_version": 1,
+  "deferred_assets_min_plugin_version": "0.22.0",
+  "test_key": {
+    "algorithm": "ed25519",
+    "key_id": "e5788161e35d61d4",
+    "public_key_pem": "-----BEGIN PUBLIC KEY-----\nMCowBQYDK2VwAyEAxyjvsrwsOOvqeT/5BWAmNP9Rne7L7GwAxuXND+cKfPo=\n-----END PUBLIC KEY-----\n",
+    "private_key_pem": "-----BEGIN PRIVATE KEY-----\nMC4CAQAwBQYDK2VwBCIEIE8D9SwKm9g4FcEiaTWuQa5BrtDBlUnuyGV74wiGTRP8\n-----END PRIVATE KEY-----\n"
+  },
+  "canonical_manifest_utf8": "kabo.artifact-format\u00001\nSKILL.md\u00003e85912d559e8ae716630879f5788f59c6b0fd69e0f241e152437e42d515e70c\nassets/knowledge/index.md\u00006d79052ef6846be6756afa2291ae559180a7a30e1b9ae001183b4df7c78bd58a\nassets/knowledge/topic.md\u0000634dfe3001f7d99d69745257ed9b0512e047ef7d4433f9e3d9f2a67f04d461fb\nmanifest.json\u0000041e66292d34939a25e6d9ed545480ddb141cf148d07731380637e1a6d67fa01\n",
+  "file_sha256": {
+    "SKILL.md": "3e85912d559e8ae716630879f5788f59c6b0fd69e0f241e152437e42d515e70c",
+    "assets/knowledge/index.md": "6d79052ef6846be6756afa2291ae559180a7a30e1b9ae001183b4df7c78bd58a",
+    "assets/knowledge/topic.md": "634dfe3001f7d99d69745257ed9b0512e047ef7d4433f9e3d9f2a67f04d461fb",
+    "manifest.json": "041e66292d34939a25e6d9ed545480ddb141cf148d07731380637e1a6d67fa01"
+  },
+  "skill_package": {
+    "format_version": 1,
+    "id": "golden-deferred-skill",
+    "version": "2.0.0",
+    "manifest": {
+      "name": "golden-deferred-skill",
+      "version": "2.0.0",
+      "description": "Public Kabo deferred-assets conformance vector.",
+      "tags": ["golden", "conformance", "deferred"],
+      "required": {
+        "server_api_min": "1.0.0"
+      },
+      "execution": "Read SKILL.md and follow it exactly.",
+      "deferred_files": {
+        "include": ["assets/knowledge/"],
+        "exclude": ["assets/knowledge/index.md"]
+      }
+    },
+    "files": [
+      {
+        "path": "SKILL.md",
+        "content_base64": "LS0tCm5hbWU6IGdvbGRlbi1kZWZlcnJlZC1za2lsbAotLS0KCiMgR29sZGVuIERlZmVycmVkIFNraWxsCgpSZWFkIGFzc2V0cy9rbm93bGVkZ2UvaW5kZXgubWQsIHRoZW4gZmV0Y2ggYXNzZXRzL2tub3dsZWRnZS90b3BpYy5tZCBpZiBpdCBpcyBub3QgcHJlc2VudC4K"
+      },
+      {
+        "path": "assets/knowledge/index.md",
+        "content_base64": "IyBJbmRleAoKLSB0b3BpYy5tZAo="
+      },
+      {
+        "path": "manifest.json",
+        "content_base64": "eyJuYW1lIjoiZ29sZGVuLWRlZmVycmVkLXNraWxsIiwidmVyc2lvbiI6IjIuMC4wIiwiZGVzY3JpcHRpb24iOiJQdWJsaWMgS2FibyBkZWZlcnJlZC1hc3NldHMgY29uZm9ybWFuY2UgdmVjdG9yLiIsInRhZ3MiOlsiZ29sZGVuIiwiY29uZm9ybWFuY2UiLCJkZWZlcnJlZCJdLCJyZXF1aXJlZCI6eyJzZXJ2ZXJfYXBpX21pbiI6IjEuMC4wIn0sImV4ZWN1dGlvbiI6IlJlYWQgU0tJTEwubWQgYW5kIGZvbGxvdyBpdCBleGFjdGx5LiIsImRlZmVycmVkX2ZpbGVzIjp7ImluY2x1ZGUiOlsiYXNzZXRzL2tub3dsZWRnZS8iXSwiZXhjbHVkZSI6WyJhc3NldHMva25vd2xlZGdlL2luZGV4Lm1kIl19fQo="
+      }
+    ],
+    "deferred_files": [
+      {
+        "path": "assets/knowledge/topic.md",
+        "sha256": "634dfe3001f7d99d69745257ed9b0512e047ef7d4433f9e3d9f2a67f04d461fb",
+        "size": 48
+      }
+    ],
+    "checksum": "508047d9056609fa72b3aa2b787ebdd2467da6351221be1a4eb1eb86e361ec14",
+    "signature": "TCBVy5hzNuM2SsDENK+hbQfwOHni+rlzLK9+sAiozWYvAh+lWMT6A5oAAvOxao2NEKW8zXiIQkWH6920StLXAg==",
+    "algorithm": "ed25519",
+    "key_id": "e5788161e35d61d4"
+  },
+  "asset_response": {
+    "id": "golden-deferred-skill",
+    "version": "2.0.0",
+    "path": "assets/knowledge/topic.md",
+    "sha256": "634dfe3001f7d99d69745257ed9b0512e047ef7d4433f9e3d9f2a67f04d461fb",
+    "size": 48,
+    "encoding": "utf-8",
+    "content": "\ufeff# Topic — 主题\r\n\r\nDeferred corpus body.\r\n"
+  }
+}
