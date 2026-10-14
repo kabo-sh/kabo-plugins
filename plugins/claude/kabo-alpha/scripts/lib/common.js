@@ -794,6 +794,44 @@ export function withDeferredFiles(diskFiles, deferred) {
 }
 
 /**
+ * The key two paths share when a case-insensitive, normalisation-insensitive file system (APFS and
+ * HFS+ by default, NTFS) would store them as one entry: NFC, then lower case.
+ */
+export function foldPathKey(p) {
+  return String(p).normalize('NFC').toLowerCase().normalize('NFC');
+}
+
+/**
+ * Whether a set of package paths would collide on such a file system: two files with one folded
+ * key, one directory spelled two ways, or a file folding onto a directory. A package that collides
+ * would be written as something other than what was signed - one file landing on another, or a
+ * deferred file "absent" under one spelling while present under the other.
+ * @returns {string|null} the collision, or null when there is none
+ */
+export function pathCollision(paths) {
+  const files = new Map();
+  const dirs = new Map();
+  for (const p of paths) {
+    const key = foldPathKey(p);
+    if (files.has(key)) return `${JSON.stringify(files.get(key))} and ${JSON.stringify(p)} name the same file on a case-insensitive file system`;
+    files.set(key, p);
+    const segs = p.split('/');
+    for (let i = 1; i < segs.length; i += 1) {
+      const dir = segs.slice(0, i).join('/');
+      const dirKey = foldPathKey(dir);
+      if (dirs.has(dirKey) && dirs.get(dirKey) !== dir) {
+        return `directories ${JSON.stringify(dirs.get(dirKey))} and ${JSON.stringify(dir)} are one directory on a case-insensitive file system`;
+      }
+      dirs.set(dirKey, dir);
+    }
+  }
+  for (const [key, p] of files) {
+    if (dirs.has(key)) return `${JSON.stringify(p)} is both a file and a directory on a case-insensitive file system`;
+  }
+  return null;
+}
+
+/**
  * The compat rule for `format_version` on the wire (v0.14.0), applied identically by skill packages,
  * meta-guidance and the keyset.
  *

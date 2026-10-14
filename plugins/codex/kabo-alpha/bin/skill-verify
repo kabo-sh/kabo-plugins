@@ -68,19 +68,27 @@ function fail(meta, reason, errorType) {
   process.exit(1);
 }
 /** Recursively collect every file under dir (relative paths, posix separators).
+ *  Anything that is neither a regular file nor a directory - a symlink, a FIFO, a socket, a device -
+ *  anywhere in the tree, dotfiles included, is reported in `unexpected` and fails verification
+ *  (unexpected_entry): a symlink at a deferred path would otherwise be skipped, read as "not fetched
+ *  yet", and stand in with the declared digest while pointing at arbitrary bytes. Dot-prefixed
+ *  directories are walked for that check only; their files never enter the manifest.
  *  Dotfiles are always skipped (dotfiles neither go into a package nor take part in verification,
  *  matching the server's packaging; this also naturally excludes the on-disk metadata .meta.json
  *  plus stray dotfiles such as .DS_Store and editor temp files). */
-function collectFiles(dir, base = '') {
+function collectFiles(dir, base = '', unexpected = [], collect = true) {
   const out = [];
+  // Dirent types come from lstat, never from the link target: a symlink is a symlink here.
   for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
     const rel = base ? `${base}/${entry.name}` : entry.name;
-    if (entry.name.startsWith('.')) continue;
     const full = path.join(dir, entry.name);
+    const keep = collect && !entry.name.startsWith('.');
     if (entry.isDirectory()) {
-      out.push(...collectFiles(full, rel));
+      out.push(...collectFiles(full, rel, unexpected, keep));
     } else if (entry.isFile()) {
-      out.push({ path: rel, content: fs.readFileSync(full) });
+      if (keep) out.push({ path: rel, content: fs.readFileSync(full) });
+    } else {
+      unexpected.push(rel);
     }
   }
   return out;
@@ -215,7 +223,11 @@ async function main() {
       'unsupported_artifact_format',
     );
   }
-  const files = collectFiles(dir);
+  const unexpected = [];
+  const files = collectFiles(dir, '', unexpected);
+  if (unexpected.length > 0) {
+    fail(meta, `the skill directory holds entries that are neither regular files nor directories (symlink, FIFO, socket or device): ${unexpected.slice(0, 5).map((p) => JSON.stringify(p)).join(', ')}`, 'unexpected_entry');
+  }
   if (files.length === 0) fail(meta, 'the directory is empty, there is nothing to verify', 'empty_dir');
   // Deferred assets: the list is .meta.json's (unsigned, see skill-unpack), so a malformed one is
   // refused outright, and a fetched file must carry exactly its declared digest before that digest

@@ -21,11 +21,12 @@
         ]
       },
       {
-        "matcher": "registry_skill_asset$",
+        "matcher": "^mcp__plugin_kabo-alpha_kabo__registry_skill_asset$",
         "hooks": [
           {
             "type": "command",
-            "command": "sh \"${CLAUDE_PLUGIN_ROOT}/scripts/hooks/skill-asset-install.sh\""
+            "command": "sh \"${CLAUDE_PLUGIN_ROOT}/scripts/hooks/skill-asset-install.sh\"",
+            "timeout": 45
           }
         ]
       }

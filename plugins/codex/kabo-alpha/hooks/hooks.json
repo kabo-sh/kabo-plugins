@@ -34,11 +34,12 @@
         ]
       },
       {
-        "matcher": "registry_skill_asset$",
+        "matcher": "^mcp__kabo__registry_skill_asset$",
         "hooks": [
           {
             "type": "command",
             "command": "node ${PLUGIN_ROOT}/bin/skill-asset-install --hook",
+            "timeout": 45,
             "statusMessage": "Verifying and caching the Kabo skill asset"
           }
         ]

@@ -33,7 +33,7 @@ import path from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import {
-  cacheRoot, ensurePrivateDir, readJsonSilent, PLUGIN_ARTIFACT_FORMAT_VERSION, deferredFilesProblem,
+  cacheRoot, ensurePrivateDir, readJsonSilent, PLUGIN_ARTIFACT_FORMAT_VERSION, deferredFilesProblem, pathCollision,
 } from '../scripts/lib/common.js';
 
 const USAGE = `Usage: skill-unpack [--verify] <path to package.json|-> [dest-root]
@@ -182,6 +182,11 @@ async function main() {
   for (const entry of deferred) {
     if (shipped.has(entry.path)) die(`SkillPackage both ships and defers ${JSON.stringify(entry.path)}`);
   }
+  // Every path, shipped or deferred, must stay distinct on a case-insensitive file system too (the
+  // default on macOS): otherwise two files land on one, or a deferred file reads as absent under one
+  // spelling while it is present under another.
+  const collision = pathCollision([...pkg.files.map((f) => f.path), ...deferred.map((d) => d.path)]);
+  if (collision) die(`SkillPackage paths collide: ${collision}`);
 
   const destRoot = args[1] ? path.resolve(args[1]) : cacheRoot();
   const dest = path.join(destRoot, pkg.id, pkg.version);
