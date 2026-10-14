@@ -297,9 +297,24 @@ function emitHook(fields) {
   process.stdout.write(JSON.stringify({ hookSpecificOutput: { hookEventName: 'PostToolUse', ...fields } }));
 }
 
+/** Answer a rejection in this host's hook shape (on Claude the tool output is replaced too). */
+function rejectHook(code) {
+  const warning = warningLine(code);
+  if (HOST === 'claude') {
+    emitHook({ additionalContext: warning, updatedMCPToolOutput: { error: warning } });
+  } else {
+    emitHook({ additionalContext: warning });
+  }
+}
+
 async function hookMode() {
   const event = parseJson(await readAll(process.stdin) ?? '');
-  if (!event || typeof event !== 'object') return;
+  // hooks.json only routes registry_skill_asset here, so an event this hook cannot read still
+  // belongs to that tool: reject it rather than leave an unverified result in place.
+  if (!event || typeof event !== 'object') {
+    rejectHook('bad_response');
+    return;
+  }
   if (!TOOL_NAME.test(String(event.tool_name || ''))) return;
   const result = classify(event.tool_response);
   // A tool error (unknown_skill, version_superseded, ...) is the model's to read; nothing to install.
@@ -315,13 +330,7 @@ async function hookMode() {
     }
     asset = install(result.asset);
   } catch (err) {
-    const code = err instanceof Rejection ? err.code : 'verify_failed';
-    const warning = warningLine(code);
-    if (HOST === 'claude') {
-      emitHook({ additionalContext: warning, updatedMCPToolOutput: { error: warning } });
-    } else {
-      emitHook({ additionalContext: warning });
-    }
+    rejectHook(err instanceof Rejection ? err.code : 'verify_failed');
     return;
   }
   if (HOST === 'claude') {
@@ -337,7 +346,8 @@ async function main() {
     try {
       await hookMode();
     } catch {
-      // A hook never breaks the run; silence leaves the tool's own result in place.
+      // A hook never breaks the run, and never lets an unchecked result through either.
+      try { rejectHook('verify_failed'); } catch { /* nothing left to say */ }
     }
     process.exitCode = 0;
     return;

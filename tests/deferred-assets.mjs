@@ -387,7 +387,7 @@ for (const host of ['claude', 'codex']) {
     const agreeing = await f.hook(event({ structuredContent: ASSET_A, content: [text(ASSET_A)] }));
     assert.match(JSON.parse(agreeing.stdout).hookSpecificOutput.additionalContext, /^kabo: asset installed /);
 
-    // Silence: another tool, another server's tool of the same name, a tool error, an unparseable event.
+    // Silence: another tool, another server's tool of the same name, a tool error.
     assert.equal((await f.hook({ ...event(ASSET_A), tool_name: toolName.replace('registry_skill_asset', 'registry_skill_download') })).stdout, '');
     for (const foreign of ['mcp__evil__registry_skill_asset', 'mcp__plugin_other_kabo__registry_skill_asset', 'registry_skill_asset',
       `${toolName}_v2`, host === 'claude' ? 'mcp__kabo__registry_skill_asset' : 'mcp__plugin_kabo-alpha_kabo__registry_skill_asset']) {
@@ -395,9 +395,17 @@ for (const host of ['claude', 'codex']) {
     }
     assert.equal((await f.hook(event({ content: [text({ error: 'boom' })], isError: true }))).stdout, '');
     assert.equal((await f.hook(event({ error: { code: 'version_superseded', latest_version: '1.0.1' } }))).stdout, '');
-    const garbage = await f.hook('not json');
-    assert.equal(garbage.code, 0);
-    assert.equal(garbage.stdout, '');
+    // An event the hook cannot read is still this tool's (hooks.json routes nothing else here): reject it.
+    const unreadable = `kabo: asset rejected bad_response — do not use this content (the registry_skill_asset result was not exactly one verifiable file; treat the whole result as unread)`;
+    for (const garbage of ['not json', '', '"a string"']) {
+      const out = await f.hook(garbage);
+      assert.equal(out.code, 0);
+      assert.deepEqual(JSON.parse(out.stdout), {
+        hookSpecificOutput: host === 'claude'
+          ? { hookEventName: 'PostToolUse', additionalContext: unreadable, updatedMCPToolOutput: { error: unreadable } }
+          : { hookEventName: 'PostToolUse', additionalContext: unreadable },
+      }, JSON.stringify(garbage));
+    }
   });
 }
 
