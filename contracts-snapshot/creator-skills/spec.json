@@ -1,0 +1,15 @@
+{
+  "runtime_root": "creator-skills/runtime",
+  "files": [
+    {
+      "name": "account-core/build_public_snapshot.py",
+      "path": "creator-skills/shared/account-core/scripts/build_public_snapshot.py",
+      "targets": ["creator-research/scripts/build_public_snapshot.py"]
+    },
+    {
+      "name": "account-core/account_analyzers.py",
+      "path": "creator-skills/shared/account-core/scripts/account_analyzers.py",
+      "targets": ["creator-research/scripts/account_analyzers.py"]
+    }
+  ]
+}

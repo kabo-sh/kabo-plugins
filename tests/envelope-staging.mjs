@@ -69,19 +69,30 @@ for (const host of ['claude', 'codex']) {
     assert.equal(JSON.parse(await fs.readFile(path.join(staging, '01.meta'), 'utf8')).verbatim, false);
   });
 
-  test(`${host}: request binding is limited to matching direct Kabo share requests`, async t => {
+  test(`${host}: request URL binding is generic but limited to matching direct Kabo requests`, async t => {
     const {env,staging}=await setup(t);
     const payload={...envelope('req-share'),connector_id:'tiktok-search',operation:'get_video'};
     const event={session_id:'staging-session',tool_use_id:'call-share',tool_name:'mcp__kabo__data_connector_run',
       tool_input:{connector_id:'tiktok-search',operation:'get_video',params:{url:'https://vm.tiktok.com/abc/'}},tool_response:{structuredContent:payload}};
-    const cases=[{tool_name:'mcp__other__data_connector_run'},{tool_use_id:null},
-      {tool_input:{...event.tool_input,operation:'search'}},
-      {tool_input:{...event.tool_input,params:{url:'https://vm.tiktok.com.evil.test/abc/'}}},{}];
+    const page={...envelope('req-page'),connector_id:'official-page-render',operation:'render_page'};
+    const pageInput={connector_id:'official-page-render',operation:'render_page',params:{url:'https://support.example.test/rules'}};
+    // [event override, expected requested_url]
+    const cases=[
+      [{tool_name:'mcp__other__data_connector_run'},undefined],
+      [{tool_use_id:null},undefined],
+      [{tool_input:{...event.tool_input,operation:'search'}},undefined],
+      [{tool_input:{...event.tool_input,params:{url:'http://vm.tiktok.com/abc/'}}},undefined],
+      [{tool_input:{...event.tool_input,params:{url:'https://user:pw@vm.tiktok.com/abc/'}}},undefined],
+      [{tool_input:{...event.tool_input,params:{url:'https://vm.tiktok.com:8443/abc/'}}},undefined],
+      [{tool_input:{...event.tool_input,params:{url:'https://vm.tiktok.com.example.test/abc/'}}},'https://vm.tiktok.com.example.test/abc/'],
+      [{tool_input:pageInput,tool_response:{structuredContent:page}},pageInput.params.url],
+      [{},event.tool_input.params.url],
+    ];
     for(let i=0;i<cases.length;i++) {
-      const result=await run(process.execPath,[hookFile],env,JSON.stringify({...event,...cases[i]}));
+      const result=await run(process.execPath,[hookFile],env,JSON.stringify({...event,...cases[i][0]}));
       assert.equal(result.code,0,result.stderr);
       const meta=JSON.parse(await fs.readFile(path.join(staging,String(i+1).padStart(2,'0')+'.meta'),'utf8'));
-      assert.equal(meta.requested_url,i===cases.length-1?event.tool_input.params.url:undefined);
+      assert.equal(meta.requested_url,cases[i][1],`case ${i}`);
     }
   });
 
