@@ -6,16 +6,6 @@
       "http_headers": {
         "X-Kabo-Plugin-Version": "0.22.0"
       }
-    },
-    "kabo_links": {
-      "command": "node",
-      "args": [
-        "scripts/link-server.js"
-      ],
-      "cwd": ".",
-      "env_vars": [
-        "KABO_CODEX_DATA"
-      ]
     }
   }
 }
