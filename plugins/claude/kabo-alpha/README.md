@@ -91,6 +91,8 @@ These skills' bodies are **used verbatim from upstream with no rewriting** — u
 
 `creator-research/` is nested in a subdirectory rather than spread across the plugin root because the root's `scripts/` already holds `hooks/` and `lib/` — dropping upstream's `scripts/` straight on top would delete the hook entry points.
 
+`creator-research/scripts/` is generated, never edited here: its files are byte copies of creator-skills `shared/account-core/scripts/` at the commit pinned in `contracts-snapshot/creator-skills/pin.json`, written into both variants by `node scripts/creator-skills-snapshot.mjs --refresh --commit <sha> --source <creator-skills checkout>` and checked in CI by `--verify`. Current skill packages ship their own copies; these remain for older cached packages that still resolve `../../scripts/`.
+
 Slash commands (five):
 
 | Command | What it does |

@@ -1,5 +1,5 @@
 {
-  "source": "kabo-sh/creator-skills@8a7812812214821dd7be629f2570c4b7ff30f4b6:creator-skills/runtime",
+  "source": "kabo-sh/creator-skills@6b67f17c58f2135a83b901d45cdafdded314b2af:creator-skills/runtime",
   "execution": "subagent",
   "required_tools": [
     "mcp__plugin_kabo-alpha_kabo__collect_instagram_trend_candidates",
