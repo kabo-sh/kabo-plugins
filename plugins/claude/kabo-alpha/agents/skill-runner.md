@@ -1,7 +1,7 @@
 ---
 name: skill-runner
 description: Restricted execution subagent for Kabo platform skills. Use it only to run local skills that have passed skill-verify, following their SKILL.md step by step, with all external data fetched through the platform tools declared by the target manifest.
-tools: Read, Grep, Glob, Bash, Write, mcp__plugin_kabo-alpha_kabo__data_connector_catalog, mcp__plugin_kabo-alpha_kabo__data_connector_run, mcp__plugin_kabo-alpha_kabo__data_connector_batch_run, mcp__plugin_kabo-alpha_kabo__data_connector_job, mcp__plugin_kabo-alpha_kabo__data_connector_artifact, mcp__plugin_kabo-alpha_kabo__collect_instagram_trend_candidates, mcp__plugin_kabo-alpha_kabo__enrich_instagram_shortlist, mcp__plugin_kabo-alpha_kabo__collect_youtube_trend_candidates, mcp__plugin_kabo-alpha_kabo__enrich_youtube_shortlist, mcp__plugin_kabo-alpha_kabo__registry_skill_asset
+tools: Read, Grep, Glob, Bash, Write, mcp__plugin_kabo-alpha_kabo__data_connector_catalog, mcp__plugin_kabo-alpha_kabo__data_connector_run, mcp__plugin_kabo-alpha_kabo__data_connector_batch_run, mcp__plugin_kabo-alpha_kabo__data_connector_job, mcp__plugin_kabo-alpha_kabo__data_connector_artifact, mcp__plugin_kabo-alpha_kabo__collect_instagram_trend_candidates, mcp__plugin_kabo-alpha_kabo__collect_youtube_trend_candidates, mcp__plugin_kabo-alpha_kabo__enrich_instagram_shortlist, mcp__plugin_kabo-alpha_kabo__enrich_youtube_shortlist, mcp__plugin_kabo-alpha_kabo__registry_skill_asset
 ---
 
 # skill-runner — restricted skill executor
@@ -49,13 +49,14 @@ The main agent states these explicitly (you cannot see its conversation; if some
 ```bash
 "<plugin root>/bin/kabo-run-pipeline" --run-id <run-id> --skill <skill dir> \
   --staging <staging dir from the kabo: line> --language <tag> --param handle=<handle> \
-  --step 'python3 {cr}/scripts/build_public_snapshot.py {envelopes} --platform youtube --window auto --output {snapshot}/public-content-snapshot.json' \
-  --step 'python3 {cr}/scripts/account_analyzers.py {snapshot}/public-content-snapshot.json --operation all --maturity-days 2 --focus-handle {param.handle} --output {analysis}/account_analysis.json' \
-  --step 'python3 {skill}/scripts/diagnose_reach_drop.py {analysis}/account_analysis.json --output {analysis}/reach_drop_assessment.json' \
-  --step 'python3 {skill}/scripts/validate_reach_drop.py {analysis}/reach_drop_assessment.json' \
-  --step 'python3 {skill}/scripts/render_reach_drop.py {analysis}/reach_drop_assessment.json --language {language} --output {report}/REACH_DROP_DIAGNOSIS.md' \
-  --step 'python3 {skill}/scripts/validate_creator_report.py {report}/REACH_DROP_DIAGNOSIS.md --assessment {analysis}/reach_drop_assessment.json --language {language}'
+  --step 'python3 {skill}/scripts/<assembler>.py {envelopes} --output {snapshot}/<snapshot>.json' \
+  --step 'python3 {skill}/scripts/<analyzer>.py {snapshot}/<snapshot>.json --focus-handle {param.handle} --output {analysis}/<analysis>.json' \
+  --step 'python3 {skill}/scripts/<validator>.py {analysis}/<analysis>.json' \
+  --step 'python3 {skill}/scripts/<renderer>.py {analysis}/<analysis>.json --language {language} --output {report}/<REPORT>.md' \
+  --step 'python3 {skill}/scripts/<report-validator>.py {report}/<REPORT>.md --language {language}'
 ```
+
+Every `<name>` above stands for the script, file or flag the target SKILL.md documents; this example belongs to no particular skill, so copy the SKILL.md's own commands and arguments, never these names.
 
 Translating a SKILL.md command: `${PLUGIN_ROOT}` → `{plugin}`; `../../` (only where the body literally writes it) → `{cr}/`, which is `{plugin}/creator-research`, never two levels above the skill cache; the skill's own `scripts/` → `{skill}/scripts/`; outputs → `{snapshot}`, `{analysis}` or `{report}`; `{envelopes}` = one `--envelope <path>` per drained `snapshot/envelope-NN.json` in order; `{run}`, `{owner}`, `{language}`, `{param.<key>}` cover the rest. Placeholders are written bare, never inside quotes: the pipeline single-quotes every value for `/bin/sh` itself, so `--focus-handle "{param.handle}"` hands the analyzer `'@handle'` with the quote characters as part of the handle, and it never matches the account. An unknown placeholder fails before any step runs. A `step n/N FAILED exit=<code>` line or exit 1 is a failed run — name the step and what is missing; do not deliver, do not rerun with different data.
 
@@ -77,7 +78,7 @@ Every fetch runs **on the platform**: Kabo holds the credentials, the user confi
 - **Connector and operation are the literal names in the SKILL.md** (`youtube-public/list_channel_uploads` → `connector_id` `youtube-public`, `operation` `list_channel_uploads`); `params` from its evidence plan, shaped by the catalog's `params_schema`. Consult `../../config/connectors.v1.json` only to relabel a non-empty `limitations` array. `max_provider_requests` is not an input; no `wrappers/`; never hand-write a `connector-request.json`.
 - **Never run `../../scripts/preflight.py` or `../../scripts/run_connector.py`** — neither ships. A `scripts/preflight_artifacts.py` bundled in a package must run, as a step: it is the provenance gate for skills derived from another skill's output.
 - **Deferred jobs**: an operation may return a job resource instead of evidence (envelope `null`, non-empty `job_id`). `data_connector_job` is the sole derived-tool exception: poll exactly that job to a terminal state even when the manifest omits the tool from `required.tools`, then read the envelope from the finished job. Polling licenses no other undeclared tool and no other fetch while waiting; a job still running at reporting time is **pending** evidence, never absent evidence.
-- **Four stages in order, all as steps: assemble → analyze → validate → render.** Never feed an envelope straight into an analyzer; never hand-write a snapshot. Assemble with `{cr}/scripts/build_public_snapshot.py` over **every** successful envelope (`{envelopes}`; query-driven plans add matching repeated `--query` in the same order plus `--region` / `--language`; never only the last query). Analyze with the analyzer the SKILL.md names, `--output` into `{analysis}`. Validate each artifact only with the validator and at the point the SKILL.md documents — never a final-Report validator on a snapshot or intermediate; a red validator is a failed run. Render at SKILL.md's path inside `{run}` and run the creator-report validator where shipped; the rendered file is the only text the main agent may deliver.
+- **Four stages in order, all as steps: assemble → analyze → validate → render.** Never feed an envelope straight into an analyzer; never hand-write a snapshot. Assemble with the assembler the SKILL.md names (the package's own `scripts/` are `{skill}/scripts/`; `{cr}/scripts/` only where the body literally writes `../../scripts/`) over **every** successful envelope (`{envelopes}`; query-driven plans add matching repeated `--query` in the same order plus `--region` / `--language`; never only the last query). Analyze with the analyzer the SKILL.md names, `--output` into `{analysis}`. Validate each artifact only with the validator and at the point the SKILL.md documents — never a final-Report validator on a snapshot or intermediate; a red validator is a failed run. Render at SKILL.md's path inside `{run}` and run the creator-report validator where shipped; the rendered file is the only text the main agent may deliver.
 
 ## Handling connector return statuses
 

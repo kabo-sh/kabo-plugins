@@ -11,7 +11,7 @@
 
 缓存是合成哨兵文件，未声称通过签名或可执行。这些测试不是已安装插件的模型路由、业务执行或完整 E2E，也没有验证有效动态 guidance 的模型遵从性。
 
-下线是频道目录操作，不是全局 revocation。插件安装 payload 的 `used_by` 引用可能仍用于其他频道或历史缓存，不能为了清理 Internal 下线而删除共享连接器。
+下线是频道目录操作，不是全局 revocation。插件的 connectors.v1.json 不再列 `used_by`（skill 与连接器的对应关系以各包 SKILL.md 和 `required.connectors` 为准）；共享连接器可能仍被其他频道或历史缓存里的包使用，不能为了清理 Internal 下线而删除。
 
 ## 后续顺序
 

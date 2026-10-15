@@ -1,0 +1,27 @@
+{
+  "repository": "kabo-sh/creator-skills",
+  "commit": "6b67f17c58f2135a83b901d45cdafdded314b2af",
+  "files": {
+    "account-core/account_analyzers.py": {
+      "path": "creator-skills/shared/account-core/scripts/account_analyzers.py",
+      "sha256": "42853f1b1e7489800579e4c6b5048fc3c9aed4f9326c584a741ddb0405eb030f",
+      "targets": [
+        "creator-research/scripts/account_analyzers.py"
+      ]
+    },
+    "account-core/build_public_snapshot.py": {
+      "path": "creator-skills/shared/account-core/scripts/build_public_snapshot.py",
+      "sha256": "92b116e082e1db2fd1b7ce2d86dd12d8f02107db45cbd3f85c28facbae4509a6",
+      "targets": [
+        "creator-research/scripts/build_public_snapshot.py"
+      ]
+    },
+    "account-core/snapshot_store.py": {
+      "path": "creator-skills/shared/account-core/scripts/snapshot_store.py",
+      "sha256": "57585213faafe1de3ca49268ec002cb4f11eebd0065483e33fe83d8c78c90656",
+      "targets": [
+        "creator-research/scripts/snapshot_store.py"
+      ]
+    }
+  }
+}

@@ -1,0 +1,12 @@
+{
+  "runtime_root": "creator-skills/runtime",
+  "generated_dirs": ["creator-research/scripts"],
+  "files": [
+    {
+      "name": "account-core",
+      "dir": true,
+      "path": "creator-skills/shared/account-core/scripts",
+      "targets": ["creator-research/scripts"]
+    }
+  ]
+}

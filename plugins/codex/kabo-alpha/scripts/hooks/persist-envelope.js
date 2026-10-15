@@ -356,18 +356,21 @@ function nextSequence(dir) {
   return max + 1;
 }
 
-// Bind a direct, host-reported Kabo share-link request without changing returned envelope bytes.
+// Bind the URL a direct, host-reported Kabo data_connector_run request named (params.url) to the
+// envelope it returned, without changing the envelope bytes. Generic over connectors and URL hosts:
+// a skill that reads a link (a share short link that the platform resolves, a page URL) can pair
+// the staged response with the exact link it asked for. Only a plain https URL is recorded.
 function requestedShareUrl(event, envelope) {
   if (!['mcp__kabo__data_connector_run', 'mcp__plugin_kabo-alpha_kabo__data_connector_run'].includes(event.tool_name) ||
       typeof event.tool_use_id !== 'string' || !event.tool_use_id || typeof envelope.request_id !== 'string' || !envelope.request_id) return undefined;
   let input = event.tool_input;
   if (typeof input === 'string') { try { input = JSON.parse(input); } catch { return undefined; } }
-  if (input?.connector_id !== 'tiktok-search' || input?.operation !== 'get_video' ||
+  if (typeof input?.connector_id !== 'string' || typeof input?.operation !== 'string' ||
       input.connector_id !== envelope.connector_id || input.operation !== envelope.operation ||
       typeof input.params?.url !== 'string' || input.params.url.length > 2048) return undefined;
   try {
     const url = new URL(input.params.url);
-    if (url.protocol !== 'https:' || url.username || url.password || url.port || !['vt.tiktok.com', 'vm.tiktok.com'].includes(url.hostname)) return undefined;
+    if (url.protocol !== 'https:' || url.username || url.password || url.port) return undefined;
     return input.params.url;
   } catch { return undefined; }
 }
