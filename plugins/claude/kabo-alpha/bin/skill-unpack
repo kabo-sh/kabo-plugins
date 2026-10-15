@@ -6,7 +6,9 @@
 //     - dest-root defaults to <data root>/skill-cache (the data root is fixed at ~/.kabo, overridable with KABO_DATA_ROOT)
 //     - --verify may appear anywhere in argv
 // On-disk layout: <dest-root>/<id>/<version>/ containing every file + .meta.json
-//   .meta.json = {id, version, checksum, signature, downloaded_at, format_version?, key_id?}
+//   .meta.json = {id, version, checksum, signature, downloaded_at, format_version?, key_id?, deferred_files?}
+//   A package that deferred some assets/ files (deferred_files: [{path, sha256, size}], plugin >= 0.22.0)
+//   leaves those files off disk; bin/skill-asset-install writes each one when the model fetches it.
 // Note: this script only writes to disk and performs no verification of its own; bin/skill-verify must
 // pass before execution. --verify does not change that: it hands the freshly written directory to
 // bin/skill-verify as a child process and exits with the child's exit code - nothing is skipped.
@@ -30,7 +32,9 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
-import { cacheRoot, ensurePrivateDir, readJsonSilent, PLUGIN_ARTIFACT_FORMAT_VERSION } from '../scripts/lib/common.js';
+import {
+  cacheRoot, ensurePrivateDir, readJsonSilent, PLUGIN_ARTIFACT_FORMAT_VERSION, deferredFilesProblem, pathCollision,
+} from '../scripts/lib/common.js';
 
 const USAGE = `Usage: skill-unpack [--verify] <path to package.json|-> [dest-root]
   Reads a SkillPackage JSON from a file or stdin(-) and writes it to <dest-root>/<id>/<version>/
@@ -166,6 +170,24 @@ async function main() {
     assertSafeRelPath(f.path);
   }
 
+  // deferred_files: the assets/ files the server left out of this download (the checksum and the
+  // signature still cover them - see "Deferred assets" in common.js). Rejected before the
+  // destination is touched, like a bad files entry: a malformed list, or a path that is both
+  // shipped and deferred, could only ever make skill-verify fail, or let one path carry two digests.
+  // An absent field or an empty list means nothing was deferred.
+  const deferred = pkg.deferred_files === undefined || pkg.deferred_files === null ? [] : pkg.deferred_files;
+  const deferredProblem = deferredFilesProblem(deferred);
+  if (deferredProblem) die(`SkillPackage has an illegal deferred_files list: ${deferredProblem}`);
+  const shipped = new Set(pkg.files.map((f) => f.path));
+  for (const entry of deferred) {
+    if (shipped.has(entry.path)) die(`SkillPackage both ships and defers ${JSON.stringify(entry.path)}`);
+  }
+  // Every path, shipped or deferred, must stay distinct on a case-insensitive file system too (the
+  // default on macOS): otherwise two files land on one, or a deferred file reads as absent under one
+  // spelling while it is present under another.
+  const collision = pathCollision([...pkg.files.map((f) => f.path), ...deferred.map((d) => d.path)]);
+  if (collision) die(`SkillPackage paths collide: ${collision}`);
+
   const destRoot = args[1] ? path.resolve(args[1]) : cacheRoot();
   const dest = path.join(destRoot, pkg.id, pkg.version);
 
@@ -206,6 +228,10 @@ async function main() {
   // it at most makes skill-verify try a few more pinned keys and cannot change the verification
   // outcome. It is passed through only to save a try during a key rotation.
   if (typeof pkg.key_id === 'string' && pkg.key_id) meta.key_id = pkg.key_id;
+  // deferred_files goes to disk verbatim: skill-verify needs each absent file's declared sha256 to
+  // rebuild the signed manifest, and skill-asset-install checks a fetched file against it. Same
+  // unsigned-but-safe status as format_version: any tampering ends in a checksum mismatch.
+  if (deferred.length > 0) meta.deferred_files = deferred;
   fs.writeFileSync(path.join(dest, '.meta.json'), JSON.stringify(meta, null, 2) + '\n');
 
   // Since 0.7.0 the client no longer records a skill_download event: the client has no reporting
@@ -214,7 +240,7 @@ async function main() {
 
   // Cache-relative on purpose (see the header): the last segment of dest-root is "skill-cache" for the
   // default root and whatever the caller named for a custom one, never the path above it.
-  out(`Written: ${pkg.id}@${pkg.version} -> ${path.basename(destRoot)}/${pkg.id}/${pkg.version} (${pkg.files.length} file(s) + .meta.json)`);
+  out(`Written: ${pkg.id}@${pkg.version} -> ${path.basename(destRoot)}/${pkg.id}/${pkg.version} (${pkg.files.length} file(s) + .meta.json${deferred.length > 0 ? `; ${deferred.length} deferred asset(s) fetched on demand` : ''})`);
   out(manifestDigest(dest, pkg));
 
   if (!verify) {

@@ -13,7 +13,10 @@
 //         network is unreachable, fall back to the result of a.
 //         --local-only skips b entirely.
 //   3. Recompute the checksum (algorithm verbatim identical to the server's, see computeChecksum in
-//      common.js) and compare it against .meta.json
+//      common.js) and compare it against .meta.json. A package that deferred assets/ files
+//      (.meta.json deferred_files, plugin >= 0.22.0) is checked with what is on disk: an absent
+//      deferred file contributes its declared sha256, a present one must match that sha256 first
+//      (else deferred_mismatch) - so a partially fetched cache verifies, and a wrong file never does.
 //   4. Verify the signature with the server's Ed25519 keyset (GET /api/public-key, pinned after TOFU in
 //      <data root>/public-keys.<bucket>.json; on a key rotation it refreshes once via a continuity proof).
 //      --local-only tries the pinned keys only and never refreshes: no pinned key means
@@ -43,7 +46,7 @@ import {
   isSafeName,
   apiEndpoint, readJsonSilent, writeJsonSilent,
   disabledMarkerPath, revocationSyncPath, REVOCATION_SYNC_TTL_MS, GUIDANCE_CLOCK_SKEW_MS,
-  computeChecksum, artifactFormatOf, ensureVerified, fetchJsonSilent,
+  computeChecksum, artifactFormatOf, deferredFilesProblem, withDeferredFiles, ensureVerified, fetchJsonSilent,
   appendPendingReport, compareSemver, PLUGIN_VERSION,
 } from '../scripts/lib/common.js';
 
@@ -81,20 +84,28 @@ function fail(meta, reason, errorType) {
 }
 
 /** Recursively collect every file under dir (relative paths, posix separators).
+ *  Anything that is neither a regular file nor a directory - a symlink, a FIFO, a socket, a device -
+ *  anywhere in the tree, dotfiles included, is reported in `unexpected` and fails verification
+ *  (unexpected_entry): a symlink at a deferred path would otherwise be skipped, read as "not fetched
+ *  yet", and stand in with the declared digest while pointing at arbitrary bytes. Dot-prefixed
+ *  directories are walked for that check only; their files never enter the manifest.
  *  Dotfiles are always skipped: they neither go into a package nor take part in verification, and this
  *  selection must stay in step with the server's packaging - the two have to pick exactly the same
  *  files or every checksum comes out different. It also naturally excludes the on-disk metadata
  *  .meta.json plus stray dotfiles such as .DS_Store and editor temp files. */
-function collectFiles(dir, base = '') {
+function collectFiles(dir, base = '', unexpected = [], collect = true) {
   const out = [];
+  // Dirent types come from lstat, never from the link target: a symlink is a symlink here.
   for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
     const rel = base ? `${base}/${entry.name}` : entry.name;
-    if (entry.name.startsWith('.')) continue;
     const full = path.join(dir, entry.name);
+    const keep = collect && !entry.name.startsWith('.');
     if (entry.isDirectory()) {
-      out.push(...collectFiles(full, rel));
+      out.push(...collectFiles(full, rel, unexpected, keep));
     } else if (entry.isFile()) {
-      out.push({ path: rel, content: fs.readFileSync(full) });
+      if (keep) out.push({ path: rel, content: fs.readFileSync(full) });
+    } else {
+      unexpected.push(rel);
     }
   }
   return out;
@@ -241,11 +252,31 @@ async function main() {
       'unsupported_artifact_format',
     );
   }
-  const files = collectFiles(dir);
+  const unexpected = [];
+  const files = collectFiles(dir, '', unexpected);
+  if (unexpected.length > 0) {
+    fail(meta, `the skill directory holds entries that are neither regular files nor directories (symlink, FIFO, socket or device): ${unexpected.slice(0, 5).map((p) => JSON.stringify(p)).join(', ')}`, 'unexpected_entry');
+  }
   if (files.length === 0) fail(meta, 'the directory is empty, there is nothing to verify', 'empty_dir');
+  // Deferred assets: the list is .meta.json's (unsigned, see skill-unpack), so a malformed one is
+  // refused outright, and a fetched file must carry exactly its declared digest before that digest
+  // stands in anywhere. Whatever the list says, the result still has to reproduce the signed
+  // checksum below - tampering with it can cause a refusal, never an acceptance.
+  let manifestFiles = files;
+  let deferredAbsent = 0;
+  if (meta.deferred_files !== undefined && meta.deferred_files !== null) {
+    const problem = deferredFilesProblem(meta.deferred_files);
+    if (problem) fail(meta, `.meta.json deferred_files is malformed: ${problem}`, 'meta_invalid');
+    const merged = withDeferredFiles(files, meta.deferred_files);
+    if (!merged.ok) {
+      fail(meta, `deferred asset ${JSON.stringify(merged.path)} on disk does not match its declared sha256/size (tampered or corrupt)`, 'deferred_mismatch');
+    }
+    manifestFiles = merged.files;
+    deferredAbsent = merged.absent;
+  }
   let recomputed = null;
   try {
-    recomputed = computeChecksum(files, format.formatVersion);
+    recomputed = computeChecksum(manifestFiles, format.formatVersion);
   } catch (err) {
     // An illegal path on disk (a backslash, a NUL, a newline in a file name) cannot appear in a
     // signed manifest at all, so the cached tree cannot be the one that was signed.
@@ -301,9 +332,10 @@ async function main() {
   // The parenthesis names how the revocation list was consulted, so a transcript shows whether this
   // process went to the network - the difference between the two modes is exactly that.
   const subject = `${meta.id || '?'}@${meta.version || '?'}`;
+  const deferredNote = deferredAbsent > 0 ? `; ${deferredAbsent} deferred asset(s) not fetched yet` : '';
   console.log(localOnly
-    ? `Verification passed: ${subject} (local-only: checksum and ed25519 signature are both valid; revocation list not re-queried)`
-    : `Verification passed: ${subject} (checksum and ed25519 signature are both valid; revocation list ${revocationNote})`);
+    ? `Verification passed: ${subject} (local-only: checksum and ed25519 signature are both valid; revocation list not re-queried)${deferredNote}`
+    : `Verification passed: ${subject} (checksum and ed25519 signature are both valid; revocation list ${revocationNote})${deferredNote}`);
   process.exit(0);
 }
 
