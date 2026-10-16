@@ -1,11 +1,12 @@
 {
-  "source": "kabo-sh/creator-skills@9b0c56256547ff002c367534da3897b64b742ab8:creator-skills/runtime",
+  "source": "kabo-sh/creator-skills@fe6dc297b78603e654ec3bd8fd33402b5f41acd2:creator-skills/runtime",
   "execution": "subagent",
   "required_tools": [
     "mcp__plugin_kabo-alpha_kabo__collect_instagram_trend_candidates",
     "mcp__plugin_kabo-alpha_kabo__collect_youtube_trend_candidates",
     "mcp__plugin_kabo-alpha_kabo__data_connector_batch_run",
     "mcp__plugin_kabo-alpha_kabo__data_connector_catalog",
+    "mcp__plugin_kabo-alpha_kabo__data_connector_job",
     "mcp__plugin_kabo-alpha_kabo__data_connector_run",
     "mcp__plugin_kabo-alpha_kabo__enrich_instagram_shortlist",
     "mcp__plugin_kabo-alpha_kabo__enrich_youtube_shortlist"
