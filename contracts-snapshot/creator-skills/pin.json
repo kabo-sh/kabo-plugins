@@ -1,6 +1,6 @@
 {
   "repository": "kabo-sh/creator-skills",
-  "commit": "6b67f17c58f2135a83b901d45cdafdded314b2af",
+  "commit": "31fc9f2fa15cd35cebdf24bb67c5385dd099ffa2",
   "files": {
     "account-core/account_analyzers.py": {
       "path": "creator-skills/shared/account-core/scripts/account_analyzers.py",
@@ -22,6 +22,138 @@
       "targets": [
         "creator-research/scripts/snapshot_store.py"
       ]
+    },
+    "host-fixtures/analyze-tiktok-competitors@0.1.50/host-staging/0/01a14002-490a-7390-b758-1c531b49d217/01.json": {
+      "path": "contracts/host-fixtures/analyze-tiktok-competitors@0.1.50/host-staging/0/01a14002-490a-7390-b758-1c531b49d217/01.json",
+      "sha256": "3bd2d45aa67c144b7b8015b0df03c24a95707b48d01edf5bfbac4aa786e01845"
+    },
+    "host-fixtures/analyze-tiktok-competitors@0.1.50/host-staging/0/01a14002-490a-7390-b758-1c531b49d217/01.meta": {
+      "path": "contracts/host-fixtures/analyze-tiktok-competitors@0.1.50/host-staging/0/01a14002-490a-7390-b758-1c531b49d217/01.meta",
+      "sha256": "c8e362f11d68d82a3b91d17326f50ce376c44e5e98b2def58aeb163bbe4188b6"
+    },
+    "host-fixtures/analyze-tiktok-competitors@0.1.50/host-staging/0/01a14002-490a-7390-b758-1c531b49d217/02.json": {
+      "path": "contracts/host-fixtures/analyze-tiktok-competitors@0.1.50/host-staging/0/01a14002-490a-7390-b758-1c531b49d217/02.json",
+      "sha256": "b2c05977bc76fd581c77d8bb58619082b337fa8382c624bc3420196e55faf2d1"
+    },
+    "host-fixtures/analyze-tiktok-competitors@0.1.50/host-staging/0/01a14002-490a-7390-b758-1c531b49d217/02.meta": {
+      "path": "contracts/host-fixtures/analyze-tiktok-competitors@0.1.50/host-staging/0/01a14002-490a-7390-b758-1c531b49d217/02.meta",
+      "sha256": "8f65a25fef83f741d5a2a4078f569c35bc1e89f3917a8eeba5233c989079584c"
+    },
+    "host-fixtures/analyze-tiktok-competitors@0.1.50/host-staging/0/01a14002-490a-7390-b758-1c531b49d217/03.json": {
+      "path": "contracts/host-fixtures/analyze-tiktok-competitors@0.1.50/host-staging/0/01a14002-490a-7390-b758-1c531b49d217/03.json",
+      "sha256": "a300de9563133476f297feb4c0991aef251dbe3a2a0c1d5736094fbc23b8d44e"
+    },
+    "host-fixtures/analyze-tiktok-competitors@0.1.50/host-staging/0/01a14002-490a-7390-b758-1c531b49d217/03.meta": {
+      "path": "contracts/host-fixtures/analyze-tiktok-competitors@0.1.50/host-staging/0/01a14002-490a-7390-b758-1c531b49d217/03.meta",
+      "sha256": "985dab0b409d4aff6343f5897c75d0ce6d86207c9d8d208800c1cdb637e0aef3"
+    },
+    "host-fixtures/analyze-tiktok-competitors@0.1.50/host-staging/0/01a14002-490a-7390-b758-1c531b49d217/04.json": {
+      "path": "contracts/host-fixtures/analyze-tiktok-competitors@0.1.50/host-staging/0/01a14002-490a-7390-b758-1c531b49d217/04.json",
+      "sha256": "66b89a35e37afe6a95c1aee7366240e425a1ec23af3fc8c47f42c4cdcee2afcc"
+    },
+    "host-fixtures/diagnose-reach-drop@0.3.100/host-staging/0/01a14007-6e67-77d0-9a52-c32452f0c36b/01.json": {
+      "path": "contracts/host-fixtures/diagnose-reach-drop@0.3.100/host-staging/0/01a14007-6e67-77d0-9a52-c32452f0c36b/01.json",
+      "sha256": "f4268a933bfcad3e7a0764f20b2fc6ea97519a6ff6f9d79ecbbdaf2910391038"
+    },
+    "host-fixtures/diagnose-reach-drop@0.3.100/host-staging/0/01a14007-6e67-77d0-9a52-c32452f0c36b/01.meta": {
+      "path": "contracts/host-fixtures/diagnose-reach-drop@0.3.100/host-staging/0/01a14007-6e67-77d0-9a52-c32452f0c36b/01.meta",
+      "sha256": "b19d6ff813f0b38ee34e151d9cb8a768bb5ed8f95a4563350d7cb709079e9add"
+    },
+    "host-fixtures/optimize-creator-brand@0.3.13/host-staging/0/01a14031-5571-7613-8104-4d4f0eecc225/01.json": {
+      "path": "contracts/host-fixtures/optimize-creator-brand@0.3.13/host-staging/0/01a14031-5571-7613-8104-4d4f0eecc225/01.json",
+      "sha256": "db42c51fc2d3913191f29db844d7ea5fc6033e8020011ce8f52155d661ba60aa"
+    },
+    "host-fixtures/optimize-creator-brand@0.3.13/host-staging/0/01a14031-5571-7613-8104-4d4f0eecc225/01.meta": {
+      "path": "contracts/host-fixtures/optimize-creator-brand@0.3.13/host-staging/0/01a14031-5571-7613-8104-4d4f0eecc225/01.meta",
+      "sha256": "fbc3a745fc64b9a655391379affd8ac0a8ebde895e4509f3721349c2bb9b2d4b"
+    },
+    "host-fixtures/optimize-creator-brand@0.3.13/host-staging/0/01a14031-5571-7613-8104-4d4f0eecc225/02.json": {
+      "path": "contracts/host-fixtures/optimize-creator-brand@0.3.13/host-staging/0/01a14031-5571-7613-8104-4d4f0eecc225/02.json",
+      "sha256": "fbf84b21eed50cbc58107b6ce37e563865fc83f527edab5890621dce5e6a1a94"
+    },
+    "host-fixtures/optimize-creator-brand@0.3.13/host-staging/0/01a14031-5571-7613-8104-4d4f0eecc225/02.meta": {
+      "path": "contracts/host-fixtures/optimize-creator-brand@0.3.13/host-staging/0/01a14031-5571-7613-8104-4d4f0eecc225/02.meta",
+      "sha256": "fff4911c8253b80245931142c7fb9f3a47e93c27de62e08d16478ffec8dbf66e"
+    },
+    "host-fixtures/research-instagram-trends@0.3.73/host-staging/0/01a13fde-64ff-7cb1-b341-65ff84741f77/01.json": {
+      "path": "contracts/host-fixtures/research-instagram-trends@0.3.73/host-staging/0/01a13fde-64ff-7cb1-b341-65ff84741f77/01.json",
+      "sha256": "6648c46b54152c1951c4b7b86feecddfce890edb658e6e4bf140d3825e9a89db"
+    },
+    "host-fixtures/research-instagram-trends@0.3.73/host-staging/0/01a13fde-64ff-7cb1-b341-65ff84741f77/01.meta": {
+      "path": "contracts/host-fixtures/research-instagram-trends@0.3.73/host-staging/0/01a13fde-64ff-7cb1-b341-65ff84741f77/01.meta",
+      "sha256": "082b47f8b45053c9832b71be4e7d80910c01df6073ec4bf44fb24c7616e02928"
+    },
+    "host-fixtures/research-instagram-trends@0.3.73/host-staging/0/01a13fde-64ff-7cb1-b341-65ff84741f77/02.json": {
+      "path": "contracts/host-fixtures/research-instagram-trends@0.3.73/host-staging/0/01a13fde-64ff-7cb1-b341-65ff84741f77/02.json",
+      "sha256": "08d15f9643090c41213612ed4d31a7e59a4cdc0243531e7f4353bfb70e55e2e1"
+    },
+    "host-fixtures/research-instagram-trends@0.3.73/host-staging/0/01a13fde-64ff-7cb1-b341-65ff84741f77/02.meta": {
+      "path": "contracts/host-fixtures/research-instagram-trends@0.3.73/host-staging/0/01a13fde-64ff-7cb1-b341-65ff84741f77/02.meta",
+      "sha256": "d32d167a8ebf91df094a0b7960103a90f4ca56a18438b27fa1a7c160891e457a"
+    },
+    "host-fixtures/research-tiktok-trends@0.1.61/host-staging/0/01a13ff7-7a37-7da2-abeb-26f94ff34191/01.json": {
+      "path": "contracts/host-fixtures/research-tiktok-trends@0.1.61/host-staging/0/01a13ff7-7a37-7da2-abeb-26f94ff34191/01.json",
+      "sha256": "aa279d224662e4cdb9af56011ea92a35171daa3dbe79113967c4e3211f595a73"
+    },
+    "host-fixtures/research-tiktok-trends@0.1.61/host-staging/0/01a13ff7-7a37-7da2-abeb-26f94ff34191/01.meta": {
+      "path": "contracts/host-fixtures/research-tiktok-trends@0.1.61/host-staging/0/01a13ff7-7a37-7da2-abeb-26f94ff34191/01.meta",
+      "sha256": "867af9f1482d08b99dc7483b664aeeffd854dccc29dae9b6ed26230e9d9458a2"
+    },
+    "host-fixtures/research-youtube-trends@0.1.63/host-staging/0/01a13fec-2187-71b0-9081-47769573af39/01.json": {
+      "path": "contracts/host-fixtures/research-youtube-trends@0.1.63/host-staging/0/01a13fec-2187-71b0-9081-47769573af39/01.json",
+      "sha256": "bf53c0b12c888b59be35dda5e8e8362d2c70443b80a22369ff487d3e4180db51"
+    },
+    "host-fixtures/research-youtube-trends@0.1.63/host-staging/0/01a13fec-2187-71b0-9081-47769573af39/01.meta": {
+      "path": "contracts/host-fixtures/research-youtube-trends@0.1.63/host-staging/0/01a13fec-2187-71b0-9081-47769573af39/01.meta",
+      "sha256": "f77fca5a1aa7785479585452896e8847841ce06323652459fd9fca7613afe3f3"
+    },
+    "host-fixtures/research-youtube-trends@0.1.63/host-staging/0/01a13fec-2187-71b0-9081-47769573af39/02.json": {
+      "path": "contracts/host-fixtures/research-youtube-trends@0.1.63/host-staging/0/01a13fec-2187-71b0-9081-47769573af39/02.json",
+      "sha256": "c210f35188a7a13d6abeee8712433f3482e487d3ed42b8b0b8224be39be68a74"
+    },
+    "host-fixtures/research-youtube-trends@0.1.63/host-staging/0/01a13fec-2187-71b0-9081-47769573af39/02.meta": {
+      "path": "contracts/host-fixtures/research-youtube-trends@0.1.63/host-staging/0/01a13fec-2187-71b0-9081-47769573af39/02.meta",
+      "sha256": "cd08b182a13381bd437659b041c7744d53f782f7b961eeb771507a44e2f8effc"
+    },
+    "host-fixtures/review-creator-account@0.5.30/host-staging/0/01a13fd0-b5d6-7493-b99f-78705921a0cd/01.json": {
+      "path": "contracts/host-fixtures/review-creator-account@0.5.30/host-staging/0/01a13fd0-b5d6-7493-b99f-78705921a0cd/01.json",
+      "sha256": "f0e6271bfe7aebc26b5cec557d630150ef6850df994ae83274864afc0bbd5246"
+    },
+    "host-fixtures/review-creator-account@0.5.30/host-staging/0/01a13fd0-b5d6-7493-b99f-78705921a0cd/01.meta": {
+      "path": "contracts/host-fixtures/review-creator-account@0.5.30/host-staging/0/01a13fd0-b5d6-7493-b99f-78705921a0cd/01.meta",
+      "sha256": "55c0d67e82ccfacb8b313bad50784eeb6200d904216dbff76559a6ddd3c999b9"
+    },
+    "host-fixtures/review-creator-account@0.5.30/host-staging/0/01a13fd0-b5d6-7493-b99f-78705921a0cd/02.meta": {
+      "path": "contracts/host-fixtures/review-creator-account@0.5.30/host-staging/0/01a13fd0-b5d6-7493-b99f-78705921a0cd/02.meta",
+      "sha256": "9430edf59697354bbd7adc05f0d4dcb33dd0268696591520d44a3e336de79caf"
+    },
+    "host-fixtures/review-creator-account@0.5.30/host-staging/0/01a13fd0-b5d6-7493-b99f-78705921a0cd/03.json": {
+      "path": "contracts/host-fixtures/review-creator-account@0.5.30/host-staging/0/01a13fd0-b5d6-7493-b99f-78705921a0cd/03.json",
+      "sha256": "24cea989e60676b45eb90d091d82230957dcc45c3445b67dcf9cbdb83d33bb86"
+    },
+    "host-fixtures/review-creator-account@0.5.30/host-staging/0/01a13fd0-b5d6-7493-b99f-78705921a0cd/03.meta": {
+      "path": "contracts/host-fixtures/review-creator-account@0.5.30/host-staging/0/01a13fd0-b5d6-7493-b99f-78705921a0cd/03.meta",
+      "sha256": "7baa7623364ce752f35464d6c7e522c70ed2888a86872b03f3b2faee4f5eafe9"
+    },
+    "host-fixtures/review-creator-account@0.5.30/host-staging/0/01a13fd0-b5d6-7493-b99f-78705921a0cd/04.json": {
+      "path": "contracts/host-fixtures/review-creator-account@0.5.30/host-staging/0/01a13fd0-b5d6-7493-b99f-78705921a0cd/04.json",
+      "sha256": "d2facc0bf51c7bfd21f5ddd3a6c944b7575826cfc8aa4752185606f09d36a842"
+    },
+    "host-fixtures/verify-platform-rule@0.18.17/host-staging/0/01a1403a-4d54-7b73-b89f-fc8e5428687e/01.json": {
+      "path": "contracts/host-fixtures/verify-platform-rule@0.18.17/host-staging/0/01a1403a-4d54-7b73-b89f-fc8e5428687e/01.json",
+      "sha256": "d1a88b1c273a63c62cd38abbaee1a763730b43847885772b51d2b6eb762baaba"
+    },
+    "host-fixtures/verify-platform-rule@0.18.17/host-staging/0/01a1403a-4d54-7b73-b89f-fc8e5428687e/01.meta": {
+      "path": "contracts/host-fixtures/verify-platform-rule@0.18.17/host-staging/0/01a1403a-4d54-7b73-b89f-fc8e5428687e/01.meta",
+      "sha256": "f4b2fa8e4fee5c848e746686a52d85c94cc69c159226271d9b1440b7edaebb95"
+    },
+    "host-fixtures/verify-platform-rule@0.18.17/host-staging/0/01a1403a-4d54-7b73-b89f-fc8e5428687e/02.json": {
+      "path": "contracts/host-fixtures/verify-platform-rule@0.18.17/host-staging/0/01a1403a-4d54-7b73-b89f-fc8e5428687e/02.json",
+      "sha256": "2486f9efcf5554ae05e105658bfe2b6a6b695ff40d0a1857b34785a5c5ec69ec"
+    },
+    "host-fixtures/verify-platform-rule@0.18.17/host-staging/0/01a1403a-4d54-7b73-b89f-fc8e5428687e/02.meta": {
+      "path": "contracts/host-fixtures/verify-platform-rule@0.18.17/host-staging/0/01a1403a-4d54-7b73-b89f-fc8e5428687e/02.meta",
+      "sha256": "8216c1de47d32c83b87c57e52dc6d5ed783aa4c066d5f46e023d7ba79f128b9a"
     }
   }
 }
