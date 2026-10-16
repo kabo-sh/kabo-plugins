@@ -1,6 +1,6 @@
 {
   "repository": "kabo-sh/creator-skills",
-  "commit": "9b0c56256547ff002c367534da3897b64b742ab8",
+  "commit": "fe6dc297b78603e654ec3bd8fd33402b5f41acd2",
   "files": {
     "account-core/account_analyzers.py": {
       "path": "creator-skills/shared/account-core/scripts/account_analyzers.py",
