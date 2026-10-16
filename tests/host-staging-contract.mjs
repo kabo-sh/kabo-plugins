@@ -93,9 +93,18 @@ for (const host of ['claude', 'codex']) {
       else assert.doesNotMatch(drained.stdout, /incomplete=/);
       const written = (await fs.readdir(snapshot)).filter((name) => /^envelope-\d{2,}\.json$/.test(name)).sort();
       assert.equal(written.length, pairs.length);
-      const expected = pairs.map(({ stem }) => sha256(fsSync.readFileSync(path.join(dir, `${stem}.json`)))).sort();
-      const actual = (await Promise.all(written.map(async (name) => sha256(await fs.readFile(path.join(snapshot, name)))))).sort();
-      assert.deepEqual(actual, expected, 'drained envelopes must be the staged bytes');
+      // Complete pairs drain in staging-number order into consecutive envelope numbers.
+      const expected = pairs.map(({ stem }) => sha256(fsSync.readFileSync(path.join(dir, `${stem}.json`))));
+      const actual = await Promise.all(written.map(async (name) => sha256(await fs.readFile(path.join(snapshot, name)))));
+      assert.deepEqual(actual, expected, 'drained envelopes must be the staged bytes, in staging order');
+      // Half pairs stay in staging untouched.
+      const complete = new Set(pairs.map(({ stem }) => stem));
+      for (const name of fsSync.readdirSync(dir)) {
+        const stem = /^(\d{2,})\.(json|meta)$/.exec(name)?.[1];
+        if (!stem || complete.has(stem)) continue;
+        assert.ok(fsSync.readFileSync(path.join(dir, name)).equals(fsSync.readFileSync(path.join(staging, name))),
+          `${name}: a half pair must stay in staging unchanged`);
+      }
     });
 
     test(`${host}: persist hook stages ${skill} envelopes in the sample's shape`, async (t) => {
