@@ -1,12 +1,56 @@
 {
   "runtime_root": "creator-skills/runtime",
-  "generated_dirs": ["creator-research/scripts"],
+  "generated_dirs": [
+    "creator-research/scripts"
+  ],
   "files": [
     {
       "name": "account-core",
       "dir": true,
       "path": "creator-skills/shared/account-core/scripts",
-      "targets": ["creator-research/scripts"]
+      "targets": [
+        "creator-research/scripts"
+      ]
+    },
+    {
+      "name": "host-fixtures/analyze-tiktok-competitors@0.1.50/host-staging",
+      "dir": true,
+      "path": "contracts/host-fixtures/analyze-tiktok-competitors@0.1.50/host-staging"
+    },
+    {
+      "name": "host-fixtures/diagnose-reach-drop@0.3.100/host-staging",
+      "dir": true,
+      "path": "contracts/host-fixtures/diagnose-reach-drop@0.3.100/host-staging"
+    },
+    {
+      "name": "host-fixtures/optimize-creator-brand@0.3.13/host-staging",
+      "dir": true,
+      "path": "contracts/host-fixtures/optimize-creator-brand@0.3.13/host-staging"
+    },
+    {
+      "name": "host-fixtures/research-instagram-trends@0.3.73/host-staging",
+      "dir": true,
+      "path": "contracts/host-fixtures/research-instagram-trends@0.3.73/host-staging"
+    },
+    {
+      "name": "host-fixtures/research-tiktok-trends@0.1.61/host-staging",
+      "dir": true,
+      "path": "contracts/host-fixtures/research-tiktok-trends@0.1.61/host-staging"
+    },
+    {
+      "name": "host-fixtures/research-youtube-trends@0.1.63/host-staging",
+      "dir": true,
+      "path": "contracts/host-fixtures/research-youtube-trends@0.1.63/host-staging"
+    },
+    {
+      "name": "host-fixtures/review-creator-account@0.5.30/host-staging",
+      "dir": true,
+      "path": "contracts/host-fixtures/review-creator-account@0.5.30/host-staging"
+    },
+    {
+      "name": "host-fixtures/verify-platform-rule@0.18.17/host-staging",
+      "dir": true,
+      "path": "contracts/host-fixtures/verify-platform-rule@0.18.17/host-staging"
     }
   ]
 }
