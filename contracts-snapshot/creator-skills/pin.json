@@ -1,6 +1,6 @@
 {
   "repository": "kabo-sh/creator-skills",
-  "commit": "31fc9f2fa15cd35cebdf24bb67c5385dd099ffa2",
+  "commit": "9b0c56256547ff002c367534da3897b64b742ab8",
   "files": {
     "account-core/account_analyzers.py": {
       "path": "creator-skills/shared/account-core/scripts/account_analyzers.py",
@@ -46,10 +46,6 @@
     "host-fixtures/analyze-tiktok-competitors@0.1.50/host-staging/0/01a14002-490a-7390-b758-1c531b49d217/03.meta": {
       "path": "contracts/host-fixtures/analyze-tiktok-competitors@0.1.50/host-staging/0/01a14002-490a-7390-b758-1c531b49d217/03.meta",
       "sha256": "985dab0b409d4aff6343f5897c75d0ce6d86207c9d8d208800c1cdb637e0aef3"
-    },
-    "host-fixtures/analyze-tiktok-competitors@0.1.50/host-staging/0/01a14002-490a-7390-b758-1c531b49d217/04.json": {
-      "path": "contracts/host-fixtures/analyze-tiktok-competitors@0.1.50/host-staging/0/01a14002-490a-7390-b758-1c531b49d217/04.json",
-      "sha256": "66b89a35e37afe6a95c1aee7366240e425a1ec23af3fc8c47f42c4cdcee2afcc"
     },
     "host-fixtures/diagnose-reach-drop@0.3.100/host-staging/0/01a14007-6e67-77d0-9a52-c32452f0c36b/01.json": {
       "path": "contracts/host-fixtures/diagnose-reach-drop@0.3.100/host-staging/0/01a14007-6e67-77d0-9a52-c32452f0c36b/01.json",
@@ -123,10 +119,6 @@
       "path": "contracts/host-fixtures/review-creator-account@0.5.30/host-staging/0/01a13fd0-b5d6-7493-b99f-78705921a0cd/01.meta",
       "sha256": "55c0d67e82ccfacb8b313bad50784eeb6200d904216dbff76559a6ddd3c999b9"
     },
-    "host-fixtures/review-creator-account@0.5.30/host-staging/0/01a13fd0-b5d6-7493-b99f-78705921a0cd/02.meta": {
-      "path": "contracts/host-fixtures/review-creator-account@0.5.30/host-staging/0/01a13fd0-b5d6-7493-b99f-78705921a0cd/02.meta",
-      "sha256": "9430edf59697354bbd7adc05f0d4dcb33dd0268696591520d44a3e336de79caf"
-    },
     "host-fixtures/review-creator-account@0.5.30/host-staging/0/01a13fd0-b5d6-7493-b99f-78705921a0cd/03.json": {
       "path": "contracts/host-fixtures/review-creator-account@0.5.30/host-staging/0/01a13fd0-b5d6-7493-b99f-78705921a0cd/03.json",
       "sha256": "24cea989e60676b45eb90d091d82230957dcc45c3445b67dcf9cbdb83d33bb86"
@@ -134,10 +126,6 @@
     "host-fixtures/review-creator-account@0.5.30/host-staging/0/01a13fd0-b5d6-7493-b99f-78705921a0cd/03.meta": {
       "path": "contracts/host-fixtures/review-creator-account@0.5.30/host-staging/0/01a13fd0-b5d6-7493-b99f-78705921a0cd/03.meta",
       "sha256": "7baa7623364ce752f35464d6c7e522c70ed2888a86872b03f3b2faee4f5eafe9"
-    },
-    "host-fixtures/review-creator-account@0.5.30/host-staging/0/01a13fd0-b5d6-7493-b99f-78705921a0cd/04.json": {
-      "path": "contracts/host-fixtures/review-creator-account@0.5.30/host-staging/0/01a13fd0-b5d6-7493-b99f-78705921a0cd/04.json",
-      "sha256": "d2facc0bf51c7bfd21f5ddd3a6c944b7575826cfc8aa4752185606f09d36a842"
     },
     "host-fixtures/verify-platform-rule@0.18.17/host-staging/0/01a1403a-4d54-7b73-b89f-fc8e5428687e/01.json": {
       "path": "contracts/host-fixtures/verify-platform-rule@0.18.17/host-staging/0/01a1403a-4d54-7b73-b89f-fc8e5428687e/01.json",
