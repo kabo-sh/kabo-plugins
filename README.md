@@ -268,3 +268,16 @@ logs and elapsed time. No records does **not** establish a permissions failure: 
 have started the hook, may have failed to start Node, or may not capture stderr. Check plugin
 loading, hook trust, the PostToolUse matcher and Codex host logs. A script cannot record an
 invocation that the host never starts. Signature and revocation verification remain mandatory.
+
+`skill-unpack` also records local metadata in `<data root>/logs/skill-unpack.jsonl`
+on Codex, whether called by a hook, a file installer, or a PTY bridge. It records startup,
+input reading, package validation, file writing, verification and exit status. `unpacked_not_verified`
+is not verified success. Logs rotate at 1 MiB with one backup, use private permissions, and
+exclude payloads, credentials and raw errors. Stderr uses `KABO_SKILL_UNPACK` as a fallback.
+An approval refusal before startup or before package delivery is a host transport failure:
+there may be no unpack log, or only startup/input-waiting records. Check the Codex tool refusal.
+
+When no hook receipt arrives, the agent must notify the user to check Kabo hook trust before
+trying the existing PTY fallback. Missing receipts alone do not prove trust is disabled.
+Do not retry rejected transfers to evade approval or promise that broader filesystem access
+will fix an automatic-review refusal. The plugin never enables trust itself.
