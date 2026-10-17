@@ -20,13 +20,15 @@ import crypto from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
 
-import { ensurePrivateDir, sha256hex } from '../scripts/lib/common.js';
+import { ensurePrivateDir, sha256hex, workRoot } from '../scripts/lib/common.js';
 
 const USAGE = `Usage: kabo-save-envelope --from <staging-dir> --into <snapshot-dir>
        kabo-save-envelope --list --from <staging-dir>
 
   --from   the per-session staging directory named in the hook's context line
   --into   this run's snapshot/ directory (created if absent)
+           An exact managed, running run directory is normalized to its snapshot/;
+           the actual run-relative destination is printed. Other destinations are unchanged.
   --list   report what is staged without moving anything
 
 Moves every staged envelope into <snapshot-dir>/envelope-NN.json, continuing the existing
@@ -57,6 +59,54 @@ for (let i = 0; i < args.length; i += 1) {
 }
 if (!from) fail('--from is required');
 if (!listOnly && !into) fail('--into is required (or pass --list)');
+
+// The public destination is a snapshot directory. A caller can accidentally supply its reserved
+// run instead; writing there produces valid audit artifacts which {envelopes} will never bind.
+// Correct only an unambiguous managed reservation, never discover files from arbitrary run roots.
+function snapshotDestination(destination) {
+  const target = path.resolve(destination);
+  const root = path.resolve(workRoot());
+  const realRoot = fs.existsSync(root) ? fs.realpathSync(root) : root;
+  const realTarget = fs.existsSync(target) ? fs.realpathSync(target) : target;
+  const managed = path.dirname(target) === root || path.dirname(realTarget) === realRoot;
+  if (!managed) return { directory: destination, normalized: null };
+  const runId = path.basename(target);
+  const targetStat = fs.lstatSync(target, { throwIfNoEntry: false });
+  if (destination.split(/[\\/]/).includes('..') || !/^\d{8}T\d{6}Z-[a-f0-9]{8}$/.test(runId)
+      || path.dirname(target) !== root || path.dirname(realTarget) !== realRoot
+      || !targetStat?.isDirectory() || targetStat.isSymbolicLink()) {
+    fail('--into identifies an ambiguous managed run; pass its real snapshot/ directory');
+  }
+  const recordFile = path.join(target, 'run-manifest.json');
+  let record;
+  try {
+    if (!fs.lstatSync(recordFile).isFile() || fs.lstatSync(recordFile).isSymbolicLink()) throw new Error('not a regular manifest');
+    record = JSON.parse(fs.readFileSync(recordFile, 'utf8'));
+  } catch {
+    fail('--into managed run has no readable regular manifest; pass the intended snapshot/ directory');
+  }
+  if (!record || Array.isArray(record) || record.run_id !== runId || record.status !== 'running'
+      || record.finished_at !== null
+      || typeof record.skill_id !== 'string' || !record.skill_id || record.skill_id === 'unknown') {
+    fail('--into must identify the same running skill reservation; no staged file was moved');
+  }
+  if (fs.readdirSync(target).some(name => /^envelope-\d+\.json$/.test(name))) {
+    fail('--into managed run already contains root-level envelopes; resolve their snapshot placement before draining more evidence');
+  }
+  const snapshot = path.join(target, 'snapshot');
+  const snapshotStat = fs.lstatSync(snapshot, { throwIfNoEntry: false });
+  if (snapshotStat && (!snapshotStat.isDirectory()
+      || snapshotStat.isSymbolicLink() || fs.realpathSync(snapshot) !== path.join(realTarget, 'snapshot'))) {
+    fail('--into managed snapshot must be a real directory inside this run; no staged file was moved');
+  }
+  return { directory: snapshot, normalized: `${runId} -> snapshot/` };
+}
+
+if (!listOnly) {
+  const destination = snapshotDestination(into);
+  into = destination.directory;
+  if (destination.normalized) console.log(`destination: ${destination.normalized}`);
+}
 
 if (!fs.existsSync(from)) {
   // Not an error. A Skill whose evidence plan made no connector call, or a run whose calls all

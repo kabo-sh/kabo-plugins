@@ -56,6 +56,88 @@ for (const host of ['claude', 'codex']) {
     return { data, env, staging, hook, save };
   };
 
+  test(`${host}: an exact running managed run destination is normalized to its snapshot`, async t => {
+    const { data, staging, hook, save } = await setup(t);
+    const id = '20261017T184208Z-13ae36d8';
+    const work = path.join(data, 'work', id);
+    await fs.mkdir(path.join(work, 'snapshot'), { recursive: true });
+    const manifest = JSON.stringify({ run_id: id, status: 'running', finished_at: null, skill_id: 'fixture' });
+    await fs.writeFile(path.join(work, 'run-manifest.json'), manifest);
+    const body = envelope('normalized-root');
+    assert.equal((await hook(body, 'normalized-root')).code, 0);
+    const result = await save('--from', staging, '--into', work);
+    assert.equal(result.code, 0, result.stderr);
+    assert.match(result.stdout, new RegExp(`destination: ${id} -> snapshot/`));
+    assert.ok(!result.stdout.includes(data));
+    assert.deepEqual(JSON.parse(await fs.readFile(path.join(work, 'snapshot/envelope-01.json'))), body);
+    await assert.rejects(fs.stat(path.join(work, 'envelope-01.json')), { code: 'ENOENT' });
+    assert.equal(await fs.readFile(path.join(work, 'run-manifest.json'), 'utf8'), manifest);
+  });
+
+  test(`${host}: explicit snapshot destination retains its path and output contract`, async t => {
+    const { data, staging, hook, save } = await setup(t);
+    const snapshot = path.join(data, 'work', '20261017T184208Z-13ae36d8', 'snapshot');
+    const body = envelope('unchanged-snapshot');
+    assert.equal((await hook(body, 'unchanged-snapshot')).code, 0);
+    const result = await save('--from', staging, '--into', snapshot);
+    assert.equal(result.code, 0, result.stderr);
+    assert.doesNotMatch(result.stdout, /destination:/);
+    assert.deepEqual(JSON.parse(await fs.readFile(path.join(snapshot, 'envelope-01.json'))), body);
+  });
+
+  test(`${host}: empty staging does not excuse a closed managed root`, async t => {
+    const { data, staging, save } = await setup(t);
+    const id = '20261017T184208Z-13ae36d8';
+    const work = path.join(data, 'work', id);
+    await fs.mkdir(work, { recursive: true });
+    await fs.writeFile(path.join(work, 'run-manifest.json'), JSON.stringify({ run_id: id,
+      skill_id: 'fixture', status: 'failed', finished_at: '2026-10-17T18:45:00Z' }));
+    const result = await save('--from', staging, '--into', work);
+    assert.equal(result.code, 1);
+    assert.match(result.stderr, /running skill reservation/);
+    await assert.rejects(fs.stat(path.join(work, 'snapshot')), { code: 'ENOENT' });
+  });
+
+  test(`${host}: managed root ambiguity fails before staging bytes move`, async t => {
+    const variants = ['wrong-id', 'failed', 'ok', 'missing-manifest', 'bad-json', 'manifest-link',
+      'unknown-skill', 'finished-running', 'snapshot-link', 'broken-snapshot-link', 'root-link', 'traversal', 'preexisting-root-envelope'];
+    for (const variant of variants) await t.test(variant, async t => {
+      const { data, staging, hook, save } = await setup(t);
+      const id = '20261017T184208Z-13ae36d8';
+      const work = path.join(data, 'work', id);
+      await fs.mkdir(work, { recursive: true });
+      const record = { run_id: id, status: 'running', finished_at: null, skill_id: 'fixture' };
+      if (variant === 'wrong-id') record.run_id = 'another-run';
+      if (['failed', 'ok'].includes(variant)) record.status = variant;
+      if (variant === 'unknown-skill') record.skill_id = 'unknown';
+      if (variant === 'finished-running') record.finished_at = '2026-10-17T18:45:00Z';
+      const manifest = path.join(work, 'run-manifest.json');
+      if (variant !== 'missing-manifest') await fs.writeFile(manifest, variant === 'bad-json' ? '{' : JSON.stringify(record));
+      const outside = path.join(data, 'outside');
+      await fs.mkdir(outside);
+      if (variant === 'preexisting-root-envelope') await fs.writeFile(path.join(work, 'envelope-01.json'), JSON.stringify(envelope('previous-root')));
+      if (variant === 'manifest-link') {
+        await fs.rename(manifest, path.join(outside, 'manifest.json'));
+        await fs.symlink(path.join(outside, 'manifest.json'), manifest);
+      }
+      if (variant.includes('snapshot-link')) await fs.symlink(variant === 'broken-snapshot-link' ? path.join(outside, 'absent') : outside, path.join(work, 'snapshot'));
+      let destination = work;
+      if (variant === 'root-link') {
+        const alias = path.join(data, 'work', '20261017T184208Z-aaaaaaaa');
+        await fs.symlink(work, alias); destination = alias;
+      }
+      if (variant === 'traversal') destination = path.join(work, 'child') + '/../';
+      assert.equal((await hook(envelope(variant), variant)).code, 0);
+      const before = await fs.readFile(path.join(staging, '01.json'));
+      const result = await save('--from', staging, '--into', destination);
+      assert.equal(result.code, 1, variant);
+      assert.match(result.stderr, /managed|running skill reservation/);
+      assert.deepEqual(await fs.readFile(path.join(staging, '01.json')), before);
+      assert.ok((await fs.stat(path.join(staging, '01.meta'))).isFile());
+      await assert.rejects(fs.stat(path.join(outside, 'envelope-01.json')), { code: 'ENOENT' });
+    });
+  });
+
   test(`${host}: complete structured results survive a truncated display`, async t => {
     const { env, staging } = await setup(t);
     const payload = envelope('req-large');
