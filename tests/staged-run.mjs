@@ -112,6 +112,31 @@ for (const host of ['claude', 'codex']) {
       assert.equal((await record(runId)).status, 'running');
     });
 
+    await t.test('normalizing a saved run-root target binds the same evidence the manifest counts', async () => {
+      const runId = await reserve();
+      const work = path.join(data, 'work', runId);
+      const body = JSON.stringify({ connector_id: 'fixture', operation: 'read', status: 'completed', limitations: [],
+        request_id: 'normalize-before-first-pipeline', retrieved_at: '2026-10-17T18:42:00Z', data: { items: [] } });
+      const session = 'root-target-test';
+      const hook = await run(path.join(plugin, 'scripts/hooks/persist-envelope.js'), [], env,
+        JSON.stringify({ session_id: session, hook_event_name: 'PostToolUse', tool_use_id: 'root-target-test', tool_response: body }));
+      assert.equal(hook.code, 0, hook.stderr);
+      assert.match(hook.stdout, /kabo:/);
+      const save = await bin('kabo-save-envelope', ['--from', path.join(data, 'envelope-staging', session), '--into', work]);
+      assert.equal(save.code, 0, save.stderr);
+      assert.match(save.stdout, /destination: .* -> snapshot\//);
+      assert.match(save.stdout, /staged=1/);
+      assert.equal(JSON.parse(await fs.readFile(path.join(work, 'snapshot/envelope-01.json'))).request_id, 'normalize-before-first-pipeline');
+      const before = await record(runId);
+      assert.equal(before.provider_requests.length, 0);
+      const command = `python3 -c 'import json,sys; assert sys.argv[1]=="--envelope"; assert len(sys.argv)==3; assert json.load(open(sys.argv[2]))["request_id"]=="normalize-before-first-pipeline"' {envelopes}`;
+      const phase = await bin('kabo-run-pipeline', [...args(runId), '--continue', '--step', command]);
+      assert.equal(phase.code, 0, phase.stderr);
+      assert.equal((await record(runId)).status, 'running');
+      assert.equal((await record(runId)).provider_requests.length, 1);
+      await assert.rejects(fs.stat(path.join(work, 'envelope-01.json')), { code: 'ENOENT' });
+    });
+
     await t.test('fetch and judgment pauses keep the reservation running; only validated final output closes it', async () => {
       const runId = await reserve();
       const work = path.join(data, 'work', runId);
