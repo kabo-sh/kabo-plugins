@@ -281,3 +281,12 @@ When no hook receipt arrives, the agent must notify the user to check Kabo hook 
 trying the existing PTY fallback. Missing receipts alone do not prove trust is disabled.
 Do not retry rejected transfers to evade approval or promise that broader filesystem access
 will fix an automatic-review refusal. The plugin never enables trust itself.
+
+Before a cold download, Codex guidance now asks the agent to inspect Kabo hook state itself.
+Explicitly disabled/untrusted hooks trigger a consent question explaining their purpose;
+the agent waits before changing trust or attempting a fallback. Read only relevant Kabo
+configuration fields, never dump the complete host configuration. An existing `trusted_hash`
+does not prove that it matches the currently installed hook. Unknown state is reported as
+unknown. After approval use supported host controls, or hand the setting change to the user;
+never manufacture trust hashes. The next real hook receipt/log verifies effective execution.
+PTY remains available if the user chooses it instead.
