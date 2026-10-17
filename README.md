@@ -249,3 +249,22 @@ For the authorization model in full, the data path, and the privacy boundary, se
 ## License
 
 The code in this repository is licensed under the [Apache License 2.0](LICENSE). The license covers this client only: the research skills Kabo signs and delivers at run time, and the Kabo service and data behind them, are not part of this repository. As section 6 of the license states, it grants no rights to the Kabo name or logo.
+
+### Codex skill-install diagnostics
+
+The download installation hook writes local metadata to
+`~/.kabo/codex/logs/skill-install.jsonl` (or `$KABO_CODEX_DATA/logs/skill-install.jsonl`).
+Each invocation records `started`, input shape/byte count, verification exit status and a
+known verification failure category, cache installation, and `finished` with its outcome.
+Records share a random invocation ID and include timestamps and elapsed milliseconds.
+No tool payload, package body, credentials, session ID, or raw verifier stderr is logged.
+The file is private (0600); it rotates at 1 MiB, keeping one previous `.1` file.
+These diagnostic records are local only and are not uploaded as telemetry.
+
+The same records use the `KABO_SKILL_INSTALL` prefix on stderr so the host can capture them.
+If the log directory cannot be written, stderr includes `log_write_failed` and an error code.
+A `started` without `finished` suggests interruption or a still-running hook; inspect the host
+logs and elapsed time. No records does **not** establish a permissions failure: Codex may not
+have started the hook, may have failed to start Node, or may not capture stderr. Check plugin
+loading, hook trust, the PostToolUse matcher and Codex host logs. A script cannot record an
+invocation that the host never starts. Signature and revocation verification remain mandatory.
