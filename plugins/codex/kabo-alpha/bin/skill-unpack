@@ -29,6 +29,7 @@
 // digest names manifest fields only, each reduced to an allowlisted token (see manifestDigest) - the
 // package is unverified at that point and must not be able to write its own lines. Absolute paths
 // are for stderr.
+import { installDiagnostics, diagnosticCode } from '../scripts/lib/install-diagnostics.js';
 import fs from 'node:fs';
 import path from 'node:path';
 import { spawnSync } from 'node:child_process';
@@ -40,7 +41,13 @@ const USAGE = `Usage: skill-unpack [--verify] <path to package.json|-> [dest-roo
   Reads a SkillPackage JSON from a file or stdin(-) and writes it to <dest-root>/<id>/<version>/
   dest-root defaults to $KABO_CODEX_DATA/skill-cache (or ~/.kabo/codex/skill-cache when unset)
   --verify then runs skill-verify on the written directory and exits with its exit code`;
-function die(msg) {
+const diagnostic = installDiagnostics();
+let stage = 'arguments';
+let outcome = 'failed';
+diagnostic('started');
+process.on('exit', code => diagnostic('finished', { stage, outcome, exit_code: code }));
+function die(msg, reason = 'invalid_package') {
+  diagnostic('failed', { stage, reason });
   console.error(msg);
   process.exit(1);
 }
@@ -121,15 +128,22 @@ async function main() {
   const args = process.argv.slice(2).filter((a) => a !== '--verify');
   if (args.length === 0 || args[0] === '--help' || args[0] === '-h') {
     out(USAGE);
+    outcome = args.length === 0 ? 'failed' : 'help';
     process.exit(args.length === 0 ? 1 : 0);
   }
   if (args.length > 2) die(`Too many arguments\n\n${USAGE}`);
   let pkg;
+  stage = 'read_input';
+  diagnostic('input_started', { source: args[0] === '-' ? 'stdin' : 'file', verify });
   try {
-    pkg = JSON.parse(await readSource(args[0]));
+    const input = await readSource(args[0]);
+    diagnostic('input_received', { bytes: Buffer.byteLength(input, 'utf8') });
+    stage = 'parse_input';
+    pkg = JSON.parse(input);
   } catch (err) {
-    die(`Failed to read/parse the SkillPackage JSON: ${err.message}`);
+    die(`Failed to read/parse the SkillPackage JSON (${err instanceof SyntaxError ? 'invalid_json' : diagnosticCode(err)})`, err instanceof SyntaxError ? 'invalid_json' : diagnosticCode(err));
   }
+  stage = 'validate_package';
   // Basic shape validation
   if (!pkg || typeof pkg.id !== 'string' || !pkg.id) die('SkillPackage is missing id');
   if (typeof pkg.version !== 'string' || !pkg.version) die('SkillPackage is missing version');
@@ -181,6 +195,8 @@ async function main() {
   // materializes <data root>/skill-cache (and on a fresh machine the data root itself, ~/.kabo
   // included), and a modeless mkdir left the whole chain 0755 - the onboarding-field-test
   // permission regression.
+  stage = 'write_files';
+  diagnostic('unpack_started', { file_count: pkg.files.length });
   fs.rmSync(dest, { recursive: true, force: true });
   ensurePrivateDir(dest);
   for (const f of pkg.files) {
@@ -227,7 +243,9 @@ async function main() {
   // default root and whatever the caller named for a custom one, never the path above it.
   out(`Written: ${pkg.id}@${pkg.version} -> ${path.basename(destRoot)}/${pkg.id}/${pkg.version} (${pkg.files.length} file(s) + .meta.json${deferred.length > 0 ? `; ${deferred.length} deferred asset(s) fetched on demand` : ''})`);
   out(manifestDigest(dest, pkg));
+  diagnostic('unpacked');
   if (!verify) {
+    outcome = 'unpacked_not_verified';
     // Preserve main's distinction between a successful unpack and a failed verification.
     out('Unpack succeeded. Next step: run skill-verify on the written directory -- "not verified yet" is the expected state here and is not an install failure.');
     return;
@@ -236,9 +254,16 @@ async function main() {
   // (skills call it by absolute path), and even where a host does expose it, this process must run
   // the skill-verify that ships with the same plugin install as itself.
   const verifyBin = path.join(path.dirname(fileURLToPath(import.meta.url)), 'skill-verify');
-  const result = spawnSync(process.execPath, [verifyBin, dest], { stdio: 'inherit' });
-  if (result.error) die(`skill-verify could not be started: ${result.error.message}`);
+  stage = 'verify';
+  diagnostic('verify_started');
+  const result = spawnSync(process.execPath, [verifyBin, dest], { stdio: ['inherit', 'inherit', 'pipe'], encoding: 'utf8' });
+  if (result.stderr) fs.writeSync(2, result.stderr);
+  const reason = result.stderr?.match(/KABO_VERIFY_FAIL error_type=([a-z_]+)/)?.[1];
+  const known = ['revoked', 'meta_invalid', 'id_mismatch', 'checksum_mismatch', 'signature_invalid', 'public_key_unavailable', 'plugin_too_old', 'unsupported_artifact_format', 'unexpected_entry', 'empty_dir', 'deferred_mismatch', 'internal_error', 'dir_not_found'];
+  diagnostic('verify_finished', { exit_code: result.status, reason: known.includes(reason) ? reason : null, code: result.error ? diagnosticCode(result.error) : null, signaled: result.signal !== null });
+  if (result.error) die(`skill-verify could not be started: ${result.error.message}`, diagnosticCode(result.error));
   // A child killed by a signal has no status; that is a failed verification, not a pass.
+  outcome = result.status === 0 && !result.error ? 'verified' : 'failed';
   process.exit(result.status === null ? 1 : result.status);
 }
-main().catch((err) => die(`skill-unpack failed: ${err.message}`));
+main().catch((err) => die(`skill-unpack failed: ${err.message}`, diagnosticCode(err)));

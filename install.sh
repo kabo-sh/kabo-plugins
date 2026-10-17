@@ -827,15 +827,16 @@ fi
 
 if [ "$CODEX_DONE" -eq 1 ]; then
   [ "$CLAUDE_DONE" -eq 1 ] && printf '\n'
+  warn 'Kabo skill auto-install requires trusted hooks. Review the plugin hooks, then enable hook trust in your Codex host. Without it downloads can succeed while installation does not run; large fallback transfers may be refused by automatic approval.'
   printf '%sCodex%s\n' "$C_BLUE" "$C_OFF"
   if [ "$CODEX_SIGNED_IN" -eq 1 ]; then
     printf '  You are signed in. Restart Codex so it picks up the plugin, and trust its hooks\n'
     printf '  explicitly — installing a plugin does not trust them. Review hooks/hooks.json and\n'
-    printf '  scripts/hooks/ first; they only sync skill status at session start.\n'
+    printf '  scripts/hooks/ first; they install downloaded skills and sync skill status.\n'
   else
     printf '  1. Restart Codex so it picks up the plugin.\n'
     printf '  2. Trust its hooks explicitly — installing a plugin does not trust them. Review\n'
-    printf '     hooks/hooks.json and scripts/hooks/ in the plugin first; they only sync skill\n'
+    printf '     hooks/hooks.json and scripts/hooks/ in the plugin first; they install downloaded skills and sync skill\n'
     printf '     status at session start.\n'
     printf '  3. Run `codex mcp login kabo --scopes %s`\n' "$CODEX_LOGIN_SCOPES"
     printf '     to authorize through your browser. Bare login is also supported; the explicit\n'

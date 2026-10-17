@@ -169,3 +169,59 @@ test('hook records verified installation stages and bounds existing log size', a
   assert.ok(await exists(path.join(data, 'logs/skill-install.jsonl.1')));
   assert.ok((await fs.stat(path.join(data, 'logs/skill-install.jsonl'))).size < 10000);
 });
+
+const unpackRecords = async data => (await fs.readFile(path.join(data, 'logs/skill-unpack.jsonl'), 'utf8')).trim().split('\n').map(JSON.parse);
+
+test('direct unpack logs malformed input without leaking its body', async t => {
+  const { data, env } = await fixture(t);
+  const result = await run(path.join(plugin, 'bin/skill-unpack'), ['--verify', '-'], env, 'private-token-malformed-json');
+  assert.equal(result.code, 1);
+  const log = await unpackRecords(data);
+  assert.equal(log[0].event, 'started');
+  assert.equal(log.find(x => x.event === 'failed').reason, 'invalid_json');
+  assert.equal(log.at(-1).outcome, 'failed');
+  assert.doesNotMatch(JSON.stringify(log) + result.stderr, /private-token/);
+});
+
+test('direct unpack logs file verification success and unverified stdin distinctly', async t => {
+  const { data, env, pkg } = await fixture(t);
+  const file = path.join(data, 'package.json');
+  await fs.writeFile(file, JSON.stringify(pkg));
+  for (const [args, input, expected] of [
+    [['--verify', file], '', 'verified'],
+    [['-'], JSON.stringify(pkg), 'unpacked_not_verified'],
+  ]) {
+    const result = await run(path.join(plugin, 'bin/skill-unpack'), args, env, input);
+    assert.equal(result.code, 0, result.stderr);
+    assert.equal((await unpackRecords(data)).at(-1).outcome, expected);
+  }
+  assert.equal((await fs.stat(path.join(data, 'logs/skill-unpack.jsonl'))).mode & 0o777, 0o600);
+  assert.doesNotMatch(JSON.stringify(await unpackRecords(data)), /content_base64|signature|package.json/);
+});
+
+test('direct unpack logs missing input, write failure and verification refusal', async t => {
+  const { data, env, pkg } = await fixture(t, { revoked: ['hook-install-fixture'] });
+  const bin = path.join(plugin, 'bin/skill-unpack');
+  const missing = await run(bin, ['--verify', path.join(data, 'absent')], env);
+  assert.equal(missing.code, 1);
+  assert.equal((await unpackRecords(data)).find(x => x.event === 'failed').reason, 'ENOENT');
+  const blocked = path.join(data, 'blocked');
+  await fs.writeFile(blocked, 'file');
+  const write = await run(bin, ['--verify', '-', blocked], env, JSON.stringify(pkg));
+  assert.equal(write.code, 1);
+  assert.equal((await unpackRecords(data)).at(-1).stage, 'write_files');
+  const revoked = await run(bin, ['--verify', '-'], env, JSON.stringify(pkg));
+  assert.equal(revoked.code, 1);
+  const log = await unpackRecords(data);
+  assert.equal(log.find(x => x.event === 'verify_finished').reason, 'revoked');
+  assert.equal(log.at(-1).outcome, 'failed');
+});
+
+test('direct unpack still reports failures if its log directory is not writable', async t => {
+  const { data, env } = await fixture(t);
+  await fs.writeFile(path.join(data, 'logs'), 'blocked');
+  const result = await run(path.join(plugin, 'bin/skill-unpack'), ['--verify', '-'], env, '{}');
+  assert.equal(result.code, 1);
+  assert.match(result.stderr, /log_write_failed/);
+  assert.match(result.stderr, /"event":"finished"/);
+});
