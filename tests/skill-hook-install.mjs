@@ -97,21 +97,23 @@ test('codex hook installs nothing when the signature does not verify', async t =
   assert.equal(result.code, 0);
   assert.match(context(result.stdout), /FAILED for hook-install-fixture@1\.0\.0/);
   assert.equal(await exists(skill), false);
+  assert.equal((await records(data)).find(x => x.event === 'verify_finished').reason, 'checksum_mismatch');
   assert.deepEqual(await fs.readdir(path.join(data, 'skill-staging')), []);
 });
 
 test('codex hook installs nothing for a revoked skill', async t => {
-  const { pkg, hook, skill } = await fixture(t, { revoked: ['hook-install-fixture'] });
+  const { data, pkg, hook, skill } = await fixture(t, { revoked: ['hook-install-fixture'] });
   const result = await hook('mcp__kabo__registry_skill_download', { structuredContent: pkg });
   assert.equal(result.code, 0);
   assert.match(context(result.stdout), /FAILED/);
   assert.equal(await exists(skill), false);
+  assert.equal((await records(data)).find(x => x.event === 'verify_finished').reason, 'revoked');
 });
 
-test('codex hook ignores other tools and non-package results', async t => {
+test('codex hook ignores other tools and reports non-package results', async t => {
   const { pkg, hook } = await fixture(t);
   assert.equal((await hook('mcp__kabo__registry_skill_search', { structuredContent: pkg })).stdout, '');
-  assert.equal((await hook('mcp__kabo__registry_skill_download', { structuredContent: { error: 'not found' } })).stdout, '');
+  assert.match(context((await hook('mcp__kabo__registry_skill_download', { structuredContent: { error: 'not found' } })).stdout), /package_not_found/);
 });
 
 test('codex hooks.json routes registry_skill_download to the install hook only', async () => {
@@ -124,4 +126,46 @@ test('codex hooks.json routes registry_skill_download to the install hook only',
   assert.ok(!matcher.test('mcp__kabo__registry_skill_search'));
   assert.ok(!new RegExp(entries[0].matcher).test('mcp__kabo__registry_skill_download'));
   assert.equal(install.hooks[0].type, 'command');
+});
+
+const records = async data => (await fs.readFile(path.join(data, 'logs/skill-install.jsonl'), 'utf8')).trim().split('\n').map(JSON.parse);
+
+test('hook logs parse failures without recording payloads or identifiers', async t => {
+  const { data, env } = await fixture(t);
+  for (const input of ['secret-token-invalid-json', JSON.stringify({ tool_name: 'registry_skill_download', session_id: 'private-session' })]) {
+    const result = await run(hookFile, [], env, input);
+    assert.equal(result.code, 0);
+    assert.match(context(result.stdout), /installation was not completed/);
+    assert.doesNotMatch(result.stderr, /secret-token|private-session/);
+  }
+  const log = await records(data);
+  assert.equal(log.filter(x => x.event === 'started').length, 2);
+  assert.deepEqual(log.filter(x => x.event === 'input_rejected').map(x => x.reason), ['invalid_json', 'missing_tool_response']);
+  assert.ok(log.filter(x => x.event === 'finished').every(x => x.outcome === 'failed'));
+  assert.equal((await fs.stat(path.join(data, 'logs/skill-install.jsonl'))).mode & 0o777, 0o600);
+});
+
+test('hook reports staging failure and retains stderr diagnostics when log writes fail', async t => {
+  const { data, pkg, hook } = await fixture(t);
+  await fs.writeFile(path.join(data, 'skill-staging'), 'blocked');
+  await fs.writeFile(path.join(data, 'logs'), 'blocked');
+  const result = await hook('registry_skill_download', pkg);
+  assert.match(context(result.stdout), /failed/);
+  assert.match(result.stderr, /log_write_failed/);
+  assert.match(result.stderr, /stage_failed.*EEXIST/);
+  assert.doesNotMatch(result.stderr, new RegExp(pkg.signature.replace(/[+/?]/g, '\\$&')));
+});
+
+test('hook records verified installation stages and bounds existing log size', async t => {
+  const { data, pkg, hook } = await fixture(t);
+  await fs.mkdir(path.join(data, 'logs'));
+  await fs.writeFile(path.join(data, 'logs/skill-install.jsonl'), 'x'.repeat(1024 * 1024), { mode: 0o600 });
+  const result = await hook('registry_skill_download', pkg);
+  assert.match(context(result.stdout), /installed and verified/);
+  const log = await records(data);
+  assert.deepEqual(log.map(x => x.event), ['started', 'input_received', 'event_parsed', 'package_found', 'verify_started', 'verify_finished', 'installed', 'finished']);
+  assert.equal(log.at(-1).outcome, 'success');
+  assert.equal(new Set(log.map(x => x.invocation)).size, 1);
+  assert.ok(await exists(path.join(data, 'logs/skill-install.jsonl.1')));
+  assert.ok((await fs.stat(path.join(data, 'logs/skill-install.jsonl'))).size < 10000);
 });
