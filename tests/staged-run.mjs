@@ -181,16 +181,66 @@ for (const host of ['claude', 'codex']) {
       await assert.rejects(fs.stat(path.join(work, 'AFTER-CLOSE')), { code: 'ENOENT' });
     });
 
+    await t.test('a --report the final step wrote in the run root binds as --report-file instead of closing the run', async () => {
+      const runId = await reserve();
+      const work = path.join(data, 'work', runId);
+      const open = await bin('kabo-run-pipeline', [...args(runId), '--continue', '--step', 'true']);
+      assert.equal(open.code, 0, open.stderr);
+      const finished = await bin('kabo-run-pipeline', [...args(runId), '--report', 'creator-report.md', '--step', 'printf "# Report\\n" > {run}/creator-report.md']);
+      assert.equal(finished.code, 0, finished.stderr);
+      assert.match(finished.stderr, /creator-report\.md is in the run root, not report\/; bound as --report-file creator-report\.md/);
+      assert.match(finished.stdout, new RegExp(`creator_report: ${runId} → creator-report.md`));
+      const final = await record(runId);
+      assert.equal(final.status, 'ok');
+      assert.equal(final.artifacts.find(x => x.path_or_uri === 'creator-report.md').kind, 'report');
+      await fs.stat(path.join(work, 'creator-report.md'));
+      const other = await reserve();
+      const reopen = await bin('kabo-run-pipeline', [...args(other), '--continue', '--step', 'true']);
+      assert.equal(reopen.code, 0, reopen.stderr);
+      const missing = await bin('kabo-run-pipeline', [...args(other), '--report', 'creator-report.md', '--step', 'true']);
+      assert.equal(missing.code, 1);
+      assert.match(missing.stderr, /every step passed but report\/creator-report\.md does not exist/);
+      assert.equal((await record(other)).status, 'failed');
+    });
+
     await t.test('failure stops later steps, ends the staged run and announces no report', async () => {
       const runId = await reserve();
-      const failed = await bin('kabo-run-pipeline', [...args(runId), '--continue', '--step', 'exit 7', '--step', 'touch {run}/SHOULD-NOT-RUN']);
+      const failed = await bin('kabo-run-pipeline', [...args(runId), '--continue', '--step', 'touch {run}/partial.json; exit 7', '--step', 'touch {run}/SHOULD-NOT-RUN']);
       assert.equal(failed.code, 1);
-      assert.doesNotMatch(failed.stdout, /creator_report:/);
+      assert.doesNotMatch(failed.stdout, /creator_report:|needs_correction/);
       assert.equal((await record(runId)).status, 'failed');
       assert.ok((await record(runId)).finished_at);
       const replay = await bin('kabo-run-pipeline', [...args(runId), '--continue', '--step', 'touch {run}/SHOULD-NOT-RUN']);
       assert.equal(replay.code, 1);
       await assert.rejects(fs.stat(path.join(data, 'work', runId, 'SHOULD-NOT-RUN')), { code: 'ENOENT' });
+    });
+
+    await t.test('a step that fails without changing the run keeps it open for at most two corrected repeats', async () => {
+      const runId = await reserve();
+      const receipt = result => JSON.parse(result.stdout.split('\n').find(line => line.startsWith('{"status":"needs_correction"')));
+      const first = await bin('kabo-run-pipeline', [...args(runId), '--continue', '--step', 'echo "judgment.json does not exist; write it first" >&2; exit 3', '--step', 'touch {run}/SHOULD-NOT-RUN']);
+      assert.equal(first.code, 0, first.stderr);
+      assert.match(first.stdout, /step 1\/2 FAILED exit=3/);
+      assert.deepEqual({ ...receipt(first), instruction: undefined }, { status: 'needs_correction', reason: 'step_failed_without_changes', run_id: runId, failed_step: 1, exit: 3, corrections_remaining: 1, instruction: undefined });
+      assert.equal((await record(runId)).status, 'running');
+      await assert.rejects(fs.stat(path.join(data, 'work', runId, 'SHOULD-NOT-RUN')), { code: 'ENOENT' });
+      const final = await bin('kabo-run-pipeline', [...args(runId), '--report-file', 'reply.md', '--step', 'exit 2']);
+      assert.equal(final.code, 0, final.stderr);
+      assert.equal(receipt(final).corrections_remaining, 0);
+      assert.doesNotMatch(final.stdout, /creator_report:/);
+      assert.equal((await record(runId)).status, 'running');
+      const later = await reserve();
+      const second = await bin('kabo-run-pipeline', [...args(later), '--continue', '--step', 'touch {run}/written.json', '--step', 'exit 4']);
+      assert.equal(second.code, 0, second.stderr);
+      assert.equal(receipt(second).failed_step, 2);
+      assert.equal((await record(later)).status, 'running');
+      const same = await bin('kabo-run-pipeline', [...args(later), '--continue', '--step', 'printf x > {run}/written.json; exit 4']);
+      assert.equal(same.code, 1);
+      assert.equal((await record(later)).status, 'failed');
+      const third = await bin('kabo-run-pipeline', [...args(runId), '--continue', '--step', 'exit 3']);
+      assert.equal(third.code, 1);
+      assert.doesNotMatch(third.stdout, /needs_correction/);
+      assert.equal((await record(runId)).status, 'failed');
     });
 
     const failArgs = (runId, reason = 'Subject identity unresolved') => ['--run-id', runId, '--skill', skill, '--fail', reason];

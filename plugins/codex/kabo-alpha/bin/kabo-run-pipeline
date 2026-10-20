@@ -85,7 +85,10 @@ const USAGE = `Usage: kabo-run-pipeline --run-id <id> --skill <skill-dir> [--sta
 Prints one "step n/N ok|FAILED" line per step, "drained=<n>" when --staging was given, one
 "creator_report: <run-id> → report/<file>" line per report file, and
 "run-manifest: <run-id> → run-manifest.json". Exit 1 for an explicit --fail stop. Exit 0 when every step, the hygiene check and
-skill-verify --local-only passed; exit 1 with a one-sentence reason on stderr otherwise.`;
+skill-verify --local-only passed; exit 1 with a one-sentence reason on stderr otherwise.
+In a staged run, a failed step that changed nothing in the run (at most twice per run) prints a
+needs_correction JSON line, keeps the run running and exits 0: do what the step's message names, then
+repeat that stage.`;
 
 const BIN_DIR = path.dirname(fileURLToPath(import.meta.url));
 const PLUGIN_ROOT = path.resolve(BIN_DIR, '..');
@@ -291,7 +294,7 @@ if (staged) {
   const skillManifest = readJsonSilent(path.join(skillDir, 'manifest.json'));
   if (!record || record.status !== 'running' || record.skill_id !== skillManifest?.name) refuse('staged execution requires a running reservation for this skill');
   stageState ??= { ...binding, status: 'running', phases: 0 };
-  if (opts.fail === null && !opts.continue && opts.report === null && opts.reportFile === null) refuse('the final stage must name its report with --report or --report-file');
+  if (opts.fail === null && !opts.continue && opts.report === null && opts.reportFile === null) refuse('the final stage must name its report with --report or --report-file; nothing was run, so repeat this stage with the report named (a report the step writes in the run directory is --report-file <name>; one under report/ is --report <name>)');
 }
 
 const subdirs = {
@@ -408,6 +411,8 @@ process.umask(0o077);
 
 let failure = null;
 let drained = null;
+let correction = null;
+const MAX_CORRECTIONS = 2;
 
 // A continued run may have paused for a model judgment. Recheck its signed cache before allowing
 // another stage, as well as after it; no network or credential access is introduced.
@@ -426,12 +431,27 @@ if (failure === null && stagingDir !== null) {
   }
 }
 
+/** Every run entry except the stage record, with each regular file's content hash: a step that leaves this unchanged changed nothing. */
+function runFingerprint() {
+  return JSON.stringify(entriesUnder(runDir)
+    .filter(({ rel }) => rel !== path.basename(stageStateFile))
+    .map(({ dirent, rel, full }) => {
+      if (dirent.isDirectory()) return [rel, 'dir'];
+      if (dirent.isSymbolicLink()) return [rel, 'link', fs.readlinkSync(full)];
+      return [rel, dirent.isFile() ? sha256hex(fs.readFileSync(full)) : 'other'];
+    })
+    .sort((a, b) => (a[0] < b[0] ? -1 : a[0] > b[0] ? 1 : 0)));
+}
+
 if (failure === null && opts.fail === null) {
+  let before = null;
+  let failedStep = null;
   const envelopes = listEnvelopes();
   const total = steps.length;
   for (let index = 0; index < total; index += 1) {
     const command = expand(steps[index], envelopes, false);
     const echo = echoLine(expand(steps[index], envelopes, true));
+    before = staged ? runFingerprint() : null;
     const startedAt = process.hrtime.bigint();
     const result = spawnSync('/bin/sh', ['-c', command], {
       cwd: runDir,
@@ -445,15 +465,25 @@ if (failure === null && opts.fail === null) {
     if (result.error) {
       out(`step ${index + 1}/${total} FAILED exit=spawn\n`);
       failure = `step ${index + 1} of ${total} could not be started: ${result.error.message}`;
+      failedStep = { step: index + 1, exit: 'spawn' };
       break;
     }
     if (result.status !== 0) {
       const code = result.status ?? `signal:${result.signal}`;
       out(`step ${index + 1}/${total} FAILED exit=${code}\n`);
       failure = `step ${index + 1} of ${total} exited ${code} (${echo})`;
+      failedStep = { step: index + 1, exit: code };
       break;
     }
     out(`step ${index + 1}/${total} ok ${seconds.toFixed(1)}s  ${echo}\n`);
+  }
+  // A step that refused before writing anything leaves nothing to distrust, so the run stays open
+  // for a bounded number of corrected repeats instead of being replaced.
+  const used = stageState?.corrections ?? 0;
+  if (failedStep !== null && before !== null && used < MAX_CORRECTIONS && runFingerprint() === before) {
+    correction = { ...failedStep, message: failure, remaining: MAX_CORRECTIONS - used - 1 };
+    stageState.corrections = used + 1;
+    failure = null;
   }
 }
 
@@ -529,14 +559,20 @@ if (failure === null && opts.fail !== null) failure = opts.fail;
 // ---------- deliverables and the run manifest ----------
 
 let reportNames = [];
-if (failure === null && !opts.continue) {
+if (failure === null && !opts.continue && correction === null) {
   if (opts.reportFile !== null) {
     if (isRegularFile(path.join(runDir, opts.reportFile))) reportNames = [opts.reportFile];
     else failure = `every step passed but ${opts.reportFile} does not exist`;
   } else
   if (opts.report !== null) {
     if (isRegularFile(path.join(subdirs.report, opts.report))) reportNames = [opts.report];
-    else failure = `every step passed but report/${opts.report} does not exist`;
+    else if (staged && isRegularFile(path.join(runDir, opts.report))) {
+      // A driver that owns its layout writes the report in the run root; bind it there rather than close the run.
+      process.stderr.write(`note: ${opts.report} is in the run root, not report/; bound as --report-file ${opts.report}\n`);
+      opts.reportFile = opts.report;
+      opts.report = null;
+      reportNames = [opts.reportFile];
+    } else failure = `every step passed but report/${opts.report} does not exist`;
   } else {
     reportNames = fs.readdirSync(subdirs.report, { withFileTypes: true })
       .filter((entry) => entry.isFile())
@@ -668,7 +704,7 @@ function finalizeRunManifest(status) {
 }
 
 try {
-  const status = failure !== null ? 'failed' : opts.continue ? 'running' : 'ok';
+  const status = failure !== null ? 'failed' : opts.continue || correction !== null ? 'running' : 'ok';
   finalizeRunManifest(status);
   if (staged) {
     stageState.status = status;
@@ -681,7 +717,17 @@ try {
 
 if (drained !== null) out(`drained=${drained}\n`);
 for (const name of failure === null ? reportNames : []) out(`creator_report: ${runId} → ${opts.reportFile !== null ? name : `report/${name}`}\n`);
-if (failure === null && opts.continue) out('run-status: running; follow the next skill judgment or fetch before the final stage\n');
+if (failure === null && correction !== null) {
+  out(`${JSON.stringify({
+    status: 'needs_correction',
+    reason: 'step_failed_without_changes',
+    run_id: runId,
+    failed_step: correction.step,
+    exit: correction.exit,
+    corrections_remaining: correction.remaining,
+    instruction: `${correction.message}. That step changed nothing in this run, so the run stays open. Do what its own message above names first (for example write the authored file it reads, or run the placements it waits for), then repeat this same stage in this same run with the documented command. Do not reserve a new run or repeat completed fetches.`,
+  })}\n`);
+} else if (failure === null && opts.continue) out('run-status: running; follow the next skill judgment or fetch before the final stage\n');
 out(`run-manifest: ${runId} → run-manifest.json\n`);
 
 if (failure !== null) {
