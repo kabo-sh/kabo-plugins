@@ -243,6 +243,33 @@ for (const host of ['claude', 'codex']) {
       assert.equal((await record(runId)).status, 'failed');
     });
 
+    await t.test('a correction before any stage completes leaves the reserved run as a driver can adopt it', async () => {
+      const runId = await reserve();
+      const work = path.join(data, 'work', runId);
+      const stages = path.join(work, '.pipeline-stages.json');
+      const corrections = path.join(data, 'work', `.${runId}.pipeline-corrections`);
+      const entries = async () => (await fs.readdir(work)).sort();
+      const reserved = await entries();
+      const first = await bin('kabo-run-pipeline', [...args(runId), '--continue', '--step', 'exit 3']);
+      assert.equal(first.code, 0, first.stderr);
+      assert.match(first.stdout, /"status":"needs_correction"/);
+      assert.deepEqual(await entries(), reserved);
+      const adopted = await bin('kabo-run-pipeline', [...args(runId), '--continue', '--step', 'test ! -e {run}/.pipeline-stages.json && touch {run}/adopted.json']);
+      assert.equal(adopted.code, 0, adopted.stderr);
+      assert.equal(JSON.parse(await fs.readFile(stages, 'utf8')).corrections, 1);
+      await assert.rejects(fs.stat(corrections), { code: 'ENOENT' });
+      const again = await reserve();
+      for (const expected of [0, 0]) {
+        const result = await bin('kabo-run-pipeline', [...args(again), '--continue', '--step', 'exit 3']);
+        assert.equal(result.code, expected, result.stderr);
+      }
+      const exhausted = await bin('kabo-run-pipeline', [...args(again), '--continue', '--step', 'exit 3']);
+      assert.equal(exhausted.code, 1);
+      assert.equal((await record(again)).status, 'failed');
+      assert.equal(JSON.parse(await fs.readFile(path.join(data, 'work', again, '.pipeline-stages.json'), 'utf8')).status, 'failed');
+      await assert.rejects(fs.stat(path.join(data, 'work', `.${again}.pipeline-corrections`)), { code: 'ENOENT' });
+    });
+
     const failArgs = (runId, reason = 'Subject identity unresolved') => ['--run-id', runId, '--skill', skill, '--fail', reason];
 
     await t.test('an explicit logical stop closes the original paused run with real evidence and no report', async () => {

@@ -258,7 +258,10 @@ if (dispatchError) refuse(dispatchError);
 // Stage state is separate from the public manifest schema. Write it only after the first stage:
 // an empty reserved run must remain empty so a skill driver can adopt it instead of forking a run.
 const stageStateFile = path.join(runDir, '.pipeline-stages.json');
-const staged = opts.fail !== null || opts.continue || opts.reportFile !== null || fs.existsSync(stageStateFile);
+// Corrections before the first stage completes are counted beside the run for the same reason.
+const correctionsFile = path.join(workRoot(), `.${runId}.pipeline-corrections`);
+const stageFileExisted = fs.existsSync(stageStateFile);
+const staged = opts.fail !== null || opts.continue || opts.reportFile !== null || stageFileExisted;
 let stageState = null;
 if (staged) {
   // The lock lives beside the run, also keeping the first driver's fresh-directory check intact.
@@ -293,7 +296,11 @@ if (staged) {
   const record = readJsonSilent(path.join(runDir, 'run-manifest.json'));
   const skillManifest = readJsonSilent(path.join(skillDir, 'manifest.json'));
   if (!record || record.status !== 'running' || record.skill_id !== skillManifest?.name) refuse('staged execution requires a running reservation for this skill');
-  stageState ??= { ...binding, status: 'running', phases: 0 };
+  if (!stageState) {
+    stageState = { ...binding, status: 'running', phases: 0 };
+    const prior = readJsonSilent(correctionsFile);
+    if (Number.isInteger(prior) && prior > 0) stageState.corrections = prior;
+  }
   if (opts.fail === null && !opts.continue && opts.report === null && opts.reportFile === null) refuse('the final stage must name its report with --report or --report-file; nothing was run, so repeat this stage with the report named (a report the step writes in the run directory is --report-file <name>; one under report/ is --report <name>)');
 }
 
@@ -706,10 +713,13 @@ function finalizeRunManifest(status) {
 try {
   const status = failure !== null ? 'failed' : opts.continue || correction !== null ? 'running' : 'ok';
   finalizeRunManifest(status);
-  if (staged) {
+  if (staged && correction !== null && !stageFileExisted) {
+    fs.writeFileSync(correctionsFile, `${stageState.corrections}\n`, { mode: 0o600 });
+  } else if (staged) {
     stageState.status = status;
     stageState.phases += 1;
     fs.writeFileSync(stageStateFile, `${JSON.stringify(stageState)}\n`, { mode: 0o600 });
+    fs.rmSync(correctionsFile, { force: true });
   }
 } catch (error) {
   if (failure === null) failure = `could not finalize run-manifest.json: ${error.message}`;
