@@ -205,14 +205,34 @@ for (const host of ['claude', 'codex']) {
 
     await t.test('failure stops later steps, ends the staged run and announces no report', async () => {
       const runId = await reserve();
-      const failed = await bin('kabo-run-pipeline', [...args(runId), '--continue', '--step', 'exit 7', '--step', 'touch {run}/SHOULD-NOT-RUN']);
+      const failed = await bin('kabo-run-pipeline', [...args(runId), '--continue', '--step', 'touch {run}/partial.json; exit 7', '--step', 'touch {run}/SHOULD-NOT-RUN']);
       assert.equal(failed.code, 1);
-      assert.doesNotMatch(failed.stdout, /creator_report:/);
+      assert.doesNotMatch(failed.stdout, /creator_report:|needs_correction/);
       assert.equal((await record(runId)).status, 'failed');
       assert.ok((await record(runId)).finished_at);
       const replay = await bin('kabo-run-pipeline', [...args(runId), '--continue', '--step', 'touch {run}/SHOULD-NOT-RUN']);
       assert.equal(replay.code, 1);
       await assert.rejects(fs.stat(path.join(data, 'work', runId, 'SHOULD-NOT-RUN')), { code: 'ENOENT' });
+    });
+
+    await t.test('a step that fails without changing the run keeps it open for at most two corrected repeats', async () => {
+      const runId = await reserve();
+      const receipt = result => JSON.parse(result.stdout.split('\n').find(line => line.startsWith('{"status":"needs_correction"')));
+      const first = await bin('kabo-run-pipeline', [...args(runId), '--continue', '--step', 'echo "judgment.json does not exist; write it first" >&2; exit 3', '--step', 'touch {run}/SHOULD-NOT-RUN']);
+      assert.equal(first.code, 0, first.stderr);
+      assert.match(first.stdout, /step 1\/2 FAILED exit=3/);
+      assert.deepEqual({ ...receipt(first), instruction: undefined }, { status: 'needs_correction', reason: 'step_failed_without_changes', run_id: runId, failed_step: 1, exit: 3, corrections_remaining: 1, instruction: undefined });
+      assert.equal((await record(runId)).status, 'running');
+      await assert.rejects(fs.stat(path.join(data, 'work', runId, 'SHOULD-NOT-RUN')), { code: 'ENOENT' });
+      const final = await bin('kabo-run-pipeline', [...args(runId), '--report-file', 'reply.md', '--step', 'exit 2']);
+      assert.equal(final.code, 0, final.stderr);
+      assert.equal(receipt(final).corrections_remaining, 0);
+      assert.doesNotMatch(final.stdout, /creator_report:/);
+      assert.equal((await record(runId)).status, 'running');
+      const third = await bin('kabo-run-pipeline', [...args(runId), '--continue', '--step', 'exit 3']);
+      assert.equal(third.code, 1);
+      assert.doesNotMatch(third.stdout, /needs_correction/);
+      assert.equal((await record(runId)).status, 'failed');
     });
 
     const failArgs = (runId, reason = 'Subject identity unresolved') => ['--run-id', runId, '--skill', skill, '--fail', reason];
