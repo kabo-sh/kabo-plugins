@@ -64,13 +64,22 @@ function hostAgent() {
 }
 
 /**
- * The opening half of the run manifest. The skill id comes from the signed manifest.json, the
- * same source skill-verify trusts for identity; a cache directory whose manifest cannot be read is
- * recorded as "unknown" rather than refused - this command reserves directories, it does not verify.
+ * The skill id of the run manifest comes from the signed manifest.json, the same source
+ * skill-verify trusts for identity. This command does not verify a skill, but a path with no
+ * readable named manifest is not a skill directory at all: a run reserved for it would be refused
+ * by every later stage, so it is refused here, before any directory is created.
  */
+function skillIdOf(dir) {
+  const manifest = readJsonSilent(path.join(path.resolve(dir), 'manifest.json'));
+  if (!manifest || typeof manifest.name !== 'string' || !manifest.name) {
+    fail(`--skill ${dir} is not a skill directory (no manifest.json with a name); pass the verified skill directory exactly as printed, without abbreviating it`);
+  }
+  return manifest.name;
+}
+const skillId = skillDir ? skillIdOf(skillDir) : null;
+
+/** The opening half of the run manifest. */
 function openRunManifest(runDir, runId) {
-  const manifest = readJsonSilent(path.join(path.resolve(skillDir), 'manifest.json'));
-  const skillId = manifest && typeof manifest.name === 'string' && manifest.name ? manifest.name : 'unknown';
   const record = {
     run_id: runId,
     request_id: requestId || runId,
