@@ -291,7 +291,7 @@ if (staged) {
   const skillManifest = readJsonSilent(path.join(skillDir, 'manifest.json'));
   if (!record || record.status !== 'running' || record.skill_id !== skillManifest?.name) refuse('staged execution requires a running reservation for this skill');
   stageState ??= { ...binding, status: 'running', phases: 0 };
-  if (opts.fail === null && !opts.continue && opts.report === null && opts.reportFile === null) refuse('the final stage must name its report with --report or --report-file');
+  if (opts.fail === null && !opts.continue && opts.report === null && opts.reportFile === null) refuse('the final stage must name its report with --report or --report-file; nothing was run, so repeat this stage with the report named (a report the step writes in the run directory is --report-file <name>; one under report/ is --report <name>)');
 }
 
 const subdirs = {
@@ -536,7 +536,13 @@ if (failure === null && !opts.continue) {
   } else
   if (opts.report !== null) {
     if (isRegularFile(path.join(subdirs.report, opts.report))) reportNames = [opts.report];
-    else failure = `every step passed but report/${opts.report} does not exist`;
+    else if (staged && isRegularFile(path.join(runDir, opts.report))) {
+      // A driver that owns its layout writes the report in the run root; bind it there rather than close the run.
+      process.stderr.write(`note: ${opts.report} is in the run root, not report/; bound as --report-file ${opts.report}\n`);
+      opts.reportFile = opts.report;
+      opts.report = null;
+      reportNames = [opts.reportFile];
+    } else failure = `every step passed but report/${opts.report} does not exist`;
   } else {
     reportNames = fs.readdirSync(subdirs.report, { withFileTypes: true })
       .filter((entry) => entry.isFile())

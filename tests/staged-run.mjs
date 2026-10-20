@@ -181,6 +181,28 @@ for (const host of ['claude', 'codex']) {
       await assert.rejects(fs.stat(path.join(work, 'AFTER-CLOSE')), { code: 'ENOENT' });
     });
 
+    await t.test('a --report the final step wrote in the run root binds as --report-file instead of closing the run', async () => {
+      const runId = await reserve();
+      const work = path.join(data, 'work', runId);
+      const open = await bin('kabo-run-pipeline', [...args(runId), '--continue', '--step', 'true']);
+      assert.equal(open.code, 0, open.stderr);
+      const finished = await bin('kabo-run-pipeline', [...args(runId), '--report', 'creator-report.md', '--step', 'printf "# Report\\n" > {run}/creator-report.md']);
+      assert.equal(finished.code, 0, finished.stderr);
+      assert.match(finished.stderr, /creator-report\.md is in the run root, not report\/; bound as --report-file creator-report\.md/);
+      assert.match(finished.stdout, new RegExp(`creator_report: ${runId} → creator-report.md`));
+      const final = await record(runId);
+      assert.equal(final.status, 'ok');
+      assert.equal(final.artifacts.find(x => x.path_or_uri === 'creator-report.md').kind, 'report');
+      await fs.stat(path.join(work, 'creator-report.md'));
+      const other = await reserve();
+      const reopen = await bin('kabo-run-pipeline', [...args(other), '--continue', '--step', 'true']);
+      assert.equal(reopen.code, 0, reopen.stderr);
+      const missing = await bin('kabo-run-pipeline', [...args(other), '--report', 'creator-report.md', '--step', 'true']);
+      assert.equal(missing.code, 1);
+      assert.match(missing.stderr, /every step passed but report\/creator-report\.md does not exist/);
+      assert.equal((await record(other)).status, 'failed');
+    });
+
     await t.test('failure stops later steps, ends the staged run and announces no report', async () => {
       const runId = await reserve();
       const failed = await bin('kabo-run-pipeline', [...args(runId), '--continue', '--step', 'exit 7', '--step', 'touch {run}/SHOULD-NOT-RUN']);
