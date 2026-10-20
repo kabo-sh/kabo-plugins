@@ -713,7 +713,7 @@ function finalizeRunManifest(status) {
 try {
   const status = failure !== null ? 'failed' : opts.continue || correction !== null ? 'running' : 'ok';
   finalizeRunManifest(status);
-  if (staged && correction !== null && !stageFileExisted) {
+  if (staged && failure === null && correction !== null && !stageFileExisted) {
     fs.writeFileSync(correctionsFile, `${stageState.corrections}\n`, { mode: 0o600 });
   } else if (staged) {
     stageState.status = status;
