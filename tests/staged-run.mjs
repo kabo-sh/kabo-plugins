@@ -229,6 +229,14 @@ for (const host of ['claude', 'codex']) {
       assert.equal(receipt(final).corrections_remaining, 0);
       assert.doesNotMatch(final.stdout, /creator_report:/);
       assert.equal((await record(runId)).status, 'running');
+      const later = await reserve();
+      const second = await bin('kabo-run-pipeline', [...args(later), '--continue', '--step', 'touch {run}/written.json', '--step', 'exit 4']);
+      assert.equal(second.code, 0, second.stderr);
+      assert.equal(receipt(second).failed_step, 2);
+      assert.equal((await record(later)).status, 'running');
+      const same = await bin('kabo-run-pipeline', [...args(later), '--continue', '--step', 'printf x > {run}/written.json; exit 4']);
+      assert.equal(same.code, 1);
+      assert.equal((await record(later)).status, 'failed');
       const third = await bin('kabo-run-pipeline', [...args(runId), '--continue', '--step', 'exit 3']);
       assert.equal(third.code, 1);
       assert.doesNotMatch(third.stdout, /needs_correction/);

@@ -431,25 +431,27 @@ if (failure === null && stagingDir !== null) {
   }
 }
 
-/** Every run entry except the stage record, with its size and mtime: a step that leaves this unchanged changed nothing. */
+/** Every run entry except the stage record, with each regular file's content hash: a step that leaves this unchanged changed nothing. */
 function runFingerprint() {
   return JSON.stringify(entriesUnder(runDir)
     .filter(({ rel }) => rel !== path.basename(stageStateFile))
     .map(({ dirent, rel, full }) => {
-      const stat = fs.lstatSync(full);
-      return [rel, dirent.isDirectory() ? 'dir' : stat.size, dirent.isDirectory() ? 0 : stat.mtimeMs];
+      if (dirent.isDirectory()) return [rel, 'dir'];
+      if (dirent.isSymbolicLink()) return [rel, 'link', fs.readlinkSync(full)];
+      return [rel, dirent.isFile() ? sha256hex(fs.readFileSync(full)) : 'other'];
     })
     .sort((a, b) => (a[0] < b[0] ? -1 : a[0] > b[0] ? 1 : 0)));
 }
 
 if (failure === null && opts.fail === null) {
-  const before = staged ? runFingerprint() : null;
+  let before = null;
   let failedStep = null;
   const envelopes = listEnvelopes();
   const total = steps.length;
   for (let index = 0; index < total; index += 1) {
     const command = expand(steps[index], envelopes, false);
     const echo = echoLine(expand(steps[index], envelopes, true));
+    before = staged ? runFingerprint() : null;
     const startedAt = process.hrtime.bigint();
     const result = spawnSync('/bin/sh', ['-c', command], {
       cwd: runDir,
