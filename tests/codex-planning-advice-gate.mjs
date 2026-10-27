@@ -19,7 +19,7 @@ test('Codex general planning advice only follows the catalog search and confirm 
 
   const step = (await read('analyze')).split('\n').find(line => line.startsWith('4. '));
   assert.ok(step, 'analyze keeps its no-match step');
-  const search = step.indexOf("runs step 1's catalog search and meta-guidance's confirm step before anything is answered");
+  const search = step.indexOf("runs step 1's catalog search before anything is answered, then meta-guidance's confirm step when the search matches a skill");
   const advice = step.indexOf('general planning advice');
   assert.ok(search >= 0 && advice > search, 'the search and confirm step come before any planning advice');
   assert.match(step, /fictional or hypothetical creators/);
