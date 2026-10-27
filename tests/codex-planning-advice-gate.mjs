@@ -15,7 +15,7 @@ test('Codex general planning advice only follows the catalog search and confirm 
   assert.doesNotMatch(delivery, /needs no account evidence but must be labeled advice/);
   // This line shares the session-start context cap with the signed guidance, so it stays terse;
   // analyze step 4 carries the full wording.
-  assert.match(delivery, /Labeled planning advice only follows this turn's catalog search and confirm step, fictional creators included\./);
+  assert.match(delivery, /Labeled planning advice only follows this turn's catalog search \(confirming any match\), fictional creators included\./);
 
   const step = (await read('analyze')).split('\n').find(line => line.startsWith('4. '));
   assert.ok(step, 'analyze keeps its no-match step');
